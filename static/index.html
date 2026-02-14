@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ytdlp-nfo Server</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f0f0f;
+    color: #e0e0e0;
+    min-height: 100vh;
+  }
+
+  .container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem 1rem;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin-bottom: 1.5rem;
+    color: #fff;
+  }
+
+  .input-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .input-row input {
+    flex: 1;
+    padding: 0.75rem 1rem;
+    border: 1px solid #333;
+    border-radius: 6px;
+    background: #1a1a1a;
+    color: #e0e0e0;
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .input-row input:focus {
+    border-color: #4a9eff;
+  }
+
+  .input-row button {
+    padding: 0.75rem 1.5rem;
+    border: none;
+    border-radius: 6px;
+    background: #4a9eff;
+    color: #fff;
+    font-size: 0.95rem;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s;
+  }
+
+  .input-row button:hover { background: #3a8eef; }
+  .input-row button:disabled { background: #333; cursor: not-allowed; }
+
+  .jobs-header {
+    font-size: 1.1rem;
+    font-weight: 500;
+    margin-bottom: 1rem;
+    color: #aaa;
+  }
+
+  .job-card {
+    background: #1a1a1a;
+    border: 1px solid #282828;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    overflow: hidden;
+  }
+
+  .job-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .job-header:hover { background: #222; }
+
+  .badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+
+  .badge-pending  { background: #555; color: #ccc; }
+  .badge-running  { background: #8B6914; color: #FFD700; }
+  .badge-completed { background: #1a5c2a; color: #4ade80; }
+  .badge-failed   { background: #5c1a1a; color: #f87171; }
+
+  .job-url {
+    font-size: 0.85rem;
+    color: #aaa;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+
+  .job-time {
+    font-size: 0.75rem;
+    color: #666;
+    flex-shrink: 0;
+  }
+
+  .job-output {
+    border-top: 1px solid #282828;
+    padding: 0.75rem 1rem;
+    max-height: 300px;
+    overflow-y: auto;
+    display: none;
+  }
+
+  .job-output.open { display: block; }
+
+  .job-output pre {
+    font-family: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: #b0b0b0;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .job-error {
+    border-top: 1px solid #5c1a1a;
+    padding: 0.5rem 1rem;
+    font-size: 0.85rem;
+    color: #f87171;
+    background: #1a0000;
+  }
+
+  .empty-state {
+    text-align: center;
+    color: #555;
+    padding: 3rem 0;
+    font-size: 0.95rem;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>ytdlp-nfo Server</h1>
+
+  <div class="input-row">
+    <input type="text" id="url-input" placeholder="Paste video or playlist URL..." autofocus>
+    <button id="dl-btn" onclick="submitDownload()">Download</button>
+  </div>
+
+  <div class="jobs-header">Downloads</div>
+  <div id="jobs-list">
+    <div class="empty-state" id="empty-state">No downloads yet.</div>
+  </div>
+</div>
+
+<script>
+const jobsList = document.getElementById('jobs-list');
+const emptyState = document.getElementById('empty-state');
+const urlInput = document.getElementById('url-input');
+const dlBtn = document.getElementById('dl-btn');
+
+const jobs = new Map();
+
+urlInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') submitDownload();
+});
+
+async function submitDownload() {
+  const url = urlInput.value.trim();
+  if (!url) return;
+
+  dlBtn.disabled = true;
+  try {
+    const resp = await fetch('/api/download', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url})
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      alert(err.error || 'Failed to start download');
+      return;
+    }
+    const job = await resp.json();
+    addJobCard(job);
+    streamJob(job.id);
+    urlInput.value = '';
+  } finally {
+    dlBtn.disabled = false;
+  }
+  urlInput.focus();
+}
+
+function addJobCard(job) {
+  if (jobs.has(job.id)) return;
+  jobs.set(job.id, job);
+  emptyState.style.display = 'none';
+
+  const card = document.createElement('div');
+  card.className = 'job-card';
+  card.id = 'job-' + job.id;
+
+  const header = document.createElement('div');
+  header.className = 'job-header';
+  header.onclick = () => {
+    const out = card.querySelector('.job-output');
+    out.classList.toggle('open');
+  };
+
+  const badge = document.createElement('span');
+  badge.className = 'badge badge-' + job.status;
+  badge.id = 'badge-' + job.id;
+  badge.textContent = job.status;
+
+  const urlSpan = document.createElement('span');
+  urlSpan.className = 'job-url';
+  urlSpan.textContent = job.url;
+
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'job-time';
+  timeSpan.textContent = formatTime(job.createdAt);
+
+  header.appendChild(badge);
+  header.appendChild(urlSpan);
+  header.appendChild(timeSpan);
+  card.appendChild(header);
+
+  const output = document.createElement('div');
+  output.className = 'job-output open';
+
+  const pre = document.createElement('pre');
+  pre.id = 'output-' + job.id;
+  output.appendChild(pre);
+  card.appendChild(output);
+
+  if (job.error) {
+    const errDiv = document.createElement('div');
+    errDiv.className = 'job-error';
+    errDiv.textContent = job.error;
+    card.appendChild(errDiv);
+  }
+
+  jobsList.prepend(card);
+}
+
+function streamJob(id) {
+  const es = new EventSource('/api/jobs/' + id + '/stream');
+  const pre = document.getElementById('output-' + id);
+
+  es.onmessage = (e) => {
+    pre.textContent += e.data + '\n';
+    const container = pre.parentElement;
+    container.scrollTop = container.scrollHeight;
+  };
+
+  es.addEventListener('done', (e) => {
+    updateBadge(id, e.data);
+    es.close();
+  });
+
+  es.onerror = () => {
+    es.close();
+  };
+}
+
+function updateBadge(id, status) {
+  const badge = document.getElementById('badge-' + id);
+  if (!badge) return;
+  badge.className = 'badge badge-' + status;
+  badge.textContent = status;
+}
+
+function formatTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleTimeString();
+}
+
+// Load existing jobs on page load
+async function loadJobs() {
+  try {
+    const resp = await fetch('/api/jobs');
+    if (!resp.ok) return;
+    const list = await resp.json();
+    // list is newest-first, reverse to prepend in correct order
+    for (let i = list.length - 1; i >= 0; i--) {
+      addJobCard(list[i]);
+      if (list[i].status === 'pending' || list[i].status === 'running') {
+        streamJob(list[i].id);
+      } else {
+        // Load full output for completed/failed jobs
+        loadJobOutput(list[i].id);
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function loadJobOutput(id) {
+  try {
+    const resp = await fetch('/api/jobs/' + id);
+    if (!resp.ok) return;
+    const job = await resp.json();
+    const pre = document.getElementById('output-' + id);
+    if (pre && job.output) {
+      pre.textContent = job.output.join('\n') + '\n';
+    }
+    // Collapse completed jobs by default on page load
+    const card = document.getElementById('job-' + id);
+    if (card) {
+      const output = card.querySelector('.job-output');
+      output.classList.remove('open');
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+loadJobs();
+</script>
+</body>
+</html>

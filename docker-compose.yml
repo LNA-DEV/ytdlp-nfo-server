@@ -1,0 +1,8 @@
+services:
+  ytdlp-nfo-server:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./download:/downloads
+    restart: unless-stopped
