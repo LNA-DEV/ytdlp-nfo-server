@@ -424,6 +424,29 @@ func (m *DownloadManager) runDownload(job *Job) {
 	}
 }
 
+// scanCRLF is a bufio.SplitFunc that splits on \r, \n, or \r\n so each
+// yt-dlp progress update (written with \r) is emitted immediately.
+func scanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\n' {
+			return i + 1, data[:i], nil
+		}
+		if data[i] == '\r' {
+			if i+1 < len(data) && data[i+1] == '\n' {
+				return i + 2, data[:i], nil
+			}
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
 // executeDownload runs the actual subprocess and returns an error if it fails.
 func (m *DownloadManager) executeDownload(job *Job) error {
 	if err := os.MkdirAll(m.downloadDir, 0755); err != nil {
@@ -437,6 +460,7 @@ func (m *DownloadManager) executeDownload(job *Job) error {
 
 	cmd := exec.CommandContext(ctx, "ytdlp-nfo", job.URL)
 	cmd.Dir = m.downloadDir
+	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -450,20 +474,11 @@ func (m *DownloadManager) executeDownload(job *Job) error {
 		return fmt.Errorf("failed to start: %v", err)
 	}
 
-	reader := bufio.NewReader(stdout)
-	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			parts := strings.Split(strings.TrimRight(line, "\r\n"), "\r")
-			for _, part := range parts {
-				trimmed := strings.TrimSpace(part)
-				if trimmed != "" {
-					job.appendLine(trimmed)
-				}
-			}
-		}
-		if err != nil {
-			break
+	scanner := bufio.NewScanner(stdout)
+	scanner.Split(scanCRLF)
+	for scanner.Scan() {
+		if trimmed := strings.TrimSpace(scanner.Text()); trimmed != "" {
+			job.appendLine(trimmed)
 		}
 	}
 
