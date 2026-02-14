@@ -1,0 +1,15 @@
+services:
+  ytdlp-nfo-server:
+    image: ghcr.io/lna-dev/ytdlp-nfo-server:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./download:/downloads
+      - ./data:/data
+    environment:
+      - PORT=8080
+      - DOWNLOAD_DIR=/downloads
+      - DATA_DIR=/data
+      - MAX_CONCURRENT=3
+      - MAX_RETRIES=3
+    restart: unless-stopped
