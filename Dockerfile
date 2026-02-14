@@ -12,6 +12,7 @@ COPY --from=builder /app/ytdlp-nfo-server /usr/local/bin/
 EXPOSE 8080
 ENV DOWNLOAD_DIR=/downloads
 ENV DATA_DIR=/data
+ENV YTDLP_CHANNEL=stable
 VOLUME /downloads
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

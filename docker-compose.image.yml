@@ -12,4 +12,5 @@ services:
       - DATA_DIR=/data
       - MAX_CONCURRENT=3
       - MAX_RETRIES=3
+      # - YTDLP_CHANNEL=stable
     restart: unless-stopped
