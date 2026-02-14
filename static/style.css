@@ -254,3 +254,68 @@ h1 {
   padding: 3rem 0;
   font-size: 0.95rem;
 }
+
+/* Modal */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-overlay.open { display: flex; }
+
+.modal {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  max-width: 400px;
+  width: 90%;
+  padding: 1.5rem;
+}
+
+.modal-body {
+  color: #e0e0e0;
+  font-size: 0.95rem;
+  margin-bottom: 1.25rem;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.modal-btn {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.modal-btn-primary {
+  background: #4a9eff;
+  color: #fff;
+}
+
+.modal-btn-primary:hover { background: #3a8eef; }
+
+.modal-btn-danger {
+  background: #5c1a1a;
+  color: #f87171;
+}
+
+.modal-btn-danger:hover { background: #6b2222; }
+
+.modal-btn-cancel {
+  background: #333;
+  color: #aaa;
+}
+
+.modal-btn-cancel:hover { background: #444; }

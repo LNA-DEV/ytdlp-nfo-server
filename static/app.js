@@ -9,8 +9,72 @@ const tabPanels = document.querySelectorAll('.tab-panel');
 const activeCount = document.getElementById('active-count');
 const failedCount = document.getElementById('failed-count');
 
+const modalOverlay = document.getElementById('modal-overlay');
+const modalMessage = document.getElementById('modal-message');
+const modalActions = document.getElementById('modal-actions');
+
 const jobs = new Map();
 const eventSources = new Map();
+
+// --- Modal helpers ---
+
+function showAlert(message) {
+  return new Promise((resolve) => {
+    modalMessage.textContent = message;
+    modalActions.innerHTML = '';
+
+    const okBtn = document.createElement('button');
+    okBtn.className = 'modal-btn modal-btn-primary';
+    okBtn.textContent = 'OK';
+
+    function close() {
+      modalOverlay.classList.remove('open');
+      modalOverlay.removeEventListener('click', onOverlay);
+      resolve();
+    }
+
+    function onOverlay(e) {
+      if (e.target === modalOverlay) close();
+    }
+
+    okBtn.onclick = close;
+    modalOverlay.addEventListener('click', onOverlay);
+    modalActions.appendChild(okBtn);
+    modalOverlay.classList.add('open');
+  });
+}
+
+function showConfirm(message) {
+  return new Promise((resolve) => {
+    modalMessage.textContent = message;
+    modalActions.innerHTML = '';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'modal-btn modal-btn-cancel';
+    cancelBtn.textContent = 'Cancel';
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'modal-btn modal-btn-danger';
+    deleteBtn.textContent = 'Delete';
+
+    function close(result) {
+      modalOverlay.classList.remove('open');
+      modalOverlay.removeEventListener('click', onOverlay);
+      resolve(result);
+    }
+
+    function onOverlay(e) {
+      if (e.target === modalOverlay) close(false);
+    }
+
+    cancelBtn.onclick = () => close(false);
+    deleteBtn.onclick = () => close(true);
+    modalOverlay.addEventListener('click', onOverlay);
+    modalActions.appendChild(cancelBtn);
+    modalActions.appendChild(deleteBtn);
+    modalOverlay.classList.add('open');
+  });
+}
 
 // --- Tabs ---
 
@@ -54,7 +118,7 @@ async function submitDownload() {
     });
     if (!resp.ok) {
       const err = await resp.json();
-      alert(err.error || 'Failed to start download');
+      showAlert(err.error || 'Failed to start download');
       return;
     }
     const job = await resp.json();
@@ -265,7 +329,7 @@ async function retryJob(id) {
     const resp = await fetch('/api/jobs/' + id + '/retry', { method: 'POST' });
     if (!resp.ok) {
       const err = await resp.json();
-      alert(err.error || 'Failed to retry');
+      showAlert(err.error || 'Failed to retry');
       if (retryBtn) retryBtn.disabled = false;
       return;
     }
@@ -328,7 +392,7 @@ async function deleteJob(id) {
 }
 
 async function deleteAllJobs() {
-  if (!confirm('Delete all jobs? This cannot be undone.')) return;
+  if (!(await showConfirm('Delete all jobs? This cannot be undone.'))) return;
 
   try {
     const resp = await fetch('/api/jobs', { method: 'DELETE' });

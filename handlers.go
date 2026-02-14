@@ -87,7 +87,11 @@ func handleSubmit(mgr *DownloadManager) http.HandlerFunc {
 			return
 		}
 
-		job := mgr.StartDownload(req.URL)
+		job, err := mgr.StartDownload(req.URL)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusCreated, toSummary(job))
 	}
 }

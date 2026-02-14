@@ -140,9 +140,18 @@ func NewDownloadManager(dir string, maxConcurrent int, maxRetries int, dataDir s
 	return m
 }
 
-func (m *DownloadManager) StartDownload(url string) *Job {
+func (m *DownloadManager) StartDownload(url string) (*Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	for _, j := range m.jobs {
+		j.mu.Lock()
+		s := j.Status
+		j.mu.Unlock()
+		if j.URL == url && s != StatusCompleted {
+			return nil, fmt.Errorf("a download already exists for this URL")
+		}
+	}
 
 	m.nextID++
 	id := fmt.Sprintf("%d", m.nextID)
@@ -165,7 +174,7 @@ func (m *DownloadManager) StartDownload(url string) *Job {
 		m.saveState()
 	}
 
-	return job
+	return job, nil
 }
 
 func (m *DownloadManager) GetJob(id string) (*Job, bool) {
