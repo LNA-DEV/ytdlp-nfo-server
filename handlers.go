@@ -197,3 +197,21 @@ func handleRetryJob(mgr *DownloadManager) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, toSummary(job))
 	}
 }
+
+func handleDeleteJob(mgr *DownloadManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if err := mgr.DeleteJob(id); err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	}
+}
+
+func handleDeleteAllJobs(mgr *DownloadManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		mgr.DeleteAllJobs()
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	}
+}

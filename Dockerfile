@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir yt-dlp git+https://github.com/LNA-DEV/ytdlp-nfo.g
 COPY --from=builder /app/ytdlp-nfo-server /usr/local/bin/
 EXPOSE 8080
 ENV DOWNLOAD_DIR=/downloads
+ENV DATA_DIR=/data
 VOLUME /downloads
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

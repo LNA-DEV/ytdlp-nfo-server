@@ -22,3 +22,6 @@ vendor/
 # Downloads
 downloads/
 download/
+
+# Data
+data/

@@ -59,7 +59,9 @@ async function submitDownload() {
     }
     const job = await resp.json();
     addJobCard(job);
-    streamJob(job.id);
+    if (job.status !== 'queued') {
+      streamJob(job.id);
+    }
     urlInput.value = '';
   } finally {
     dlBtn.disabled = false;
@@ -110,10 +112,17 @@ function addJobCard(job) {
   retryBtn.style.display = job.status === 'failed' ? '' : 'none';
   retryBtn.onclick = (e) => { e.stopPropagation(); retryJob(job.id); };
 
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'delete-btn';
+  deleteBtn.title = 'Delete job';
+  deleteBtn.innerHTML = '&#x2715;';
+  deleteBtn.onclick = (e) => { e.stopPropagation(); deleteJob(job.id); };
+
   header.appendChild(badge);
   header.appendChild(urlSpan);
   header.appendChild(timeSpan);
   header.appendChild(retryBtn);
+  header.appendChild(deleteBtn);
   card.appendChild(header);
 
   // Progress bar
@@ -128,7 +137,7 @@ function addJobCard(job) {
   card.appendChild(progressContainer);
 
   const output = document.createElement('div');
-  output.className = 'job-output' + (job.status === 'pending' || job.status === 'running' || job.status === 'retrying' ? ' open' : '');
+  output.className = 'job-output' + (job.status === 'pending' || job.status === 'running' || job.status === 'retrying' || job.status === 'queued' ? ' open' : '');
 
   const pre = document.createElement('pre');
   pre.id = 'output-' + job.id;
@@ -285,10 +294,61 @@ async function retryJob(id) {
     placeCard(id);
     updateTabCounts();
 
-    // Reconnect SSE
-    streamJob(id);
+    // Reconnect SSE if not queued
+    if (job.status !== 'queued') {
+      streamJob(id);
+    }
   } catch (e) {
     if (retryBtn) retryBtn.disabled = false;
+  }
+}
+
+// --- Delete ---
+
+async function deleteJob(id) {
+  try {
+    const resp = await fetch('/api/jobs/' + id, { method: 'DELETE' });
+    if (!resp.ok) return;
+
+    // Close SSE if active
+    if (eventSources.has(id)) {
+      eventSources.get(id).close();
+      eventSources.delete(id);
+    }
+
+    // Remove card from DOM
+    const card = document.getElementById('job-' + id);
+    if (card) card.remove();
+
+    jobs.delete(id);
+    updateTabCounts();
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function deleteAllJobs() {
+  if (!confirm('Delete all jobs? This cannot be undone.')) return;
+
+  try {
+    const resp = await fetch('/api/jobs', { method: 'DELETE' });
+    if (!resp.ok) return;
+
+    // Close all SSE connections
+    for (const [id, es] of eventSources) {
+      es.close();
+    }
+    eventSources.clear();
+
+    // Remove all job cards
+    for (const [id] of jobs) {
+      const card = document.getElementById('job-' + id);
+      if (card) card.remove();
+    }
+    jobs.clear();
+    updateTabCounts();
+  } catch (e) {
+    // ignore
   }
 }
 
@@ -310,7 +370,7 @@ async function loadJobs() {
     // list is newest-first, reverse to prepend in correct order
     for (let i = list.length - 1; i >= 0; i--) {
       addJobCard(list[i]);
-      if (list[i].status === 'pending' || list[i].status === 'running' || list[i].status === 'retrying') {
+      if (list[i].status === 'pending' || list[i].status === 'running' || list[i].status === 'retrying' || list[i].status === 'queued') {
         streamJob(list[i].id);
       } else {
         loadJobOutput(list[i].id);

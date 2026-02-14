@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ type JobStatus string
 
 const (
 	StatusPending   JobStatus = "pending"
+	StatusQueued    JobStatus = "queued"
 	StatusRunning   JobStatus = "running"
 	StatusCompleted JobStatus = "completed"
 	StatusFailed    JobStatus = "failed"
@@ -39,8 +41,9 @@ type Job struct {
 	MaxRetries int        `json:"maxRetries"`
 
 	mu          sync.Mutex
-	Output      []string     `json:"-"`
+	Output      []string `json:"-"`
 	subscribers []chan SSEEvent
+	cancel      context.CancelFunc
 }
 
 var progressRegex = regexp.MustCompile(`\[download\]\s+([\d.]+)%`)
@@ -111,34 +114,57 @@ func (j *Job) broadcastStatus(s JobStatus) {
 }
 
 type DownloadManager struct {
-	mu          sync.RWMutex
-	jobs        map[string]*Job
-	nextID      int
-	downloadDir string
+	mu            sync.RWMutex
+	jobs          map[string]*Job
+	nextID        int
+	downloadDir   string
+	dataDir       string
+	maxConcurrent int
+	maxRetries    int
+	running       int
+	queue         []string
 }
 
-func NewDownloadManager(dir string) *DownloadManager {
-	return &DownloadManager{
-		jobs:        make(map[string]*Job),
-		downloadDir: dir,
+func NewDownloadManager(dir string, maxConcurrent int, maxRetries int, dataDir string) *DownloadManager {
+	m := &DownloadManager{
+		jobs:          make(map[string]*Job),
+		downloadDir:   dir,
+		dataDir:       dataDir,
+		maxConcurrent: maxConcurrent,
+		maxRetries:    maxRetries,
 	}
+
+	m.loadState()
+	m.drainQueue()
+
+	return m
 }
 
 func (m *DownloadManager) StartDownload(url string) *Job {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.nextID++
 	id := fmt.Sprintf("%d", m.nextID)
 	job := &Job{
 		ID:         id,
 		URL:        url,
-		Status:     StatusPending,
 		CreatedAt:  time.Now(),
-		MaxRetries: 3,
+		MaxRetries: m.maxRetries,
 	}
 	m.jobs[id] = job
-	m.mu.Unlock()
 
-	go m.runDownload(job)
+	if m.running < m.maxConcurrent {
+		job.Status = StatusPending
+		m.running++
+		m.saveState()
+		go m.runDownload(job)
+	} else {
+		job.Status = StatusQueued
+		m.queue = append(m.queue, id)
+		m.saveState()
+	}
+
 	return job
 }
 
@@ -169,9 +195,10 @@ func (m *DownloadManager) ListJobs() []*Job {
 
 // RetryJob resets a failed job and relaunches download.
 func (m *DownloadManager) RetryJob(id string) (*Job, error) {
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	job, ok := m.jobs[id]
-	m.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("job not found")
 	}
@@ -181,24 +208,127 @@ func (m *DownloadManager) RetryJob(id string) (*Job, error) {
 		job.mu.Unlock()
 		return nil, fmt.Errorf("job is not failed")
 	}
-	job.Status = StatusPending
 	job.Error = ""
 	job.DoneAt = nil
 	job.Progress = 0
 	job.RetryCount = 0
 	job.Output = nil
+
+	if m.running < m.maxConcurrent {
+		job.Status = StatusPending
+		m.running++
+		job.mu.Unlock()
+		m.saveState()
+		go m.runDownload(job)
+	} else {
+		job.Status = StatusQueued
+		m.queue = append(m.queue, id)
+		job.mu.Unlock()
+		m.saveState()
+	}
+
+	return job, nil
+}
+
+// DeleteJob removes a single job, cancelling it if running.
+func (m *DownloadManager) DeleteJob(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	job, ok := m.jobs[id]
+	if !ok {
+		return fmt.Errorf("job not found")
+	}
+
+	// Remove from queue if queued
+	for i, qid := range m.queue {
+		if qid == id {
+			m.queue = append(m.queue[:i], m.queue[i+1:]...)
+			break
+		}
+	}
+
+	// Cancel if running
+	job.mu.Lock()
+	if job.cancel != nil {
+		job.cancel()
+	}
 	job.mu.Unlock()
 
-	go m.runDownload(job)
-	return job, nil
+	job.closeSubscribers()
+	delete(m.jobs, id)
+	m.saveState()
+	return nil
+}
+
+// DeleteAllJobs removes all jobs, cancelling any that are running.
+func (m *DownloadManager) DeleteAllJobs() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, job := range m.jobs {
+		job.mu.Lock()
+		if job.cancel != nil {
+			job.cancel()
+		}
+		job.mu.Unlock()
+		job.closeSubscribers()
+	}
+
+	m.jobs = make(map[string]*Job)
+	m.queue = nil
+	m.running = 0
+	m.saveState()
+}
+
+// startNextQueued decrements running count and starts the next queued job.
+func (m *DownloadManager) startNextQueued() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.running--
+
+	for len(m.queue) > 0 {
+		id := m.queue[0]
+		m.queue = m.queue[1:]
+		job, ok := m.jobs[id]
+		if !ok {
+			continue
+		}
+		m.running++
+		go m.runDownload(job)
+		return
+	}
+}
+
+// jobExists checks if a job still exists in the manager (not deleted).
+func (m *DownloadManager) jobExists(id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.jobs[id]
+	return ok
 }
 
 // runDownload orchestrates download attempts with retry and exponential backoff.
 func (m *DownloadManager) runDownload(job *Job) {
+	defer m.startNextQueued()
+
 	for {
+		if !m.jobExists(job.ID) {
+			return
+		}
+
 		job.broadcastStatus(StatusRunning)
+		m.mu.RLock()
+		m.saveState()
+		m.mu.RUnlock()
 
 		err := m.executeDownload(job)
+
+		if !m.jobExists(job.ID) {
+			return
+		}
+
 		if err == nil {
 			now := time.Now()
 			job.mu.Lock()
@@ -207,6 +337,9 @@ func (m *DownloadManager) runDownload(job *Job) {
 			job.Progress = 100
 			job.mu.Unlock()
 			job.closeSubscribers()
+			m.mu.RLock()
+			m.saveState()
+			m.mu.RUnlock()
 			return
 		}
 
@@ -224,6 +357,9 @@ func (m *DownloadManager) runDownload(job *Job) {
 			job.DoneAt = &now
 			job.mu.Unlock()
 			job.closeSubscribers()
+			m.mu.RLock()
+			m.saveState()
+			m.mu.RUnlock()
 			return
 		}
 
@@ -239,8 +375,16 @@ func (m *DownloadManager) runDownload(job *Job) {
 		job.broadcast(SSEEvent{Type: "status", Data: string(StatusRetrying)})
 		job.mu.Unlock()
 
+		m.mu.RLock()
+		m.saveState()
+		m.mu.RUnlock()
+
 		job.appendLine(fmt.Sprintf("--- Retry %d/%d in %s ---", attempt, maxRetries, backoff))
 		time.Sleep(backoff)
+
+		if !m.jobExists(job.ID) {
+			return
+		}
 	}
 }
 
@@ -250,16 +394,23 @@ func (m *DownloadManager) executeDownload(job *Job) error {
 		return fmt.Errorf("failed to create download dir: %v", err)
 	}
 
-	cmd := exec.Command("ytdlp-nfo", job.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	job.mu.Lock()
+	job.cancel = cancel
+	job.mu.Unlock()
+
+	cmd := exec.CommandContext(ctx, "ytdlp-nfo", job.URL)
 	cmd.Dir = m.downloadDir
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		cancel()
 		return fmt.Errorf("failed to create pipe: %v", err)
 	}
 	cmd.Stderr = cmd.Stdout
 
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return fmt.Errorf("failed to start: %v", err)
 	}
 

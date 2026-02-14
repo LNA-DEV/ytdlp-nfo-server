@@ -64,6 +64,7 @@ h1 {
   gap: 0;
   margin-bottom: 1rem;
   border-bottom: 1px solid #333;
+  align-items: center;
 }
 
 .tab {
@@ -126,6 +127,7 @@ h1 {
 }
 
 .badge-pending    { background: #555; color: #ccc; }
+.badge-queued     { background: #3d3d00; color: #e0e000; }
 .badge-running    { background: #8B6914; color: #FFD700; }
 .badge-completed  { background: #1a5c2a; color: #4ade80; }
 .badge-failed     { background: #5c1a1a; color: #f87171; }
@@ -204,6 +206,47 @@ h1 {
 
 .retry-btn:hover { background: #7c4fb5; }
 .retry-btn:disabled { background: #333; cursor: not-allowed; }
+
+/* Delete button (per job) */
+.delete-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #666;
+  font-size: 1.1rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.2s, background 0.2s;
+}
+
+.delete-btn:hover {
+  color: #f87171;
+  background: #2a1a1a;
+}
+
+/* Delete All button */
+.delete-all-btn {
+  margin-left: auto;
+  padding: 0.4rem 0.8rem;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #666;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+}
+
+.delete-all-btn:hover {
+  color: #f87171;
+  background: #2a1a1a;
+}
 
 .empty-state {
   text-align: center;
