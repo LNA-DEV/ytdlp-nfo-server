@@ -6,6 +6,7 @@ services:
     volumes:
       - ./download:/downloads
       - ./data:/data
+      - pip-cache:/root/.cache/pip
     environment:
       - PORT=8080
       - DOWNLOAD_DIR=/downloads
@@ -14,3 +15,6 @@ services:
       - MAX_RETRIES=3
       # - YTDLP_CHANNEL=stable
     restart: unless-stopped
+
+volumes:
+  pip-cache:

@@ -6,10 +6,14 @@ services:
     volumes:
       - ./download:/downloads
       - ./data:/data
+      - pip-cache:/root/.cache/pip
     environment:
       - DATA_DIR=/data
       - MAX_CONCURRENT=3
       - MAX_RETRIES=3
       # - YTDLP_CHANNEL=stable
     restart: unless-stopped
+
+volumes:
+  pip-cache:
 
