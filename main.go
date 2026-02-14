@@ -30,6 +30,7 @@ func main() {
 	mux.HandleFunc("GET /api/jobs", handleListJobs(mgr))
 	mux.HandleFunc("GET /api/jobs/{id}", handleJobStatus(mgr))
 	mux.HandleFunc("GET /api/jobs/{id}/stream", handleJobStream(mgr))
+	mux.HandleFunc("POST /api/jobs/{id}/retry", handleRetryJob(mgr))
 
 	staticSub, err := fs.Sub(staticFiles, "static")
 	if err != nil {

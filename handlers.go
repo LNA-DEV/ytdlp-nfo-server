@@ -12,12 +12,15 @@ type downloadRequest struct {
 }
 
 type jobSummary struct {
-	ID        string    `json:"id"`
-	URL       string    `json:"url"`
-	Status    JobStatus `json:"status"`
-	CreatedAt string    `json:"createdAt"`
-	DoneAt    string    `json:"doneAt,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	ID         string    `json:"id"`
+	URL        string    `json:"url"`
+	Status     JobStatus `json:"status"`
+	CreatedAt  string    `json:"createdAt"`
+	DoneAt     string    `json:"doneAt,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	Progress   float64   `json:"progress"`
+	RetryCount int       `json:"retryCount"`
+	MaxRetries int       `json:"maxRetries"`
 }
 
 type jobDetail struct {
@@ -29,11 +32,14 @@ func toSummary(j *Job) jobSummary {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	s := jobSummary{
-		ID:        j.ID,
-		URL:       j.URL,
-		Status:    j.Status,
-		CreatedAt: j.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		Error:     j.Error,
+		ID:         j.ID,
+		URL:        j.URL,
+		Status:     j.Status,
+		CreatedAt:  j.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		Error:      j.Error,
+		Progress:   j.Progress,
+		RetryCount: j.RetryCount,
+		MaxRetries: j.MaxRetries,
 	}
 	if j.DoneAt != nil {
 		s.DoneAt = j.DoneAt.Format("2006-01-02T15:04:05Z")
@@ -45,11 +51,14 @@ func toDetail(j *Job) jobDetail {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	s := jobSummary{
-		ID:        j.ID,
-		URL:       j.URL,
-		Status:    j.Status,
-		CreatedAt: j.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		Error:     j.Error,
+		ID:         j.ID,
+		URL:        j.URL,
+		Status:     j.Status,
+		CreatedAt:  j.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		Error:      j.Error,
+		Progress:   j.Progress,
+		RetryCount: j.RetryCount,
+		MaxRetries: j.MaxRetries,
 	}
 	if j.DoneAt != nil {
 		s.DoneAt = j.DoneAt.Format("2006-01-02T15:04:05Z")
@@ -125,7 +134,6 @@ func handleJobStream(mgr *DownloadManager) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 
-		// Subscribe before reading snapshot to avoid missing lines
 		existing, ch := job.Subscribe()
 		defer job.Unsubscribe(ch)
 
@@ -134,11 +142,16 @@ func handleJobStream(mgr *DownloadManager) http.HandlerFunc {
 			fmt.Fprintf(w, "data: %s\n\n", line)
 		}
 
-		// Check if already done
+		// Send current progress if any
 		job.mu.Lock()
 		isDone := job.Status == StatusCompleted || job.Status == StatusFailed
 		status := job.Status
+		progress := job.Progress
 		job.mu.Unlock()
+
+		if progress > 0 {
+			fmt.Fprintf(w, "event: progress\ndata: %.1f\n\n", progress)
+		}
 
 		if isDone {
 			fmt.Fprintf(w, "event: done\ndata: %s\n\n", status)
@@ -147,12 +160,11 @@ func handleJobStream(mgr *DownloadManager) http.HandlerFunc {
 		}
 		flusher.Flush()
 
-		// Stream new lines
+		// Stream new events
 		for {
 			select {
-			case line, open := <-ch:
+			case evt, open := <-ch:
 				if !open {
-					// Channel closed — job finished
 					job.mu.Lock()
 					status = job.Status
 					job.mu.Unlock()
@@ -160,11 +172,28 @@ func handleJobStream(mgr *DownloadManager) http.HandlerFunc {
 					flusher.Flush()
 					return
 				}
-				fmt.Fprintf(w, "data: %s\n\n", line)
+				switch evt.Type {
+				case "message":
+					fmt.Fprintf(w, "data: %s\n\n", evt.Data)
+				default:
+					fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Type, evt.Data)
+				}
 				flusher.Flush()
 			case <-r.Context().Done():
 				return
 			}
 		}
+	}
+}
+
+func handleRetryJob(mgr *DownloadManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		job, err := mgr.RetryJob(id)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, toSummary(job))
 	}
 }
