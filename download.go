@@ -123,15 +123,18 @@ type DownloadManager struct {
 	maxRetries    int
 	running       int
 	queue         []string
+	shutdownCtx   context.Context
+	shutdownWg    sync.WaitGroup
 }
 
-func NewDownloadManager(dir string, maxConcurrent int, maxRetries int, dataDir string) *DownloadManager {
+func NewDownloadManager(ctx context.Context, dir string, maxConcurrent int, maxRetries int, dataDir string) *DownloadManager {
 	m := &DownloadManager{
 		jobs:          make(map[string]*Job),
 		downloadDir:   dir,
 		dataDir:       dataDir,
 		maxConcurrent: maxConcurrent,
 		maxRetries:    maxRetries,
+		shutdownCtx:   ctx,
 	}
 
 	m.loadState()
@@ -143,6 +146,10 @@ func NewDownloadManager(dir string, maxConcurrent int, maxRetries int, dataDir s
 func (m *DownloadManager) StartDownload(url string) (*Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.shutdownCtx.Err() != nil {
+		return nil, fmt.Errorf("server is shutting down")
+	}
 
 	for _, j := range m.jobs {
 		j.mu.Lock()
@@ -167,6 +174,7 @@ func (m *DownloadManager) StartDownload(url string) (*Job, error) {
 		job.Status = StatusPending
 		m.running++
 		m.saveState()
+		m.shutdownWg.Add(1)
 		go m.runDownload(job)
 	} else {
 		job.Status = StatusQueued
@@ -228,6 +236,7 @@ func (m *DownloadManager) RetryJob(id string) (*Job, error) {
 		m.running++
 		job.mu.Unlock()
 		m.saveState()
+		m.shutdownWg.Add(1)
 		go m.runDownload(job)
 	} else {
 		job.Status = StatusQueued
@@ -297,6 +306,10 @@ func (m *DownloadManager) startNextQueued() {
 
 	m.running--
 
+	if m.shutdownCtx.Err() != nil {
+		return
+	}
+
 	for len(m.queue) > 0 {
 		id := m.queue[0]
 		m.queue = m.queue[1:]
@@ -305,6 +318,7 @@ func (m *DownloadManager) startNextQueued() {
 			continue
 		}
 		m.running++
+		m.shutdownWg.Add(1)
 		go m.runDownload(job)
 		return
 	}
@@ -320,6 +334,7 @@ func (m *DownloadManager) jobExists(id string) bool {
 
 // runDownload orchestrates download attempts with retry and exponential backoff.
 func (m *DownloadManager) runDownload(job *Job) {
+	defer m.shutdownWg.Done()
 	defer m.startNextQueued()
 
 	for {
@@ -349,6 +364,11 @@ func (m *DownloadManager) runDownload(job *Job) {
 			m.mu.RLock()
 			m.saveState()
 			m.mu.RUnlock()
+			return
+		}
+
+		// If shutdown caused the error, leave job in running state for re-queue on restart
+		if m.shutdownCtx.Err() != nil {
 			return
 		}
 
@@ -389,7 +409,14 @@ func (m *DownloadManager) runDownload(job *Job) {
 		m.mu.RUnlock()
 
 		job.appendLine(fmt.Sprintf("--- Retry %d/%d in %s ---", attempt, maxRetries, backoff))
-		time.Sleep(backoff)
+
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-m.shutdownCtx.Done():
+			timer.Stop()
+			return
+		}
 
 		if !m.jobExists(job.ID) {
 			return
@@ -403,7 +430,7 @@ func (m *DownloadManager) executeDownload(job *Job) error {
 		return fmt.Errorf("failed to create download dir: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(m.shutdownCtx)
 	job.mu.Lock()
 	job.cancel = cancel
 	job.mu.Unlock()
@@ -441,4 +468,12 @@ func (m *DownloadManager) executeDownload(job *Job) error {
 	}
 
 	return cmd.Wait()
+}
+
+// Shutdown waits for all running downloads to finish and saves final state.
+func (m *DownloadManager) Shutdown() {
+	m.shutdownWg.Wait()
+	m.mu.RLock()
+	m.saveState()
+	m.mu.RUnlock()
 }

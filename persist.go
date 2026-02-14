@@ -156,6 +156,7 @@ func (m *DownloadManager) drainQueue() {
 			continue
 		}
 		m.running++
+		m.shutdownWg.Add(1)
 		go m.runDownload(job)
 	}
 }

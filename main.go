@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
 )
 
 //go:embed static
@@ -38,7 +42,10 @@ func main() {
 		}
 	}
 
-	mgr := NewDownloadManager(downloadDir, maxConcurrent, maxRetries, dataDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr := NewDownloadManager(ctx, downloadDir, maxConcurrent, maxRetries, dataDir)
 
 	mux := http.NewServeMux()
 
@@ -56,6 +63,34 @@ func main() {
 	}
 	mux.Handle("GET /", http.FileServer(http.FS(staticSub)))
 
-	log.Printf("Starting server on :%s (downloads -> %s, maxConcurrent: %d)", port, downloadDir, maxConcurrent)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		log.Printf("Starting server on :%s (downloads -> %s, maxConcurrent: %d)", port, downloadDir, maxConcurrent)
+		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
+
+	<-sigCh
+	log.Println("Shutdown signal received")
+
+	// 1. Stop accepting new HTTP requests, drain in-flight (5s max)
+	httpCtx, httpCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer httpCancel()
+	srv.Shutdown(httpCtx)
+
+	// 2. Cancel all downloads and backoff sleeps
+	cancel()
+
+	// 3. Wait for goroutines to finish, then save final state
+	mgr.Shutdown()
+
+	log.Println("Shutdown complete")
 }
