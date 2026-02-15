@@ -164,7 +164,15 @@ function addJobCard(job) {
   const header = document.createElement('div');
   header.className = 'job-header';
   header.onclick = () => {
-    card.querySelector('.job-output').classList.toggle('open');
+    const outputPanel = card.querySelector('.job-output');
+    const isOpening = !outputPanel.classList.contains('open');
+    outputPanel.classList.toggle('open');
+    if (isOpening) {
+      const pre = document.getElementById('output-' + job.id);
+      if (pre && !pre.firstChild && !eventSources.has(job.id)) {
+        loadJobOutput(job.id);
+      }
+    }
   };
 
   const badge = document.createElement('span');
@@ -267,16 +275,17 @@ function streamJob(id) {
 
   es.onmessage = (e) => {
     if (pre) {
-      let lines = jobLines.get(id);
-      if (!lines) { lines = []; jobLines.set(id, lines); }
-      lines.push(e.data);
+      let batch = jobLines.get(id);
+      if (!batch) { batch = []; jobLines.set(id, batch); }
+      batch.push(e.data);
       if (!pendingOutputUpdates.has(id)) {
         pendingOutputUpdates.add(id);
         requestAnimationFrame(() => {
           pendingOutputUpdates.delete(id);
-          const l = jobLines.get(id);
-          if (l && pre) {
-            pre.textContent = l.join('\n') + '\n';
+          const b = jobLines.get(id);
+          if (b && b.length && pre) {
+            pre.appendChild(document.createTextNode(b.join('\n') + '\n'));
+            b.length = 0;
             pre.parentElement.scrollTop = pre.parentElement.scrollHeight;
           }
         });
@@ -343,11 +352,15 @@ function streamJob(id) {
   });
 
   es.onerror = () => {
-    jobLines.delete(id);
-    pendingOutputUpdates.delete(id);
-    pendingProgress.delete(id);
-    es.close();
-    eventSources.delete(id);
+    const job = jobs.get(id);
+    if (job && (job.status === 'completed' || job.status === 'failed')) {
+      jobLines.delete(id);
+      pendingOutputUpdates.delete(id);
+      pendingProgress.delete(id);
+      es.close();
+      eventSources.delete(id);
+    }
+    // Otherwise let EventSource auto-retry
   };
 }
 
@@ -488,8 +501,6 @@ async function loadJobs() {
       addJobCard(list[i]);
       if (list[i].status === 'pending' || list[i].status === 'running' || list[i].status === 'retrying' || list[i].status === 'queued') {
         streamJob(list[i].id);
-      } else {
-        loadJobOutput(list[i].id);
       }
     }
   } catch (e) {
@@ -503,13 +514,10 @@ async function loadJobOutput(id) {
     if (!resp.ok) return;
     const job = await resp.json();
     const pre = document.getElementById('output-' + id);
-    if (pre && job.output) {
+    if (pre && job.output && job.output.length) {
       pre.textContent = job.output.join('\n') + '\n';
-    }
-    // Collapse completed/failed jobs by default on page load
-    const card = document.getElementById('job-' + id);
-    if (card) {
-      card.querySelector('.job-output').classList.remove('open');
+    } else if (pre) {
+      pre.textContent = '(output not available)\n';
     }
   } catch (e) {
     // ignore

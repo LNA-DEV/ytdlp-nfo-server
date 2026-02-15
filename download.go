@@ -82,10 +82,15 @@ func (j *Job) broadcast(evt SSEEvent) {
 	}
 }
 
+const maxOutputLines = 500
+
 func (j *Job) appendLine(line string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.Output = append(j.Output, line)
+	if len(j.Output) > maxOutputLines {
+		j.Output = append(j.Output[:0], j.Output[len(j.Output)-maxOutputLines:]...)
+	}
 
 	// Check for progress
 	if m := progressRegex.FindStringSubmatch(line); m != nil {

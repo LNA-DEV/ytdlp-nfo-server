@@ -30,8 +30,11 @@ type persistedState struct {
 func jobToPersisted(j *Job) persistedJob {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	output := make([]string, len(j.Output))
-	copy(output, j.Output)
+	var output []string
+	if j.Status != StatusCompleted && j.Status != StatusFailed {
+		output = make([]string, len(j.Output))
+		copy(output, j.Output)
+	}
 	return persistedJob{
 		ID:         j.ID,
 		URL:        j.URL,
