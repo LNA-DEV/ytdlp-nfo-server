@@ -334,8 +334,13 @@ func (m *DownloadManager) jobExists(id string) bool {
 
 // runDownload orchestrates download attempts with retry and exponential backoff.
 func (m *DownloadManager) runDownload(job *Job) {
+	holdsSlot := true
 	defer m.shutdownWg.Done()
-	defer m.startNextQueued()
+	defer func() {
+		if holdsSlot {
+			m.startNextQueued()
+		}
+	}()
 
 	for {
 		if !m.jobExists(job.ID) {
@@ -404,6 +409,10 @@ func (m *DownloadManager) runDownload(job *Job) {
 		job.broadcast(SSEEvent{Type: "status", Data: string(StatusRetrying)})
 		job.mu.Unlock()
 
+		// Release concurrency slot during backoff so other queued jobs can run
+		holdsSlot = false
+		m.startNextQueued()
+
 		m.mu.RLock()
 		m.saveState()
 		m.mu.RUnlock()
@@ -419,6 +428,23 @@ func (m *DownloadManager) runDownload(job *Job) {
 		}
 
 		if !m.jobExists(job.ID) {
+			return
+		}
+
+		// Re-acquire a concurrency slot before retrying
+		m.mu.Lock()
+		if m.running < m.maxConcurrent {
+			m.running++
+			holdsSlot = true
+			m.mu.Unlock()
+		} else {
+			// Re-queue at end; slot will be picked up by startNextQueued
+			job.mu.Lock()
+			job.Status = StatusQueued
+			job.mu.Unlock()
+			m.queue = append(m.queue, job.ID)
+			m.saveState()
+			m.mu.Unlock()
 			return
 		}
 	}
