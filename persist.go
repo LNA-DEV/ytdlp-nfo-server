@@ -61,13 +61,13 @@ func persistedToJob(p persistedJob) *Job {
 	}
 }
 
-// saveState writes the current state to jobs.json atomically.
-// Must be called with m.mu held (at least RLock).
-func (m *DownloadManager) saveState() {
+// executeSave writes the current state to jobs.json atomically.
+func (m *DownloadManager) executeSave() {
 	if m.dataDir == "" {
 		return
 	}
 
+	m.mu.RLock()
 	state := persistedState{
 		NextID: m.nextID,
 		Jobs:   make([]persistedJob, 0, len(m.jobs)),
@@ -75,8 +75,9 @@ func (m *DownloadManager) saveState() {
 	for _, j := range m.jobs {
 		state.Jobs = append(state.Jobs, jobToPersisted(j))
 	}
+	m.mu.RUnlock()
 
-	data, err := json.MarshalIndent(state, "", "  ")
+	data, err := json.Marshal(state)
 	if err != nil {
 		log.Printf("persist: failed to marshal state: %v", err)
 		return
@@ -91,6 +92,22 @@ func (m *DownloadManager) saveState() {
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		log.Printf("persist: failed to rename: %v", err)
+	}
+}
+
+// scheduleSave debounces state persistence with a 500ms coalescing timer.
+func (m *DownloadManager) scheduleSave() {
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
+	if m.saveDebounce == nil {
+		m.saveDebounce = time.AfterFunc(500*time.Millisecond, func() {
+			m.saveMu.Lock()
+			m.saveDebounce = nil
+			m.saveMu.Unlock()
+			m.executeSave()
+		})
+	} else {
+		m.saveDebounce.Reset(500 * time.Millisecond)
 	}
 }
 

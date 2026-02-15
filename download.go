@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -125,6 +126,8 @@ type DownloadManager struct {
 	queue         []string
 	shutdownCtx   context.Context
 	shutdownWg    sync.WaitGroup
+	saveDebounce  *time.Timer
+	saveMu        sync.Mutex
 }
 
 func NewDownloadManager(ctx context.Context, dir string, maxConcurrent int, maxRetries int, dataDir string) *DownloadManager {
@@ -173,13 +176,13 @@ func (m *DownloadManager) StartDownload(url string) (*Job, error) {
 	if m.running < m.maxConcurrent {
 		job.Status = StatusPending
 		m.running++
-		m.saveState()
+		m.scheduleSave()
 		m.shutdownWg.Add(1)
 		go m.runDownload(job)
 	} else {
 		job.Status = StatusQueued
 		m.queue = append(m.queue, id)
-		m.saveState()
+		m.scheduleSave()
 	}
 
 	return job, nil
@@ -199,14 +202,9 @@ func (m *DownloadManager) ListJobs() []*Job {
 	for _, j := range m.jobs {
 		jobs = append(jobs, j)
 	}
-	// Sort newest first
-	for i := 0; i < len(jobs); i++ {
-		for j := i + 1; j < len(jobs); j++ {
-			if jobs[j].CreatedAt.After(jobs[i].CreatedAt) {
-				jobs[i], jobs[j] = jobs[j], jobs[i]
-			}
-		}
-	}
+	sort.Slice(jobs, func(i, j int) bool {
+		return jobs[j].CreatedAt.Before(jobs[i].CreatedAt)
+	})
 	return jobs
 }
 
@@ -235,14 +233,14 @@ func (m *DownloadManager) RetryJob(id string) (*Job, error) {
 		job.Status = StatusPending
 		m.running++
 		job.mu.Unlock()
-		m.saveState()
+		m.scheduleSave()
 		m.shutdownWg.Add(1)
 		go m.runDownload(job)
 	} else {
 		job.Status = StatusQueued
 		m.queue = append(m.queue, id)
 		job.mu.Unlock()
-		m.saveState()
+		m.scheduleSave()
 	}
 
 	return job, nil
@@ -275,7 +273,7 @@ func (m *DownloadManager) DeleteJob(id string) error {
 
 	job.closeSubscribers()
 	delete(m.jobs, id)
-	m.saveState()
+	m.scheduleSave()
 	return nil
 }
 
@@ -296,7 +294,7 @@ func (m *DownloadManager) DeleteAllJobs() {
 	m.jobs = make(map[string]*Job)
 	m.queue = nil
 	m.running = 0
-	m.saveState()
+	m.scheduleSave()
 }
 
 // startNextQueued decrements running count and starts the next queued job.
@@ -348,9 +346,7 @@ func (m *DownloadManager) runDownload(job *Job) {
 		}
 
 		job.broadcastStatus(StatusRunning)
-		m.mu.RLock()
-		m.saveState()
-		m.mu.RUnlock()
+		m.scheduleSave()
 
 		err := m.executeDownload(job)
 
@@ -366,9 +362,7 @@ func (m *DownloadManager) runDownload(job *Job) {
 			job.Progress = 100
 			job.mu.Unlock()
 			job.closeSubscribers()
-			m.mu.RLock()
-			m.saveState()
-			m.mu.RUnlock()
+			m.scheduleSave()
 			return
 		}
 
@@ -391,9 +385,7 @@ func (m *DownloadManager) runDownload(job *Job) {
 			job.DoneAt = &now
 			job.mu.Unlock()
 			job.closeSubscribers()
-			m.mu.RLock()
-			m.saveState()
-			m.mu.RUnlock()
+			m.scheduleSave()
 			return
 		}
 
@@ -413,9 +405,7 @@ func (m *DownloadManager) runDownload(job *Job) {
 		holdsSlot = false
 		m.startNextQueued()
 
-		m.mu.RLock()
-		m.saveState()
-		m.mu.RUnlock()
+		m.scheduleSave()
 
 		job.appendLine(fmt.Sprintf("--- Retry %d/%d in %s ---", attempt, maxRetries, backoff))
 
@@ -443,7 +433,7 @@ func (m *DownloadManager) runDownload(job *Job) {
 			job.Status = StatusQueued
 			job.mu.Unlock()
 			m.queue = append(m.queue, job.ID)
-			m.saveState()
+			m.scheduleSave()
 			m.mu.Unlock()
 			return
 		}
@@ -514,7 +504,11 @@ func (m *DownloadManager) executeDownload(job *Job) error {
 // Shutdown waits for all running downloads to finish and saves final state.
 func (m *DownloadManager) Shutdown() {
 	m.shutdownWg.Wait()
-	m.mu.RLock()
-	m.saveState()
-	m.mu.RUnlock()
+	m.saveMu.Lock()
+	if m.saveDebounce != nil {
+		m.saveDebounce.Stop()
+		m.saveDebounce = nil
+	}
+	m.saveMu.Unlock()
+	m.executeSave()
 }

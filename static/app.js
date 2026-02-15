@@ -15,6 +15,10 @@ const modalActions = document.getElementById('modal-actions');
 
 const jobs = new Map();
 const eventSources = new Map();
+const jobLines = new Map();
+const pendingOutputUpdates = new Set();
+const pendingProgress = new Map();
+let tabActive = 0, tabFailed = 0;
 
 // --- Modal helpers ---
 
@@ -87,16 +91,23 @@ tabBtns.forEach(btn => {
   });
 });
 
-function updateTabCounts() {
-  let active = 0, failed = 0;
-  for (const job of jobs.values()) {
-    if (job.status === 'failed') failed++;
-    else active++;
+function renderTabCounts() {
+  activeCount.textContent = tabActive || '';
+  failedCount.textContent = tabFailed || '';
+  activeEmpty.style.display = tabActive === 0 ? '' : 'none';
+  failedEmpty.style.display = tabFailed === 0 ? '' : 'none';
+}
+
+function adjustTabCounts(oldStatus, newStatus) {
+  if (oldStatus) {
+    if (oldStatus === 'failed') tabFailed--;
+    else tabActive--;
   }
-  activeCount.textContent = active || '';
-  failedCount.textContent = failed || '';
-  activeEmpty.style.display = active === 0 ? '' : 'none';
-  failedEmpty.style.display = failed === 0 ? '' : 'none';
+  if (newStatus) {
+    if (newStatus === 'failed') tabFailed++;
+    else tabActive++;
+  }
+  renderTabCounts();
 }
 
 // --- Submit ---
@@ -137,11 +148,11 @@ async function submitDownload() {
 
 function addJobCard(job) {
   if (jobs.has(job.id)) {
-    // Update existing entry
+    const oldStatus = jobs.get(job.id).status;
     jobs.set(job.id, { ...jobs.get(job.id), ...job });
     placeCard(job.id);
     updateBadge(job.id, job.status);
-    updateTabCounts();
+    if (oldStatus !== job.status) adjustTabCounts(oldStatus, job.status);
     return;
   }
   jobs.set(job.id, job);
@@ -217,7 +228,7 @@ function addJobCard(job) {
   }
 
   placeCard(job.id, card);
-  updateTabCounts();
+  adjustTabCounts(null, job.status);
 }
 
 function placeCard(id, card) {
@@ -252,28 +263,51 @@ function streamJob(id) {
   eventSources.set(id, es);
   const pre = document.getElementById('output-' + id);
 
+  jobLines.set(id, []);
+
   es.onmessage = (e) => {
     if (pre) {
-      pre.textContent += e.data + '\n';
-      pre.parentElement.scrollTop = pre.parentElement.scrollHeight;
+      let lines = jobLines.get(id);
+      if (!lines) { lines = []; jobLines.set(id, lines); }
+      lines.push(e.data);
+      if (!pendingOutputUpdates.has(id)) {
+        pendingOutputUpdates.add(id);
+        requestAnimationFrame(() => {
+          pendingOutputUpdates.delete(id);
+          const l = jobLines.get(id);
+          if (l && pre) {
+            pre.textContent = l.join('\n') + '\n';
+            pre.parentElement.scrollTop = pre.parentElement.scrollHeight;
+          }
+        });
+      }
     }
   };
 
   es.addEventListener('progress', (e) => {
     const pct = parseFloat(e.data);
-    const bar = document.getElementById('progress-' + id);
-    if (bar && !isNaN(pct)) {
-      bar.style.width = pct + '%';
+    if (!isNaN(pct)) {
+      const hadPending = pendingProgress.has(id);
+      pendingProgress.set(id, pct);
+      if (!hadPending) {
+        requestAnimationFrame(() => {
+          const p = pendingProgress.get(id);
+          pendingProgress.delete(id);
+          const bar = document.getElementById('progress-' + id);
+          if (bar && p !== undefined) bar.style.width = p + '%';
+        });
+      }
     }
   });
 
   es.addEventListener('status', (e) => {
     const status = e.data;
     const job = jobs.get(id);
+    const oldStatus = job ? job.status : null;
     if (job) job.status = status;
     updateBadge(id, status);
     placeCard(id);
-    updateTabCounts();
+    if (oldStatus !== status) adjustTabCounts(oldStatus, status);
 
     const retryBtn = document.getElementById('retry-' + id);
     if (retryBtn) {
@@ -284,10 +318,11 @@ function streamJob(id) {
   es.addEventListener('done', (e) => {
     const status = e.data;
     const job = jobs.get(id);
+    const oldStatus = job ? job.status : null;
     if (job) job.status = status;
     updateBadge(id, status);
     placeCard(id);
-    updateTabCounts();
+    if (oldStatus !== status) adjustTabCounts(oldStatus, status);
 
     const retryBtn = document.getElementById('retry-' + id);
     if (retryBtn) {
@@ -300,11 +335,17 @@ function streamJob(id) {
       if (bar) bar.style.width = '100%';
     }
 
+    jobLines.delete(id);
+    pendingOutputUpdates.delete(id);
+    pendingProgress.delete(id);
     es.close();
     eventSources.delete(id);
   });
 
   es.onerror = () => {
+    jobLines.delete(id);
+    pendingOutputUpdates.delete(id);
+    pendingProgress.delete(id);
     es.close();
     eventSources.delete(id);
   };
@@ -334,12 +375,14 @@ async function retryJob(id) {
       return;
     }
 
+    const oldStatus = (jobs.get(id) || {}).status;
     const job = await resp.json();
     jobs.set(id, { ...jobs.get(id), ...job });
 
     // Clear output and error
     const pre = document.getElementById('output-' + id);
     if (pre) pre.textContent = '';
+    jobLines.delete(id);
     const errDiv = document.getElementById('error-' + id);
     if (errDiv) errDiv.remove();
 
@@ -356,7 +399,7 @@ async function retryJob(id) {
     if (card) card.querySelector('.job-output').classList.add('open');
 
     placeCard(id);
-    updateTabCounts();
+    if (oldStatus !== job.status) adjustTabCounts(oldStatus, job.status);
 
     // Reconnect SSE if not queued
     if (job.status !== 'queued') {
@@ -379,13 +422,17 @@ async function deleteJob(id) {
       eventSources.get(id).close();
       eventSources.delete(id);
     }
+    jobLines.delete(id);
+    pendingOutputUpdates.delete(id);
+    pendingProgress.delete(id);
 
     // Remove card from DOM
     const card = document.getElementById('job-' + id);
     if (card) card.remove();
 
+    const oldStatus = (jobs.get(id) || {}).status;
     jobs.delete(id);
-    updateTabCounts();
+    adjustTabCounts(oldStatus, null);
   } catch (e) {
     // ignore
   }
@@ -403,6 +450,9 @@ async function deleteAllJobs() {
       es.close();
     }
     eventSources.clear();
+    jobLines.clear();
+    pendingOutputUpdates.clear();
+    pendingProgress.clear();
 
     // Remove all job cards
     for (const [id] of jobs) {
@@ -410,7 +460,9 @@ async function deleteAllJobs() {
       if (card) card.remove();
     }
     jobs.clear();
-    updateTabCounts();
+    tabActive = 0;
+    tabFailed = 0;
+    renderTabCounts();
   } catch (e) {
     // ignore
   }
