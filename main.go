@@ -50,6 +50,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/download", handleSubmit(mgr))
+	mux.HandleFunc("POST /api/download/bulk", handleBulkSubmit(mgr))
 	mux.HandleFunc("GET /api/jobs", handleListJobs(mgr))
 	mux.HandleFunc("GET /api/jobs/{id}", handleJobStatus(mgr))
 	mux.HandleFunc("GET /api/jobs/{id}/stream", handleJobStream(mgr))

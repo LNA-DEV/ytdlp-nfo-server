@@ -96,6 +96,63 @@ func handleSubmit(mgr *DownloadManager) http.HandlerFunc {
 	}
 }
 
+type bulkDownloadRequest struct {
+	URLs []string `json:"urls"`
+}
+
+type bulkResultItem struct {
+	URL    string     `json:"url"`
+	Status string     `json:"status"`
+	Job    *jobSummary `json:"job,omitempty"`
+	Error  string     `json:"error,omitempty"`
+}
+
+type bulkDownloadResponse struct {
+	Created    int              `json:"created"`
+	Duplicates int              `json:"duplicates"`
+	Errors     int              `json:"errors"`
+	Results    []bulkResultItem `json:"results"`
+}
+
+func handleBulkSubmit(mgr *DownloadManager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req bulkDownloadRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+			return
+		}
+		if len(req.URLs) > 500 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "maximum 500 URLs allowed"})
+			return
+		}
+
+		bulkResults := mgr.StartBulkDownload(req.URLs)
+
+		resp := bulkDownloadResponse{
+			Results: make([]bulkResultItem, 0, len(bulkResults)),
+		}
+		for _, br := range bulkResults {
+			item := bulkResultItem{URL: br.URL}
+			if br.IsDup {
+				item.Status = "duplicate"
+				resp.Duplicates++
+			} else if br.Error != "" {
+				item.Status = "error"
+				item.Error = br.Error
+				resp.Errors++
+			} else {
+				item.Status = "created"
+				s := toSummary(br.Job)
+				item.Job = &s
+				resp.Created++
+			}
+			resp.Results = append(resp.Results, item)
+		}
+
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
 func handleListJobs(mgr *DownloadManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		jobs := mgr.ListJobs()

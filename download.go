@@ -193,6 +193,75 @@ func (m *DownloadManager) StartDownload(url string) (*Job, error) {
 	return job, nil
 }
 
+type BulkResult struct {
+	URL   string
+	Job   *Job
+	Error string
+	IsDup bool
+}
+
+func (m *DownloadManager) StartBulkDownload(urls []string) []BulkResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Build set of active (non-completed) URLs for O(1) duplicate checking
+	activeURLs := make(map[string]bool)
+	for _, j := range m.jobs {
+		j.mu.Lock()
+		s := j.Status
+		j.mu.Unlock()
+		if s != StatusCompleted {
+			activeURLs[j.URL] = true
+		}
+	}
+
+	shutdownErr := m.shutdownCtx.Err()
+
+	var results []BulkResult
+	for _, raw := range urls {
+		url := strings.TrimSpace(raw)
+		if url == "" {
+			continue
+		}
+
+		if activeURLs[url] {
+			results = append(results, BulkResult{URL: url, IsDup: true})
+			continue
+		}
+
+		if shutdownErr != nil {
+			results = append(results, BulkResult{URL: url, Error: "server is shutting down"})
+			continue
+		}
+
+		m.nextID++
+		id := fmt.Sprintf("%d", m.nextID)
+		job := &Job{
+			ID:         id,
+			URL:        url,
+			CreatedAt:  time.Now(),
+			MaxRetries: m.maxRetries,
+		}
+		m.jobs[id] = job
+
+		if m.running < m.maxConcurrent {
+			job.Status = StatusPending
+			m.running++
+			m.shutdownWg.Add(1)
+			go m.runDownload(job)
+		} else {
+			job.Status = StatusQueued
+			m.queue = append(m.queue, id)
+		}
+
+		activeURLs[url] = true
+		results = append(results, BulkResult{URL: url, Job: job})
+	}
+
+	m.scheduleSave()
+	return results
+}
+
 func (m *DownloadManager) GetJob(id string) (*Job, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

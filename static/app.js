@@ -524,4 +524,103 @@ async function loadJobOutput(id) {
   }
 }
 
+// --- Bulk Import ---
+
+const bulkOverlay = document.getElementById('bulk-modal-overlay');
+const bulkTextarea = document.getElementById('bulk-textarea');
+const bulkUrlCount = document.getElementById('bulk-url-count');
+const bulkResults = document.getElementById('bulk-results');
+const bulkImportBtn = document.getElementById('bulk-import-btn');
+const bulkCancelBtn = document.getElementById('bulk-cancel-btn');
+
+function parseBulkURLs() {
+  return bulkTextarea.value.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+}
+
+function openBulkModal() {
+  bulkTextarea.value = '';
+  bulkUrlCount.textContent = '0 URLs';
+  bulkUrlCount.classList.remove('over-limit');
+  bulkResults.classList.remove('visible');
+  bulkResults.innerHTML = '';
+  bulkImportBtn.style.display = '';
+  bulkImportBtn.disabled = false;
+  bulkCancelBtn.textContent = 'Cancel';
+  bulkOverlay.classList.add('open');
+  bulkTextarea.focus();
+}
+
+function closeBulkModal() {
+  bulkOverlay.classList.remove('open');
+}
+
+bulkOverlay.addEventListener('click', (e) => {
+  if (e.target === bulkOverlay) closeBulkModal();
+});
+
+bulkTextarea.addEventListener('input', () => {
+  const count = parseBulkURLs().length;
+  bulkUrlCount.textContent = count + ' URL' + (count !== 1 ? 's' : '');
+  if (count > 500) {
+    bulkUrlCount.classList.add('over-limit');
+  } else {
+    bulkUrlCount.classList.remove('over-limit');
+  }
+});
+
+async function submitBulkDownload() {
+  const urls = parseBulkURLs();
+  if (urls.length === 0) return;
+  if (urls.length > 500) {
+    showAlert('Maximum 500 URLs allowed. You have ' + urls.length + '.');
+    return;
+  }
+
+  bulkImportBtn.disabled = true;
+  try {
+    const resp = await fetch('/api/download/bulk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({urls})
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      showAlert(err.error || 'Bulk import failed');
+      bulkImportBtn.disabled = false;
+      return;
+    }
+
+    const data = await resp.json();
+
+    // Show summary
+    let summary = '';
+    if (data.created > 0) summary += '<span class="created">' + data.created + ' created</span>';
+    if (data.duplicates > 0) summary += (summary ? ', ' : '') + '<span class="skipped">' + data.duplicates + ' skipped (duplicate)</span>';
+    if (data.errors > 0) summary += (summary ? ', ' : '') + '<span class="errored">' + data.errors + ' failed</span>';
+    bulkResults.innerHTML = summary;
+    bulkResults.classList.add('visible');
+
+    // Add job cards in reverse so newest appear at top
+    const created = data.results.filter(r => r.status === 'created' && r.job);
+    for (let i = created.length - 1; i >= 0; i--) {
+      addJobCard(created[i].job);
+    }
+
+    // Stream non-queued jobs
+    let streaming = 0;
+    for (const r of created) {
+      if (r.job && r.job.status !== 'queued') {
+        streamJob(r.job.id);
+        streaming++;
+      }
+    }
+
+    // Hide Import, rename Cancel to Close
+    bulkImportBtn.style.display = 'none';
+    bulkCancelBtn.textContent = 'Close';
+  } catch (e) {
+    bulkImportBtn.disabled = false;
+  }
+}
+
 loadJobs();

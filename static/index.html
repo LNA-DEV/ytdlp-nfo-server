@@ -13,6 +13,7 @@
   <div class="input-row">
     <input type="text" id="url-input" placeholder="Paste video or playlist URL..." autofocus>
     <button id="dl-btn" onclick="submitDownload()">Download</button>
+    <button id="bulk-btn" onclick="openBulkModal()">Bulk</button>
   </div>
 
   <div class="tabs">
@@ -38,6 +39,20 @@
   <div class="modal">
     <div class="modal-body" id="modal-message"></div>
     <div class="modal-actions" id="modal-actions"></div>
+  </div>
+</div>
+
+<div id="bulk-modal-overlay" class="modal-overlay">
+  <div class="modal bulk-modal">
+    <h2 class="bulk-title">Bulk Import</h2>
+    <p class="bulk-subtitle">Paste one URL per line (max 500)</p>
+    <textarea id="bulk-textarea" rows="12" placeholder="https://example.com/video1&#10;https://example.com/video2&#10;..."></textarea>
+    <div class="bulk-url-count" id="bulk-url-count">0 URLs</div>
+    <div class="bulk-results" id="bulk-results"></div>
+    <div class="modal-actions">
+      <button class="modal-btn modal-btn-cancel" id="bulk-cancel-btn" onclick="closeBulkModal()">Cancel</button>
+      <button class="modal-btn modal-btn-primary" id="bulk-import-btn" onclick="submitBulkDownload()">Import</button>
+    </div>
   </div>
 </div>
 
