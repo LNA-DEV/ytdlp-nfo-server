@@ -25,3 +25,6 @@ download/
 
 # Data
 data/
+
+# Browser addon build output
+browser-addon/dist/
