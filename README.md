@@ -42,6 +42,7 @@ A web server wrapping [ytdlp-nfo](https://github.com/lna-dev/ytdlp-nfo) with a q
 - Automatic retries with exponential backoff
 - Job state persistence across restarts
 - Duplicate URL detection
+- Optional password protection
 
 ## Project Structure
 
@@ -65,6 +66,7 @@ services:
       - PORT=8080
       - DOWNLOAD_DIR=/downloads
       - DATA_DIR=/data
+      - PASSWORD=changeme
     restart: unless-stopped
 
 volumes:
@@ -85,6 +87,7 @@ docker compose up -d
 | `MAX_CONCURRENT` | `3`           | Max parallel downloads                                 |
 | `MAX_RETRIES`    | `3`           | Max retry attempts per job                             |
 | `YTDLP_CHANNEL`  | `stable`      | yt-dlp version channel (`stable`, `master`, `nightly`) |
+| `PASSWORD`       |               | Optional password to protect the web UI                |
 
 ## License
 
