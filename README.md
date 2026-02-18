@@ -27,6 +27,7 @@ A web server wrapping [ytdlp-nfo](https://github.com/lna-dev/ytdlp-nfo) with a q
 <a href="https://github.com/lna-dev/ytdlp-nfo-server/issues">Report Bug</a>
 ·
 <a href="https://github.com/lna-dev/ytdlp-nfo-server/issues">Request Feature</a>
+
   </p>
 </div>
 
@@ -42,6 +43,10 @@ A web server wrapping [ytdlp-nfo](https://github.com/lna-dev/ytdlp-nfo) with a q
 - Job state persistence across restarts
 - Duplicate URL detection
 
+## Project Structure
+
+The server code lives in the [`server/`](server/) directory. Docker Compose files and the Dockerfile are also located there.
+
 ## Usage
 
 ### Docker Compose
@@ -51,14 +56,19 @@ services:
   ytdlp-nfo-server:
     image: ghcr.io/lna-dev/ytdlp-nfo-server:latest
     ports:
-      - 8080:8080
+      - "8080:8080"
     volumes:
       - ./download:/downloads
       - ./data:/data
+      - pip-cache:/root/.cache/pip
     environment:
-      - MAX_CONCURRENT=3
-      - MAX_RETRIES=3
+      - PORT=8080
+      - DOWNLOAD_DIR=/downloads
+      - DATA_DIR=/data
     restart: unless-stopped
+
+volumes:
+  pip-cache:
 ```
 
 ```bash
@@ -67,20 +77,21 @@ docker compose up -d
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `8080` | Server port |
-| `DOWNLOAD_DIR` | `./downloads` | Download destination |
-| `DATA_DIR` | | Job state persistence directory |
-| `MAX_CONCURRENT` | `3` | Max parallel downloads |
-| `MAX_RETRIES` | `3` | Max retry attempts per job |
-| `YTDLP_CHANNEL` | `stable` | yt-dlp version channel (`stable`, `master`, `nightly`) |
+| Variable         | Default       | Description                                            |
+| ---------------- | ------------- | ------------------------------------------------------ |
+| `PORT`           | `8080`        | Server port                                            |
+| `DOWNLOAD_DIR`   | `./downloads` | Download destination                                   |
+| `DATA_DIR`       |               | Job state persistence directory                        |
+| `MAX_CONCURRENT` | `3`           | Max parallel downloads                                 |
+| `MAX_RETRIES`    | `3`           | Max retry attempts per job                             |
+| `YTDLP_CHANNEL`  | `stable`      | yt-dlp version channel (`stable`, `master`, `nightly`) |
 
 ## License
 
 MIT
 
 <!-- MARKDOWN LINKS & IMAGES -->
+
 [contributors-shield]: https://img.shields.io/github/contributors/lna-dev/ytdlp-nfo-server.svg?style=for-the-badge
 [contributors-url]: https://github.com/lna-dev/ytdlp-nfo-server/graphs/contributors
 [forks-shield]: https://img.shields.io/github/forks/lna-dev/ytdlp-nfo-server.svg?style=for-the-badge
