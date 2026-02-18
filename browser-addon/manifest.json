@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "ytdlp-nfo Server",
+  "version": "1.0.0",
+  "description": "Send the current tab URL to your ytdlp-nfo server with one click.",
+  "permissions": ["activeTab", "storage"],
+  "host_permissions": ["*://*/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "ytdlp-nfo-server@addon",
+      "strict_min_version": "109.0"
+    }
+  },
+  "data_collection_permissions": {
+    "data_collected": false
+  }
+}
