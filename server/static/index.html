@@ -56,6 +56,15 @@
   </div>
 </div>
 
+<div id="auth-overlay" class="auth-overlay">
+  <div class="auth-box">
+    <h2>Login Required</h2>
+    <input type="password" id="auth-password" placeholder="Password" autofocus>
+    <button id="auth-login-btn" onclick="tryLogin()">Login</button>
+    <div class="auth-error" id="auth-error"></div>
+  </div>
+</div>
+
 <script src="app.js"></script>
 </body>
 </html>

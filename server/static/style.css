@@ -385,3 +385,68 @@ h1 {
 .bulk-results .created { color: #4ade80; }
 .bulk-results .skipped { color: #e0e000; }
 .bulk-results .errored { color: #f87171; }
+
+/* Auth overlay */
+.auth-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.auth-overlay.open { display: flex; }
+
+.auth-box {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 2rem;
+  width: 320px;
+  text-align: center;
+}
+
+.auth-box h2 {
+  color: #fff;
+  font-size: 1.2rem;
+  margin-bottom: 1.25rem;
+}
+
+.auth-box input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #0f0f0f;
+  color: #e0e0e0;
+  font-size: 0.95rem;
+  outline: none;
+  margin-bottom: 0.75rem;
+  transition: border-color 0.2s;
+}
+
+.auth-box input:focus { border-color: #4a9eff; }
+
+.auth-box button {
+  width: 100%;
+  padding: 0.75rem;
+  border: none;
+  border-radius: 6px;
+  background: #4a9eff;
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.auth-box button:hover { background: #3a8eef; }
+
+.auth-error {
+  color: #f87171;
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+  min-height: 1.2em;
+}

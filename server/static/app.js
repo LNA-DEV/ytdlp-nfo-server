@@ -1,3 +1,65 @@
+// --- Auth ---
+
+let authToken = sessionStorage.getItem('authToken') || '';
+
+function authFetch(url, opts = {}) {
+  if (authToken) {
+    opts.headers = opts.headers || {};
+    opts.headers['Authorization'] = 'Bearer ' + authToken;
+  }
+  return fetch(url, opts).then(resp => {
+    if (resp.status === 401) {
+      sessionStorage.removeItem('authToken');
+      authToken = '';
+      document.getElementById('auth-overlay').classList.add('open');
+    }
+    return resp;
+  });
+}
+
+async function checkAuth() {
+  try {
+    const resp = await authFetch('/api/auth');
+    if (resp.status === 401) return;
+  } catch {
+    // server unreachable, proceed anyway
+  }
+  loadJobs();
+}
+
+async function tryLogin() {
+  const input = document.getElementById('auth-password');
+  const errorEl = document.getElementById('auth-error');
+  const pw = input.value;
+  if (!pw) return;
+
+  try {
+    const resp = await fetch('/api/auth', {
+      headers: { 'Authorization': 'Bearer ' + pw }
+    });
+    if (resp.ok) {
+      authToken = pw;
+      sessionStorage.setItem('authToken', pw);
+      errorEl.textContent = '';
+      document.getElementById('auth-overlay').classList.remove('open');
+      loadJobs();
+    } else {
+      errorEl.textContent = 'Wrong password.';
+    }
+  } catch {
+    errorEl.textContent = 'Could not reach server.';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const authInput = document.getElementById('auth-password');
+  if (authInput) {
+    authInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') tryLogin();
+    });
+  }
+});
+
 const activeList = document.getElementById('active-jobs');
 const failedList = document.getElementById('failed-jobs');
 const activeEmpty = document.getElementById('active-empty');
@@ -122,7 +184,7 @@ async function submitDownload() {
 
   dlBtn.disabled = true;
   try {
-    const resp = await fetch('/api/download', {
+    const resp = await authFetch('/api/download', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({url})
@@ -267,7 +329,9 @@ function streamJob(id) {
     eventSources.delete(id);
   }
 
-  const es = new EventSource('/api/jobs/' + id + '/stream');
+  let streamUrl = '/api/jobs/' + id + '/stream';
+  if (authToken) streamUrl += '?token=' + encodeURIComponent(authToken);
+  const es = new EventSource(streamUrl);
   eventSources.set(id, es);
   const pre = document.getElementById('output-' + id);
 
@@ -380,7 +444,7 @@ async function retryJob(id) {
   if (retryBtn) retryBtn.disabled = true;
 
   try {
-    const resp = await fetch('/api/jobs/' + id + '/retry', { method: 'POST' });
+    const resp = await authFetch('/api/jobs/' + id + '/retry', { method: 'POST' });
     if (!resp.ok) {
       const err = await resp.json();
       showAlert(err.error || 'Failed to retry');
@@ -427,7 +491,7 @@ async function retryJob(id) {
 
 async function deleteJob(id) {
   try {
-    const resp = await fetch('/api/jobs/' + id, { method: 'DELETE' });
+    const resp = await authFetch('/api/jobs/' + id, { method: 'DELETE' });
     if (!resp.ok) return;
 
     // Close SSE if active
@@ -455,7 +519,7 @@ async function deleteAllJobs() {
   if (!(await showConfirm('Delete all jobs? This cannot be undone.'))) return;
 
   try {
-    const resp = await fetch('/api/jobs', { method: 'DELETE' });
+    const resp = await authFetch('/api/jobs', { method: 'DELETE' });
     if (!resp.ok) return;
 
     // Close all SSE connections
@@ -493,7 +557,7 @@ function formatTime(iso) {
 
 async function loadJobs() {
   try {
-    const resp = await fetch('/api/jobs');
+    const resp = await authFetch('/api/jobs');
     if (!resp.ok) return;
     const list = await resp.json();
     // list is newest-first, reverse to prepend in correct order
@@ -510,7 +574,7 @@ async function loadJobs() {
 
 async function loadJobOutput(id) {
   try {
-    const resp = await fetch('/api/jobs/' + id);
+    const resp = await authFetch('/api/jobs/' + id);
     if (!resp.ok) return;
     const job = await resp.json();
     const pre = document.getElementById('output-' + id);
@@ -578,7 +642,7 @@ async function submitBulkDownload() {
 
   bulkImportBtn.disabled = true;
   try {
-    const resp = await fetch('/api/download/bulk', {
+    const resp = await authFetch('/api/download/bulk', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({urls})
@@ -623,4 +687,4 @@ async function submitBulkDownload() {
   }
 }
 
-loadJobs();
+checkAuth();

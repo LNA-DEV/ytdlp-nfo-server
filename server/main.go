@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
+	"encoding/json"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -23,10 +26,37 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+func authMiddleware(next http.Handler, password string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if password == "" || !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		token := ""
+		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+			token = strings.TrimPrefix(auth, "Bearer ")
+		}
+		if token == "" {
+			token = r.URL.Query().Get("token")
+		}
+
+		if subtle.ConstantTimeCompare([]byte(token), []byte(password)) != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	port := getEnv("PORT", "8080")
 	downloadDir := getEnv("DOWNLOAD_DIR", "./downloads")
 	dataDir := getEnv("DATA_DIR", "")
+	password := getEnv("PASSWORD", "")
 
 	maxConcurrent := 3
 	if v := os.Getenv("MAX_CONCURRENT"); v != "" {
@@ -57,6 +87,7 @@ func main() {
 	mux.HandleFunc("POST /api/jobs/{id}/retry", handleRetryJob(mgr))
 	mux.HandleFunc("DELETE /api/jobs/{id}", handleDeleteJob(mgr))
 	mux.HandleFunc("DELETE /api/jobs", handleDeleteAllJobs(mgr))
+	mux.HandleFunc("GET /api/auth", handleAuth())
 
 	staticSub, err := fs.Sub(staticFiles, "static")
 	if err != nil {
@@ -66,7 +97,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    ":" + port,
-		Handler: mux,
+		Handler: authMiddleware(mux, password),
 	}
 
 	sigCh := make(chan os.Signal, 1)

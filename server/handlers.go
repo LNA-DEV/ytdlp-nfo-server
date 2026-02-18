@@ -74,6 +74,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+func handleAuth() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
+	}
+}
+
 func handleSubmit(mgr *DownloadManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req downloadRequest
