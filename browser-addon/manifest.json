@@ -21,10 +21,10 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "ytdlp-nfo-server@addon",
-      "strict_min_version": "109.0"
+      "strict_min_version": "109.0",
+      "data_collection_permissions": {
+        "data_collected": false
+      }
     }
-  },
-  "data_collection_permissions": {
-    "data_collected": false
   }
 }
