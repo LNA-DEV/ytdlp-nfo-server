@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
-	"strconv"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -124,6 +127,7 @@ type DownloadManager struct {
 	jobs          map[string]*Job
 	nextID        int
 	downloadDir   string
+	outputDir     string
 	dataDir       string
 	maxConcurrent int
 	maxRetries    int
@@ -135,10 +139,11 @@ type DownloadManager struct {
 	saveMu        sync.Mutex
 }
 
-func NewDownloadManager(ctx context.Context, dir string, maxConcurrent int, maxRetries int, dataDir string) *DownloadManager {
+func NewDownloadManager(ctx context.Context, dir string, maxConcurrent int, maxRetries int, dataDir string, outputDir string) *DownloadManager {
 	m := &DownloadManager{
 		jobs:          make(map[string]*Job),
 		downloadDir:   dir,
+		outputDir:     outputDir,
 		dataDir:       dataDir,
 		maxConcurrent: maxConcurrent,
 		maxRetries:    maxRetries,
@@ -422,6 +427,7 @@ func (m *DownloadManager) runDownload(job *Job) {
 		job.broadcastStatus(StatusRunning)
 		m.scheduleSave()
 
+		startTime := time.Now()
 		err := m.executeDownload(job)
 
 		if !m.jobExists(job.ID) {
@@ -429,6 +435,13 @@ func (m *DownloadManager) runDownload(job *Job) {
 		}
 
 		if err == nil {
+			if m.outputDir != "" {
+				if moveErr := m.moveNewFiles(job, startTime); moveErr != nil {
+					log.Printf("move failed for job %s: %v", job.ID, moveErr)
+					job.appendLine(fmt.Sprintf("Move to output dir failed: %v", moveErr))
+				}
+			}
+
 			now := time.Now()
 			job.mu.Lock()
 			job.Status = StatusCompleted
@@ -573,6 +586,139 @@ func (m *DownloadManager) executeDownload(job *Job) error {
 	}
 
 	return cmd.Wait()
+}
+
+// moveNewFiles moves files created/modified after startTime from downloadDir to outputDir.
+// Uses a staging directory for atomicity so media servers never see partial files.
+func (m *DownloadManager) moveNewFiles(job *Job, startTime time.Time) error {
+	if m.outputDir == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(m.outputDir, 0755); err != nil {
+		return fmt.Errorf("create output dir: %v", err)
+	}
+
+	newFiles, err := m.findNewFiles(startTime)
+	if err != nil {
+		return fmt.Errorf("scan for new files: %v", err)
+	}
+	if len(newFiles) == 0 {
+		return nil
+	}
+
+	// Stage inside outputDir so final rename is same-filesystem and atomic
+	stagingDir := filepath.Join(m.outputDir, fmt.Sprintf(".moving-%s", job.ID))
+	if err := os.MkdirAll(stagingDir, 0755); err != nil {
+		return fmt.Errorf("create staging dir: %v", err)
+	}
+	defer os.RemoveAll(stagingDir)
+
+	// Copy files to staging, preserving relative paths
+	for _, relPath := range newFiles {
+		src := filepath.Join(m.downloadDir, relPath)
+		dst := filepath.Join(stagingDir, relPath)
+
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return fmt.Errorf("create dir for %s: %v", relPath, err)
+		}
+		if err := copyFile(src, dst); err != nil {
+			return fmt.Errorf("copy %s: %v", relPath, err)
+		}
+	}
+
+	// Atomically move top-level entries from staging to final location
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		return fmt.Errorf("read staging dir: %v", err)
+	}
+	for _, entry := range entries {
+		src := filepath.Join(stagingDir, entry.Name())
+		dst := filepath.Join(m.outputDir, entry.Name())
+		os.RemoveAll(dst) // remove existing to allow update
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("move %s to output: %v", entry.Name(), err)
+		}
+	}
+
+	// Remove originals from downloadDir
+	topLevel := make(map[string]bool)
+	for _, relPath := range newFiles {
+		parts := strings.SplitN(relPath, string(filepath.Separator), 2)
+		topLevel[parts[0]] = true
+	}
+	for name := range topLevel {
+		os.RemoveAll(filepath.Join(m.downloadDir, name))
+	}
+
+	return nil
+}
+
+// findNewFiles returns relative paths of non-hidden files in downloadDir
+// that were modified at or after startTime.
+func (m *DownloadManager) findNewFiles(startTime time.Time) ([]string, error) {
+	var result []string
+	err := filepath.WalkDir(m.downloadDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, err := filepath.Rel(m.downloadDir, path)
+		if err != nil {
+			return err
+		}
+		if relPath == "." {
+			return nil
+		}
+
+		// Skip hidden files/dirs at root level (.ytdlp-archive.txt, .moving-*)
+		top := strings.SplitN(relPath, string(filepath.Separator), 2)[0]
+		if strings.HasPrefix(top, ".") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !info.ModTime().Before(startTime) {
+			result = append(result, relPath)
+		}
+		return nil
+	})
+	return result, err
+}
+
+// copyFile copies a single file from src to dst, preserving permissions.
+func copyFile(src, dst string) error {
+	sf, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sf.Close()
+
+	info, err := sf.Stat()
+	if err != nil {
+		return err
+	}
+
+	df, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer df.Close()
+
+	if _, err := io.Copy(df, sf); err != nil {
+		return err
+	}
+	return df.Close()
 }
 
 // Shutdown waits for all running downloads to finish and saves final state.

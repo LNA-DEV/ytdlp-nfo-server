@@ -28,3 +28,4 @@ data/
 
 # Browser addon build output
 browser-addon/dist/
+server/media/*

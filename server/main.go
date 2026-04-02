@@ -56,6 +56,7 @@ func main() {
 	port := getEnv("PORT", "8080")
 	downloadDir := getEnv("DOWNLOAD_DIR", "./downloads")
 	dataDir := getEnv("DATA_DIR", "")
+	outputDir := getEnv("OUTPUT_DIR", "")
 	password := getEnv("PASSWORD", "")
 
 	maxConcurrent := 3
@@ -75,7 +76,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mgr := NewDownloadManager(ctx, downloadDir, maxConcurrent, maxRetries, dataDir)
+	mgr := NewDownloadManager(ctx, downloadDir, maxConcurrent, maxRetries, dataDir, outputDir)
 
 	mux := http.NewServeMux()
 
@@ -104,6 +105,9 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	go func() {
+		if outputDir != "" {
+			log.Printf("Move-on-complete enabled -> %s", outputDir)
+		}
 		log.Printf("Starting server on :%s (downloads -> %s, maxConcurrent: %d)", port, downloadDir, maxConcurrent)
 		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatalf("HTTP server error: %v", err)
