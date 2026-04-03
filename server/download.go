@@ -576,8 +576,12 @@ func (m *DownloadManager) executeDownload(job *Job, jobDir string) error {
 	job.cancel = cancel
 	job.mu.Unlock()
 
-	archivePath := filepath.Join(m.downloadDir, ".ytdlp-archive.txt")
-	cmd := exec.CommandContext(ctx, "ytdlp-nfo", "--download-archive", archivePath, job.URL)
+	// Symlink the shared archive into the job directory so ytdlp-nfo's
+	// hardcoded relative "download_archive": ".ytdlp-archive.txt" resolves correctly.
+	archiveTarget := filepath.Join(m.downloadDir, ".ytdlp-archive.txt")
+	archiveLink := filepath.Join(jobDir, ".ytdlp-archive.txt")
+	os.Symlink(archiveTarget, archiveLink)
+	cmd := exec.CommandContext(ctx, "ytdlp-nfo", job.URL)
 	cmd.Dir = jobDir
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
 
