@@ -350,6 +350,9 @@ func (m *DownloadManager) DeleteJob(id string) error {
 	}
 	job.mu.Unlock()
 
+	// Clean up job download directory
+	os.RemoveAll(filepath.Join(m.downloadDir, id))
+
 	job.closeSubscribers()
 	delete(m.jobs, id)
 	m.scheduleSave()
@@ -368,6 +371,7 @@ func (m *DownloadManager) DeleteAllJobs() {
 		}
 		job.mu.Unlock()
 		job.closeSubscribers()
+		os.RemoveAll(filepath.Join(m.downloadDir, job.ID))
 	}
 
 	m.jobs = make(map[string]*Job)
@@ -427,8 +431,8 @@ func (m *DownloadManager) runDownload(job *Job) {
 		job.broadcastStatus(StatusRunning)
 		m.scheduleSave()
 
-		startTime := time.Now()
-		err := m.executeDownload(job)
+		jobDir := filepath.Join(m.downloadDir, job.ID)
+		err := m.executeDownload(job, jobDir)
 
 		if !m.jobExists(job.ID) {
 			return
@@ -436,9 +440,13 @@ func (m *DownloadManager) runDownload(job *Job) {
 
 		if err == nil {
 			if m.outputDir != "" {
-				if moveErr := m.moveNewFiles(job, startTime); moveErr != nil {
+				if moveErr := m.moveNewFiles(job, jobDir); moveErr != nil {
 					log.Printf("move failed for job %s: %v", job.ID, moveErr)
 					job.appendLine(fmt.Sprintf("Move to output dir failed: %v", moveErr))
+				}
+			} else {
+				if moveErr := flattenJobDir(jobDir, m.downloadDir); moveErr != nil {
+					log.Printf("flatten failed for job %s: %v", job.ID, moveErr)
 				}
 			}
 
@@ -472,6 +480,7 @@ func (m *DownloadManager) runDownload(job *Job) {
 			job.DoneAt = &now
 			job.mu.Unlock()
 			job.closeSubscribers()
+			os.RemoveAll(jobDir)
 			m.scheduleSave()
 			return
 		}
@@ -551,9 +560,9 @@ func scanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 }
 
 // executeDownload runs the actual subprocess and returns an error if it fails.
-func (m *DownloadManager) executeDownload(job *Job) error {
-	if err := os.MkdirAll(m.downloadDir, 0755); err != nil {
-		return fmt.Errorf("failed to create download dir: %v", err)
+func (m *DownloadManager) executeDownload(job *Job, jobDir string) error {
+	if err := os.MkdirAll(jobDir, 0755); err != nil {
+		return fmt.Errorf("failed to create job dir: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(m.shutdownCtx)
@@ -561,8 +570,9 @@ func (m *DownloadManager) executeDownload(job *Job) error {
 	job.cancel = cancel
 	job.mu.Unlock()
 
-	cmd := exec.CommandContext(ctx, "ytdlp-nfo", job.URL)
-	cmd.Dir = m.downloadDir
+	archivePath := filepath.Join(m.downloadDir, ".ytdlp-archive.txt")
+	cmd := exec.CommandContext(ctx, "ytdlp-nfo", "--download-archive", archivePath, job.URL)
+	cmd.Dir = jobDir
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
 
 	stdout, err := cmd.StdoutPipe()
@@ -588,9 +598,9 @@ func (m *DownloadManager) executeDownload(job *Job) error {
 	return cmd.Wait()
 }
 
-// moveNewFiles moves files created/modified after startTime from downloadDir to outputDir.
+// moveNewFiles moves completed files from a job's directory to outputDir.
 // Uses a staging directory for atomicity so media servers never see partial files.
-func (m *DownloadManager) moveNewFiles(job *Job, startTime time.Time) error {
+func (m *DownloadManager) moveNewFiles(job *Job, jobDir string) error {
 	if m.outputDir == "" {
 		return nil
 	}
@@ -599,11 +609,11 @@ func (m *DownloadManager) moveNewFiles(job *Job, startTime time.Time) error {
 		return fmt.Errorf("create output dir: %v", err)
 	}
 
-	newFiles, err := m.findNewFiles(startTime)
+	files, err := collectFiles(jobDir)
 	if err != nil {
-		return fmt.Errorf("scan for new files: %v", err)
+		return fmt.Errorf("scan job dir: %v", err)
 	}
-	if len(newFiles) == 0 {
+	if len(files) == 0 {
 		return nil
 	}
 
@@ -615,8 +625,8 @@ func (m *DownloadManager) moveNewFiles(job *Job, startTime time.Time) error {
 	defer os.RemoveAll(stagingDir)
 
 	// Copy files to staging, preserving relative paths
-	for _, relPath := range newFiles {
-		src := filepath.Join(m.downloadDir, relPath)
+	for _, relPath := range files {
+		src := filepath.Join(jobDir, relPath)
 		dst := filepath.Join(stagingDir, relPath)
 
 		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
@@ -641,29 +651,21 @@ func (m *DownloadManager) moveNewFiles(job *Job, startTime time.Time) error {
 		}
 	}
 
-	// Remove originals from downloadDir
-	topLevel := make(map[string]bool)
-	for _, relPath := range newFiles {
-		parts := strings.SplitN(relPath, string(filepath.Separator), 2)
-		topLevel[parts[0]] = true
-	}
-	for name := range topLevel {
-		os.RemoveAll(filepath.Join(m.downloadDir, name))
-	}
+	// Remove the entire job directory
+	os.RemoveAll(jobDir)
 
 	return nil
 }
 
-// findNewFiles returns relative paths of non-hidden files in downloadDir
-// that were modified at or after startTime.
-func (m *DownloadManager) findNewFiles(startTime time.Time) ([]string, error) {
+// collectFiles returns relative paths of all non-hidden files in dir.
+func collectFiles(dir string) ([]string, error) {
 	var result []string
-	err := filepath.WalkDir(m.downloadDir, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
-		relPath, err := filepath.Rel(m.downloadDir, path)
+		relPath, err := filepath.Rel(dir, path)
 		if err != nil {
 			return err
 		}
@@ -671,9 +673,8 @@ func (m *DownloadManager) findNewFiles(startTime time.Time) ([]string, error) {
 			return nil
 		}
 
-		// Skip hidden files/dirs at root level (.ytdlp-archive.txt, .moving-*)
-		top := strings.SplitN(relPath, string(filepath.Separator), 2)[0]
-		if strings.HasPrefix(top, ".") {
+		// Skip hidden files/dirs
+		if strings.HasPrefix(filepath.Base(relPath), ".") {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -684,16 +685,30 @@ func (m *DownloadManager) findNewFiles(startTime time.Time) ([]string, error) {
 			return nil
 		}
 
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if !info.ModTime().Before(startTime) {
-			result = append(result, relPath)
-		}
+		result = append(result, relPath)
 		return nil
 	})
 	return result, err
+}
+
+// flattenJobDir moves top-level entries from jobDir to parentDir and removes jobDir.
+func flattenJobDir(jobDir, parentDir string) error {
+	entries, err := os.ReadDir(jobDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		src := filepath.Join(jobDir, entry.Name())
+		dst := filepath.Join(parentDir, entry.Name())
+		os.RemoveAll(dst)
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("move %s: %v", entry.Name(), err)
+		}
+	}
+	return os.RemoveAll(jobDir)
 }
 
 // copyFile copies a single file from src to dst, preserving permissions.
