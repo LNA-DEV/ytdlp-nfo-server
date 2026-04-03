@@ -439,23 +439,29 @@ func (m *DownloadManager) runDownload(job *Job) {
 		}
 
 		if err == nil {
+			var moveErr error
 			if m.outputDir != "" {
-				if moveErr := m.moveNewFiles(job, jobDir); moveErr != nil {
-					log.Printf("move failed for job %s: %v", job.ID, moveErr)
-					job.appendLine(fmt.Sprintf("Move to output dir failed: %v", moveErr))
-				}
+				moveErr = m.moveNewFiles(job, jobDir)
 			} else {
-				if moveErr := flattenJobDir(jobDir, m.downloadDir); moveErr != nil {
-					log.Printf("flatten failed for job %s: %v", job.ID, moveErr)
-				}
+				moveErr = flattenJobDir(jobDir, m.downloadDir)
 			}
 
 			now := time.Now()
-			job.mu.Lock()
-			job.Status = StatusCompleted
-			job.DoneAt = &now
-			job.Progress = 100
-			job.mu.Unlock()
+			if moveErr != nil {
+				log.Printf("move failed for job %s: %v", job.ID, moveErr)
+				job.appendLine(fmt.Sprintf("Move failed: %v", moveErr))
+				job.mu.Lock()
+				job.Status = StatusFailed
+				job.Error = fmt.Sprintf("download succeeded but file move failed: %v", moveErr)
+				job.DoneAt = &now
+				job.mu.Unlock()
+			} else {
+				job.mu.Lock()
+				job.Status = StatusCompleted
+				job.DoneAt = &now
+				job.Progress = 100
+				job.mu.Unlock()
+			}
 			job.closeSubscribers()
 			m.scheduleSave()
 			return
