@@ -11,4 +11,5 @@ case "$CHANNEL" in
     pip install -U yt-dlp || true
     ;;
 esac
+pip install -U git+https://github.com/LNA-DEV/ytdlp-nfo.git || true
 exec ytdlp-nfo-server
