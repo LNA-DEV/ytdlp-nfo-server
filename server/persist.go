@@ -10,16 +10,17 @@ import (
 )
 
 type persistedJob struct {
-	ID         string    `json:"id"`
-	URL        string    `json:"url"`
-	Status     JobStatus `json:"status"`
-	CreatedAt  time.Time `json:"createdAt"`
-	DoneAt     *time.Time `json:"doneAt,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	Progress   float64   `json:"progress"`
-	RetryCount int       `json:"retryCount"`
-	MaxRetries int       `json:"maxRetries"`
-	Output     []string  `json:"output,omitempty"`
+	ID         string          `json:"id"`
+	URL        string          `json:"url"`
+	Status     JobStatus       `json:"status"`
+	CreatedAt  time.Time       `json:"createdAt"`
+	DoneAt     *time.Time      `json:"doneAt,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Progress   float64         `json:"progress"`
+	RetryCount int             `json:"retryCount"`
+	MaxRetries int             `json:"maxRetries"`
+	Output     []string        `json:"output,omitempty"`
+	Options    DownloadOptions `json:"options"`
 }
 
 type persistedState struct {
@@ -46,10 +47,15 @@ func jobToPersisted(j *Job) persistedJob {
 		RetryCount: j.RetryCount,
 		MaxRetries: j.MaxRetries,
 		Output:     output,
+		Options:    j.Options,
 	}
 }
 
 func persistedToJob(p persistedJob) *Job {
+	opts := p.Options
+	if opts.Format == "" {
+		opts = DefaultOptions()
+	}
 	return &Job{
 		ID:         p.ID,
 		URL:        p.URL,
@@ -61,6 +67,7 @@ func persistedToJob(p persistedJob) *Job {
 		RetryCount: p.RetryCount,
 		MaxRetries: p.MaxRetries,
 		Output:     p.Output,
+		Options:    opts,
 	}
 }
 

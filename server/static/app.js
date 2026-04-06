@@ -172,6 +172,16 @@ function adjustTabCounts(oldStatus, newStatus) {
   renderTabCounts();
 }
 
+// --- Options ---
+
+function getOptions(prefix) {
+  return {
+    format: document.getElementById(prefix + '-format').value,
+    allAudio: document.getElementById(prefix + '-all-audio').checked,
+    subtitles: document.getElementById(prefix + '-subtitles').checked,
+  };
+}
+
 // --- Submit ---
 
 urlInput.addEventListener('keydown', (e) => {
@@ -187,7 +197,7 @@ async function submitDownload() {
     const resp = await authFetch('/api/download', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url})
+      body: JSON.stringify({url, ...getOptions('opt')})
     });
     if (!resp.ok) {
       const err = await resp.json();
@@ -645,7 +655,7 @@ async function submitBulkDownload() {
     const resp = await authFetch('/api/download/bulk', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({urls})
+      body: JSON.stringify({urls, ...getOptions('bulk-opt')})
     });
     if (!resp.ok) {
       const err = await resp.json();
@@ -688,3 +698,19 @@ async function submitBulkDownload() {
 }
 
 checkAuth();
+
+// --- Version ---
+
+async function loadVersion() {
+  try {
+    const resp = await authFetch('/api/version');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const parts = [];
+    if (data['ytdlp-nfo']) parts.push('ytdlp-nfo ' + data['ytdlp-nfo']);
+    if (data['yt-dlp']) parts.push('yt-dlp ' + data['yt-dlp']);
+    const el = document.getElementById('version-info');
+    if (el && parts.length) el.textContent = parts.join(' / ');
+  } catch {}
+}
+loadVersion();

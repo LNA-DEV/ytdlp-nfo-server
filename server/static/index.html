@@ -8,12 +8,32 @@
 </head>
 <body>
 <div class="container">
-  <h1>ytdlp-nfo Server</h1>
+  <div class="title-row">
+    <h1>ytdlp-nfo Server</h1>
+    <span class="version-info" id="version-info"></span>
+  </div>
 
   <div class="input-row">
     <input type="text" id="url-input" placeholder="Paste video or playlist URL..." autofocus>
     <button id="dl-btn" onclick="submitDownload()">Download</button>
     <button id="bulk-btn" onclick="openBulkModal()">Bulk</button>
+  </div>
+
+  <div class="options-row">
+    <label class="option">
+      <select id="opt-format">
+        <option value="mkv" selected>MKV</option>
+        <option value="mp4">MP4</option>
+      </select>
+    </label>
+    <label class="option">
+      <input type="checkbox" id="opt-all-audio" checked>
+      All Audio
+    </label>
+    <label class="option">
+      <input type="checkbox" id="opt-subtitles" checked>
+      All Subtitles
+    </label>
   </div>
 
   <div class="tabs">
@@ -46,6 +66,22 @@
   <div class="modal bulk-modal">
     <h2 class="bulk-title">Bulk Import</h2>
     <p class="bulk-subtitle">Paste one URL per line (max 500)</p>
+    <div class="options-row">
+      <label class="option">
+        <select id="bulk-opt-format">
+          <option value="mkv" selected>MKV</option>
+          <option value="mp4">MP4</option>
+        </select>
+      </label>
+      <label class="option">
+        <input type="checkbox" id="bulk-opt-all-audio" checked>
+        All Audio
+      </label>
+      <label class="option">
+        <input type="checkbox" id="bulk-opt-subtitles" checked>
+        All Subtitles
+      </label>
+    </div>
     <textarea id="bulk-textarea" rows="12" placeholder="https://example.com/video1&#10;https://example.com/video2&#10;..."></textarea>
     <div class="bulk-url-count" id="bulk-url-count">0 URLs</div>
     <div class="bulk-results" id="bulk-results"></div>

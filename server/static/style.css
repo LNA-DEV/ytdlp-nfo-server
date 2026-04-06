@@ -13,11 +13,22 @@ body {
   padding: 2rem 1rem;
 }
 
+.title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
 h1 {
   font-size: 1.5rem;
   font-weight: 600;
-  margin-bottom: 1.5rem;
   color: #fff;
+}
+
+.version-info {
+  font-size: 0.75rem;
+  color: #555;
 }
 
 .input-row {
@@ -57,6 +68,44 @@ h1 {
 
 .input-row button:hover { background: #3a8eef; }
 .input-row button:disabled { background: #333; cursor: not-allowed; }
+
+/* Options row */
+.options-row {
+  display: flex;
+  gap: 1.25rem;
+  margin-top: -1rem;
+  margin-bottom: 2rem;
+  align-items: center;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #aaa;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.option select {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #333;
+  border-radius: 4px;
+  background: #1a1a1a;
+  color: #e0e0e0;
+  font-size: 0.85rem;
+  outline: none;
+  cursor: pointer;
+}
+
+.option select:focus { border-color: #4a9eff; }
+
+.option input[type="checkbox"] {
+  accent-color: #4a9eff;
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
 
 /* Tabs */
 .tabs {
@@ -335,6 +384,11 @@ h1 {
 .bulk-subtitle {
   font-size: 0.85rem;
   color: #777;
+  margin-bottom: 0.75rem;
+}
+
+.bulk-modal .options-row {
+  margin-top: 0;
   margin-bottom: 1rem;
 }
 

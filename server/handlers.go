@@ -4,23 +4,42 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"strings"
 )
 
 type downloadRequest struct {
-	URL string `json:"url"`
+	URL       string `json:"url"`
+	Format    string `json:"format"`
+	AllAudio  *bool  `json:"allAudio"`
+	Subtitles *bool  `json:"subtitles"`
 }
 
 type jobSummary struct {
-	ID         string    `json:"id"`
-	URL        string    `json:"url"`
-	Status     JobStatus `json:"status"`
-	CreatedAt  string    `json:"createdAt"`
-	DoneAt     string    `json:"doneAt,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	Progress   float64   `json:"progress"`
-	RetryCount int       `json:"retryCount"`
-	MaxRetries int       `json:"maxRetries"`
+	ID         string          `json:"id"`
+	URL        string          `json:"url"`
+	Status     JobStatus       `json:"status"`
+	CreatedAt  string          `json:"createdAt"`
+	DoneAt     string          `json:"doneAt,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Progress   float64         `json:"progress"`
+	RetryCount int             `json:"retryCount"`
+	MaxRetries int             `json:"maxRetries"`
+	Options    DownloadOptions `json:"options"`
+}
+
+func parseOptions(format string, allAudio *bool, subtitles *bool) DownloadOptions {
+	opts := DefaultOptions()
+	if format == "mp4" {
+		opts.Format = "mp4"
+	}
+	if allAudio != nil {
+		opts.AllAudio = *allAudio
+	}
+	if subtitles != nil {
+		opts.Subtitles = *subtitles
+	}
+	return opts
 }
 
 type jobDetail struct {
@@ -40,6 +59,7 @@ func toSummary(j *Job) jobSummary {
 		Progress:   j.Progress,
 		RetryCount: j.RetryCount,
 		MaxRetries: j.MaxRetries,
+		Options:    j.Options,
 	}
 	if j.DoneAt != nil {
 		s.DoneAt = j.DoneAt.Format("2006-01-02T15:04:05Z")
@@ -59,6 +79,7 @@ func toDetail(j *Job) jobDetail {
 		Progress:   j.Progress,
 		RetryCount: j.RetryCount,
 		MaxRetries: j.MaxRetries,
+		Options:    j.Options,
 	}
 	if j.DoneAt != nil {
 		s.DoneAt = j.DoneAt.Format("2006-01-02T15:04:05Z")
@@ -80,6 +101,25 @@ func handleAuth() http.HandlerFunc {
 	}
 }
 
+func handleVersion() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		out, err := exec.Command("ytdlp-nfo", "--version").Output()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to get version: " + err.Error()})
+			return
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		result := make(map[string]string)
+		for _, line := range lines {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				result[parts[0]] = parts[1]
+			}
+		}
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
 func handleSubmit(mgr *DownloadManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req downloadRequest
@@ -93,7 +133,8 @@ func handleSubmit(mgr *DownloadManager) http.HandlerFunc {
 			return
 		}
 
-		job, err := mgr.StartDownload(req.URL)
+		opts := parseOptions(req.Format, req.AllAudio, req.Subtitles)
+		job, err := mgr.StartDownload(req.URL, opts)
 		if err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
@@ -103,7 +144,10 @@ func handleSubmit(mgr *DownloadManager) http.HandlerFunc {
 }
 
 type bulkDownloadRequest struct {
-	URLs []string `json:"urls"`
+	URLs      []string `json:"urls"`
+	Format    string   `json:"format"`
+	AllAudio  *bool    `json:"allAudio"`
+	Subtitles *bool    `json:"subtitles"`
 }
 
 type bulkResultItem struct {
@@ -132,7 +176,8 @@ func handleBulkSubmit(mgr *DownloadManager) http.HandlerFunc {
 			return
 		}
 
-		bulkResults := mgr.StartBulkDownload(req.URLs)
+		opts := parseOptions(req.Format, req.AllAudio, req.Subtitles)
+		bulkResults := mgr.StartBulkDownload(req.URLs, opts)
 
 		resp := bulkDownloadResponse{
 			Results: make([]bulkResultItem, 0, len(bulkResults)),

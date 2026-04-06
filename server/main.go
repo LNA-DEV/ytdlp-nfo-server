@@ -89,6 +89,7 @@ func main() {
 	mux.HandleFunc("DELETE /api/jobs/{id}", handleDeleteJob(mgr))
 	mux.HandleFunc("DELETE /api/jobs", handleDeleteAllJobs(mgr))
 	mux.HandleFunc("GET /api/auth", handleAuth())
+	mux.HandleFunc("GET /api/version", handleVersion())
 
 	staticSub, err := fs.Sub(staticFiles, "static")
 	if err != nil {

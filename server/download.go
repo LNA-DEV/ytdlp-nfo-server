@@ -17,6 +17,23 @@ import (
 	"time"
 )
 
+type DownloadOptions struct {
+	Format    string `json:"format"`    // "mkv" or "mp4"
+	AllAudio  bool   `json:"allAudio"`  // download all audio tracks
+	Subtitles bool   `json:"subtitles"` // download all subtitles
+}
+
+func DefaultOptions() DownloadOptions {
+	return DownloadOptions{Format: "mkv", AllAudio: true, Subtitles: true}
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
 type JobStatus string
 
 const (
@@ -34,15 +51,16 @@ type SSEEvent struct {
 }
 
 type Job struct {
-	ID         string     `json:"id"`
-	URL        string     `json:"url"`
-	Status     JobStatus  `json:"status"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	DoneAt     *time.Time `json:"doneAt,omitempty"`
-	Error      string     `json:"error,omitempty"`
-	Progress   float64    `json:"progress"`
-	RetryCount int        `json:"retryCount"`
-	MaxRetries int        `json:"maxRetries"`
+	ID         string          `json:"id"`
+	URL        string          `json:"url"`
+	Status     JobStatus       `json:"status"`
+	CreatedAt  time.Time       `json:"createdAt"`
+	DoneAt     *time.Time      `json:"doneAt,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Progress   float64         `json:"progress"`
+	RetryCount int             `json:"retryCount"`
+	MaxRetries int             `json:"maxRetries"`
+	Options    DownloadOptions `json:"options"`
 
 	mu          sync.Mutex
 	Output      []string `json:"-"`
@@ -156,7 +174,7 @@ func NewDownloadManager(ctx context.Context, dir string, maxConcurrent int, maxR
 	return m
 }
 
-func (m *DownloadManager) StartDownload(url string) (*Job, error) {
+func (m *DownloadManager) StartDownload(url string, opts DownloadOptions) (*Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -180,6 +198,7 @@ func (m *DownloadManager) StartDownload(url string) (*Job, error) {
 		URL:        url,
 		CreatedAt:  time.Now(),
 		MaxRetries: m.maxRetries,
+		Options:    opts,
 	}
 	m.jobs[id] = job
 
@@ -205,7 +224,7 @@ type BulkResult struct {
 	IsDup bool
 }
 
-func (m *DownloadManager) StartBulkDownload(urls []string) []BulkResult {
+func (m *DownloadManager) StartBulkDownload(urls []string, opts DownloadOptions) []BulkResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -246,6 +265,7 @@ func (m *DownloadManager) StartBulkDownload(urls []string) []BulkResult {
 			URL:        url,
 			CreatedAt:  time.Now(),
 			MaxRetries: m.maxRetries,
+			Options:    opts,
 		}
 		m.jobs[id] = job
 
@@ -583,7 +603,12 @@ func (m *DownloadManager) executeDownload(job *Job, jobDir string) error {
 	os.Symlink(archiveTarget, archiveLink)
 	cmd := exec.CommandContext(ctx, "ytdlp-nfo", job.URL)
 	cmd.Dir = jobDir
-	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
+	cmd.Env = append(os.Environ(),
+		"PYTHONUNBUFFERED=1",
+		"YTDLP_NFO_FORMAT="+job.Options.Format,
+		"YTDLP_NFO_ALL_AUDIO="+boolStr(job.Options.AllAudio),
+		"YTDLP_NFO_SUBTITLES="+boolStr(job.Options.Subtitles),
+	)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -647,7 +672,7 @@ func (m *DownloadManager) moveNewFiles(job *Job, jobDir string) error {
 		}
 	}
 
-	// Atomically move top-level entries from staging to final location
+	// Move entries from staging to final location, merging directories
 	entries, err := os.ReadDir(stagingDir)
 	if err != nil {
 		return fmt.Errorf("read staging dir: %v", err)
@@ -655,8 +680,7 @@ func (m *DownloadManager) moveNewFiles(job *Job, jobDir string) error {
 	for _, entry := range entries {
 		src := filepath.Join(stagingDir, entry.Name())
 		dst := filepath.Join(m.outputDir, entry.Name())
-		os.RemoveAll(dst) // remove existing to allow update
-		if err := os.Rename(src, dst); err != nil {
+		if err := mergeMove(src, dst); err != nil {
 			return fmt.Errorf("move %s to output: %v", entry.Name(), err)
 		}
 	}
@@ -713,12 +737,39 @@ func flattenJobDir(jobDir, parentDir string) error {
 		}
 		src := filepath.Join(jobDir, entry.Name())
 		dst := filepath.Join(parentDir, entry.Name())
-		os.RemoveAll(dst)
-		if err := os.Rename(src, dst); err != nil {
+		if err := mergeMove(src, dst); err != nil {
 			return fmt.Errorf("move %s: %v", entry.Name(), err)
 		}
 	}
 	return os.RemoveAll(jobDir)
+}
+
+// mergeMove moves src to dst, recursively merging if both are directories.
+// For files or new directories, it replaces the destination.
+func mergeMove(src, dst string) error {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	dstInfo, dstErr := os.Stat(dst)
+	if srcInfo.IsDir() && dstErr == nil && dstInfo.IsDir() {
+		// Both are directories — merge children individually
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := mergeMove(
+				filepath.Join(src, entry.Name()),
+				filepath.Join(dst, entry.Name()),
+			); err != nil {
+				return err
+			}
+		}
+		return os.Remove(src)
+	}
+	os.RemoveAll(dst)
+	return os.Rename(src, dst)
 }
 
 // copyFile copies a single file from src to dst, preserving permissions.
