@@ -459,6 +459,14 @@ func (m *DownloadManager) runDownload(job *Job) {
 		}
 
 		if err == nil {
+			// Verify files were actually produced — ytdlp-nfo may exit 0
+			// even when all items failed (geo-restricted, etc.)
+			if produced, _ := collectFiles(jobDir); len(produced) == 0 {
+				err = fmt.Errorf("ytdlp-nfo exited successfully but produced no files")
+			}
+		}
+
+		if err == nil {
 			var moveErr error
 			if m.outputDir != "" {
 				moveErr = m.moveNewFiles(job, jobDir)
