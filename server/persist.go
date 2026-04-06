@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -143,6 +144,19 @@ func (m *DownloadManager) loadState() {
 	}
 
 	m.nextID = state.NextID
+
+	// Guard against stale nextID after a non-graceful shutdown:
+	// scan downloadDir for existing numbered directories and ensure
+	// nextID is higher than all of them.
+	if entries, err := os.ReadDir(m.downloadDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				if n, err := strconv.Atoi(e.Name()); err == nil && n >= m.nextID {
+					m.nextID = n + 1
+				}
+			}
+		}
+	}
 
 	// Separate terminal vs re-queueable jobs
 	var requeue []persistedJob
