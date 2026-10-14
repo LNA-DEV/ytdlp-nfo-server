@@ -1,0 +1,3 @@
+# NFO golden files must stay byte-exact: unicode.python.nfo contains a raw
+# CR from the Python reference output. Never convert their line endings.
+server/internal/nfo/testdata/*.nfo -text
