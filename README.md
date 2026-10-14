@@ -15,7 +15,7 @@
 
 ### ytdlp-nfo-server
 
-A web server wrapping [ytdlp-nfo](https://github.com/lna-dev/ytdlp-nfo) with a queue-based job system, real-time progress streaming, and a built-in web UI.
+A self-hosted download server for [yt-dlp](https://github.com/yt-dlp/yt-dlp) that builds a Jellyfin/Kodi-ready library: one folder per video with the media, `movie.nfo`, `folder.jpg` and subtitles. It comes with a web UI, a browser add-on and an API.
 
 <p align="center">
 
@@ -35,18 +35,17 @@ A web server wrapping [ytdlp-nfo](https://github.com/lna-dev/ytdlp-nfo) with a q
 
 ## Features
 
-- Web UI for submitting and monitoring downloads
-- Bulk import of up to 500 URLs at once
-- Configurable concurrent downloads with FIFO queue
-- Real-time progress streaming via Server-Sent Events
-- Automatic retries with exponential backoff
-- Job state persistence across restarts
-- Duplicate URL detection
-- Optional password protection
-
-## Project Structure
-
-The server code lives in the [`server/`](server/) directory. Docker Compose files and the Dockerfile are also located there.
+- **Library-safe downloads**: an item only appears in the library after it was downloaded, verified with `ffprobe` and fsynced; it is moved in with a single atomic rename. Nothing in the library is overwritten by a different video.
+- **Per-item tracking**: a playlist job has one item per video, each with its own state, retries and log. A failed video never affects the ones that already finished.
+- **Smart retries**: errors are classified (permanent, blocked, rate-limited, extractor broken, crash, transient). Permanent errors are not retried, backoff is capped at 15 minutes, and every failed attempt is explained in the log.
+- **yt-dlp version manager**: choose stable, nightly or master and a specific version in the UI, with SHA-256 verification, smoke test, auto-update and one-click rollback. Verified builds are bundled in the image, so it works offline on first start.
+- **Impersonation** (`curl_cffi`) per job, per site rule, and as an automatic one-time escalation when a site blocks access.
+- **Site rules** (impersonation, cookies, quality preset, concurrency, rate limit) and **cookie profiles**.
+- **Web UI** with Active, Queued, Completed and Failed tabs, live progress over one event stream, item details, live logs, settings and diagnostics.
+- **Extras**: thumbnails (detected by content, frame fallback), subtitles (live chat excluded), optional chapters, SponsorBlock chapters and embedded subtitles.
+- **Integrations**: Jellyfin library refresh, notifications (webhook, ntfy, Gotify, Discord), several named libraries.
+- **Security**: session cookies instead of passwords in URLs, revocable API tokens, login rate limiting, optional trusted proxy header.
+- SQLite persistence (CGO-free), per-job log files, `PUID`/`PGID`, multi-arch image (`linux/amd64`, `linux/arm64`).
 
 ## Usage
 
@@ -59,35 +58,111 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./download:/downloads
-      - ./data:/data
-      - pip-cache:/root/.cache/pip
+      - ./downloads:/downloads   # work files and the shared .ytdlp-archive.txt
+      - ./data:/data             # database, logs, cookies, installed yt-dlp versions
+      - /path/to/media:/media    # the library
     environment:
-      - PORT=8080
-      - DOWNLOAD_DIR=/downloads
-      - DATA_DIR=/data
+      - OUTPUT_DIR=/media
       - PASSWORD=changeme
+      - PUID=1000
+      - PGID=1000
     restart: unless-stopped
-
-volumes:
-  pip-cache:
 ```
 
 ```bash
 docker compose up -d
 ```
 
-### Environment Variables
+Open `http://localhost:8080`. Put `/downloads` and the library on the same filesystem if you can: finalizing is then a rename instead of a copy.
 
-| Variable         | Default       | Description                                            |
-| ---------------- | ------------- | ------------------------------------------------------ |
-| `PORT`           | `8080`        | Server port                                            |
-| `DOWNLOAD_DIR`   | `./downloads` | Download destination                                   |
-| `DATA_DIR`       |               | Job state persistence directory                        |
-| `MAX_CONCURRENT` | `3`           | Max parallel downloads                                 |
-| `MAX_RETRIES`    | `3`           | Max retry attempts per job                             |
-| `YTDLP_CHANNEL`  | `stable`      | yt-dlp version channel (`stable`, `master`, `nightly`) |
-| `PASSWORD`       |               | Optional password to protect the web UI                |
+### Environment variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `8080` | HTTP port |
+| `DATA_DIR` | `/data` | Database, job logs, cookie profiles, installed yt-dlp versions. Without it the server keeps everything in memory. |
+| `DOWNLOAD_DIR` | `/downloads` | Work directories (`.work/`) and the shared `.ytdlp-archive.txt` |
+| `OUTPUT_DIR` | *(empty)* | Library root. If empty, items are finalized into `DOWNLOAD_DIR`. |
+| `PASSWORD` | *(empty)* | Protects the UI and API. If set, it cannot be changed in the UI. |
+| `MAX_CONCURRENT` | `3` | Parallel jobs. Locks the setting in the UI when set. |
+| `MAX_RETRIES` | `3` | Retries for transient errors. Locks the setting in the UI when set. |
+| `YTDLP_CHANNEL` | *(empty)* | `stable`, `nightly` or `master`. Overrides and locks the channel. |
+| `PUID`, `PGID`, `UMASK` | `0`, `0`, *(unchanged)* | Run as this user/group so library files get the right owner |
+| `LIBRARIES` | *(empty)* | Additional libraries, e.g. `Kids=/media/kids;Courses=/media/courses` |
+| `JELLYFIN_URL`, `JELLYFIN_API_KEY` | *(empty)* | Refresh Jellyfin after each finished item (can also be set in the UI) |
+| `GITHUB_TOKEN` | *(empty)* | Optional, raises the GitHub API rate limit for listing yt-dlp releases |
+| `TRUSTED_PROXY_AUTH_HEADER` | *(empty)* | Treat requests with this header (e.g. `Remote-User` from Authelia/Authentik) as authenticated. Only use it behind a proxy that sets and strips the header. |
+| `YTDLP_PATH` | *(empty)* | Use this yt-dlp binary instead of the version manager |
+| `FFMPEG_PATH`, `FFPROBE_PATH`, `DENO_PATH` | from `PATH` | External tools |
+
+### Library layout
+
+New installs use `Title [id]/Title [id].ext`, which never collides. Installs upgraded from v1 keep the v1 layout (`Title/Title.ext`, plus a playlist folder); a *different* video with the same title then gets `Title (2)`. You can switch the layout or define your own template in **Settings → Naming**; existing folders are never renamed.
+
+```
+Playlist title/                     (only for playlists)
+  Title [id]/
+    Title [id].mkv
+    Title [id].en.vtt
+    folder.jpg
+    movie.nfo
+```
+
+### Upgrading from v1
+
+On the first start the server imports `DATA_DIR/jobs.json` (finished jobs become history, unfinished ones are queued again) and `DOWNLOAD_DIR/.ytdlp-archive.txt`. Backups of both files are kept next to them (`jobs.json.v1-backup`, `DATA_DIR/ytdlp-archive.v1-backup.txt`). The archive file keeps being updated, so the `ytdlp-nfo` CLI and other tools can still share it.
+
+v1 could record a video in the archive and then delete it together with a partly failed playlist. After upgrading, open **Archive → Check library**: it compares every archive entry with the library folders (`movie.nfo` and media file) and lists entries whose video is missing or incomplete. Selected entries can be removed from the archive and, where the URL is known, downloaded again. Library files are never changed.
+
+The image no longer installs anything at start: drop the `pip-cache` volume and the old `entrypoint.sh` customisations. Python and `ytdlp-nfo` are not needed anymore.
+
+### yt-dlp versions
+
+**Settings → yt-dlp** lists the releases of each channel. Installing downloads the official standalone build, verifies its SHA-256 against the release's `SHA2-256SUMS`, and runs a smoke test (`--version`, `--list-impersonate-targets` and optionally a simulated download). A version that fails the smoke test cannot be activated. Switching versions never affects running downloads.
+
+Auto-update can be set per channel (`off`, `notify`, `auto`); `auto` installs and activates a new version of the active channel only if its smoke test passes. New installs use **nightly** (recommended by yt-dlp), upgraded installs keep their channel. The image bundles verified stable and nightly builds from build time.
+
+When a site's support breaks in the active version, the server retries once with the latest nightly. Failed jobs also offer **Retry with latest nightly**.
+
+### Errors and retries
+
+| Class | Examples | Behaviour |
+| --- | --- | --- |
+| `permanent` | private, removed, DRM, geo-blocked, unsupported URL, rejected file extension | failed at once |
+| `auth_required` | login, age check, members-only, "confirm you're not a bot" | failed; retry with a cookie profile |
+| `blocked` | HTTP 403, anti-bot challenge | one retry with impersonation |
+| `rate_limited` | HTTP 429 | site cooldown (default 30 min), then retry |
+| `extractor_broken` | "Unable to extract …" | one retry with the latest nightly |
+| `crash` | Python traceback, killed | at most one retry |
+| `transient` | network errors, 5xx, failed verification | backoff `30 s × 2ⁿ`, max 15 min, up to `MAX_RETRIES` |
+
+A thumbnail or subtitle problem never fails a video; the item completes with a warning and can be repaired with **Re-run extras**.
+
+### Browser add-on
+
+The add-on in [`browser-addon/`](browser-addon/) sends the current tab, or any link via the context menu, to the server. Create an API token in **Settings → Security** and enter it in the add-on settings (the server password still works but is deprecated). The add-on also works with v1 servers.
+
+### API
+
+The UI uses `/api/v1` (jobs, events, settings, versions, sites, cookies, tokens, archive, system); see [`docs/overhaul-concept.md`](docs/overhaul-concept.md#9-api). Authenticate with `Authorization: Bearer <api token>`. The v1 routes (`POST /api/download`, `GET /api/jobs`, …) remain available. `GET /healthz` needs no authentication.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/jobs \
+  -H "Authorization: Bearer ytn_…" -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/watch?v=…", "options": {"preset": "compatible"}}'
+```
+
+## Development
+
+```bash
+cd server
+go build
+go vet ./...
+go test -race ./...
+docker build -t ytdlp-nfo-server .
+```
+
+The tests use a fake yt-dlp (`internal/testutil/fakeytdlp`) driven by scenario files, so they run without network access. `integrity_test.go` builds the server, kills it with `SIGKILL` at every pipeline step and checks that the library and archive stay consistent.
 
 ## License
 

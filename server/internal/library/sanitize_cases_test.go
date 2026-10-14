@@ -1,0 +1,36 @@
+package library
+
+// Generated from yt-dlp's sanitize_filename (yt_dlp.utils) with default
+// arguments. The only intended difference is leading-dot removal.
+var sanitizeCases = [][2]string{
+	{"abc", "abc"},
+	{"", ""},
+	{"a/b\\c", "a⧸b⧹c"},
+	{"What? Why: \"quotes\" <tags> |pipe| *star*", "What？ Why： ＂quotes＂ ＜tags＞ ｜pipe｜ ＊star＊"},
+	{"10:30 at 1:2:3 and a:b", "10_30 at 1_2_3 and a：b"},
+	{"line1\nline2", "line1 line2"},
+	{"\n\nstart", "start"},
+	{"end\n\n", "end"},
+	{"\n", "_"},
+	{"a\n\n\nb", "a b"},
+	{"tab\there", "tabhere"},
+	{"del\x7fx", "delx"},
+	{"  spaced  ", "  spaced  "},
+	{"-dash", "-dash"},
+	{"...dots", "dots"},
+	{"ünïcödé 日本語 🎉", "ünïcödé 日本語 🎉"},
+	{"a?b", "a？b"},
+	{"?", "？"},
+	{"??", "？？"},
+	{"a | b", "a ｜ b"},
+	{"___", "___"},
+	{"a_-_b", "a_-_b"},
+	{"x\n - \ny", "x  -  y"},
+	{"Episode 1/2: Title?", "Episode 1⧸2： Title？"},
+	{"% template %(title)s", "% template %(title)s"},
+	{"C:\\path", "C：⧹path"},
+	{"a\x00b", "ab"},
+	{"trailing \n", "trailing"},
+	{"\n - leading", "leading"},
+	{"mixed\n_\n-\n end", "mixed _ -  end"},
+}

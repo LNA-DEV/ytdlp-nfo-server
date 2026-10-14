@@ -20,10 +20,11 @@
     <div class="settings-row">
       <input type="text" id="server-url" placeholder="http://localhost:8080">
     </div>
-    <label for="server-password">Password (optional)</label>
+    <label for="server-token">API token (or password)</label>
     <div class="settings-row">
-      <input type="password" id="server-password" placeholder="Leave empty if not set">
+      <input type="password" id="server-token" placeholder="Leave empty if the server has no password">
     </div>
+    <p class="hint">Create a token in the web UI under Settings → Security.</p>
     <div class="settings-row">
       <button id="save-btn">Save</button>
     </div>
@@ -33,9 +34,20 @@
     <code id="tab-url"></code>
   </div>
 
+  <div class="options-row hidden" id="options-row">
+    <label>Preset
+      <select id="preset"><option value="">Default</option></select>
+    </label>
+    <label id="library-label" class="hidden">Library
+      <select id="library"><option value="">Default</option></select>
+    </label>
+  </div>
+
   <button class="submit-btn" id="submit-btn">Add to Server</button>
   <div class="status" id="status"></div>
+  <a class="job-link hidden" id="job-link" target="_blank" rel="noopener">Open in web UI</a>
 </div>
+<script src="common.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

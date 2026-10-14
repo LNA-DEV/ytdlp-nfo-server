@@ -25,7 +25,7 @@ jobs:
           cd browser-addon
           mkdir -p dist
           zip -r dist/ytdlp-nfo-server-addon-${{ github.ref_name }}.zip \
-            manifest.json popup.html popup.css popup.js icons/
+            manifest.json popup.html popup.css popup.js common.js background.js icons/
 
       - name: Upload release artifact
         uses: softprops/action-gh-release@v2

@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='utf-8'?>
+<movie>
+  <title>A normal video</title>
+  <originaltitle>A normal video</originaltitle>
+  <plot>Line one
+Line two &amp; &lt;three&gt;</plot>
+  <outline>Line one
+Line two &amp; &lt;three&gt;</outline>
+  <premiered>2024-03-15</premiered>
+  <year>2024</year>
+  <actor>
+    <name>Some Channel</name>
+    <type>Actor</type>
+  </actor><runtime>13</runtime>
+  <tag>tag1</tag>
+  <tag>tag &amp; two</tag>
+  <genre>Education</genre>
+  <uniqueid type="video.example" default="true">abc123</uniqueid>
+  <url>https://video.example/watch?v=abc123</url>
+</movie>

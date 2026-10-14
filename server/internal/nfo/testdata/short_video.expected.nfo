@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<movie>
+  <title>Short</title>
+  <originaltitle>Short</originaltitle>
+  <runtime>1</runtime>
+  <uniqueid type="unknown" default="true">s</uniqueid>
+</movie>

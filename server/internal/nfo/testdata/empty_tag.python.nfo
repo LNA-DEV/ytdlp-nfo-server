@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='utf-8'?>
+<movie>
+  <title>Tags</title>
+  <originaltitle>Tags</originaltitle>
+  <tag />
+  <tag>ok</tag>
+  <tag>5</tag>
+  <tag>1.5</tag>
+  <tag>True</tag>
+  <uniqueid type="unknown" default="true">et</uniqueid>
+</movie>

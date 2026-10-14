@@ -1,0 +1,21 @@
+{
+ "id": "abc123",
+ "title": "A normal video",
+ "fulltitle": "A normal video",
+ "description": "Line one\nLine two & <three>",
+ "uploader": "Some Channel",
+ "tags": [
+  "tag1",
+  "tag & two"
+ ],
+ "categories": [
+  "Education"
+ ],
+ "upload_date": "20240315",
+ "webpage_url": "https://video.example/watch?v=abc123",
+ "duration": 754,
+ "extractor": "Example",
+ "extractor_key": "Example",
+ "age_limit": 0,
+ "webpage_url_domain": "video.example"
+}

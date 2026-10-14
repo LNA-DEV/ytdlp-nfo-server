@@ -1,0 +1,7 @@
+data/
+download/
+downloads/
+media/
+ytdlp-nfo-server
+*.test
+.claude/

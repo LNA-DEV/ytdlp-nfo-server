@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='utf-8'?>
+<movie>
+  <title>Only title</title>
+  <originaltitle>Only title</originaltitle>
+  <uniqueid type="unknown" default="true">m1</uniqueid>
+</movie>

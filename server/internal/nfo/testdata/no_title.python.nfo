@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<movie>
+  <title>Full title only</title>
+  <originaltitle>Full title only</originaltitle>
+  <uniqueid type="unknown" default="true">nt</uniqueid>
+  <url>https://x.example/nt</url>
+</movie>

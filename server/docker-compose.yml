@@ -7,16 +7,16 @@ services:
       - ./download:/downloads
       - ./data:/data
       # - ./media:/media
-      - pip-cache:/root/.cache/pip
     environment:
       - DATA_DIR=/data
-      - MAX_CONCURRENT=3
-      - MAX_RETRIES=3
       # - OUTPUT_DIR=/media
-      # - PASSWORD=asdf
-      # - YTDLP_CHANNEL=stable
+      # - PASSWORD=changeme
+      # - MAX_CONCURRENT=3
+      # - MAX_RETRIES=3
+      # - YTDLP_CHANNEL=nightly
+      # - PUID=1000
+      # - PGID=1000
+      # - UMASK=022
+      # - JELLYFIN_URL=http://jellyfin:8096
+      # - JELLYFIN_API_KEY=...
     restart: unless-stopped
-
-volumes:
-  pip-cache:
-

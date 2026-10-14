@@ -1,10 +1,23 @@
 {
   "manifest_version": 3,
   "name": "ytdlp-nfo Server",
-  "version": "1.0.0",
-  "description": "Send the current tab URL to your ytdlp-nfo server with one click.",
-  "permissions": ["activeTab", "storage"],
-  "host_permissions": ["*://*/*"],
+  "version": "2.0.0",
+  "description": "Send the current tab or any link to your ytdlp-nfo server with one click.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "*://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": [
+      "common.js",
+      "background.js"
+    ]
+  },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -23,7 +36,9 @@
       "id": "ytdlp-nfo-server@addon",
       "strict_min_version": "140.0",
       "data_collection_permissions": {
-        "required": ["none"]
+        "required": [
+          "none"
+        ]
       }
     },
     "gecko_android": {

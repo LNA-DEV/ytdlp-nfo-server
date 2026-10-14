@@ -1,0 +1,307 @@
+// Package store persists jobs, items, the archive and settings in SQLite
+// (modernc.org/sqlite, CGO-free) with versioned schema migrations.
+package store
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"time"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+)
+
+// ErrNotFound is returned when a record does not exist.
+var ErrNotFound = errors.New("not found")
+
+// Store wraps the SQLite database.
+type Store struct {
+	db     *sql.DB
+	path   string
+	memory bool
+}
+
+// Open opens (and migrates) the database at path. An empty path opens a
+// private in-memory database.
+func Open(path string) (*Store, error) {
+	var dsn string
+	memory := path == ""
+	params := url.Values{}
+	params.Add("_pragma", "busy_timeout(10000)")
+	params.Add("_pragma", "foreign_keys(1)")
+	params.Add("_txlock", "immediate")
+	if memory {
+		b := make([]byte, 8)
+		_, _ = rand.Read(b)
+		params.Add("mode", "memory")
+		params.Add("cache", "shared")
+		dsn = "file:mem" + hex.EncodeToString(b) + "?" + params.Encode()
+	} else {
+		params.Add("_pragma", "journal_mode(WAL)")
+		// FULL: an archive record must survive a power loss once the item
+		// is in the library (invariant 4).
+		params.Add("_pragma", "synchronous(FULL)")
+		dsn = "file:" + path + "?" + params.Encode()
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	if memory {
+		db.SetMaxOpenConns(1)
+	} else {
+		db.SetMaxOpenConns(4)
+	}
+	db.SetConnMaxIdleTime(0)
+	s := &Store{db: db, path: path, memory: memory}
+	if err := s.migrate(context.Background()); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	return s, nil
+}
+
+// Close closes the database.
+func (s *Store) Close() error { return s.db.Close() }
+
+// Ping checks the connection.
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
+// InMemory reports whether the store is not persisted.
+func (s *Store) InMemory() bool { return s.memory }
+
+var migrations = []string{
+	// 1: initial schema
+	`
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE jobs (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	url TEXT NOT NULL,
+	norm_url TEXT NOT NULL DEFAULT '',
+	site TEXT NOT NULL DEFAULT '',
+	title TEXT NOT NULL DEFAULT '',
+	uploader TEXT NOT NULL DEFAULT '',
+	thumbnail TEXT NOT NULL DEFAULT '',
+	is_playlist INTEGER NOT NULL DEFAULT 0,
+	state TEXT NOT NULL,
+	requested TEXT NOT NULL DEFAULT '{}',
+	options TEXT NOT NULL DEFAULT '{}',
+	error TEXT NOT NULL DEFAULT '',
+	error_class TEXT NOT NULL DEFAULT '',
+	hint TEXT NOT NULL DEFAULT '',
+	attempts INTEGER NOT NULL DEFAULT 0,
+	retry TEXT NOT NULL DEFAULT '{}',
+	retry_at INTEGER,
+	queue_pos INTEGER NOT NULL DEFAULT 0,
+	ytdlp_version TEXT NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	started_at INTEGER,
+	finished_at INTEGER,
+	updated_at INTEGER NOT NULL,
+	legacy INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX jobs_state ON jobs(state);
+CREATE INDEX jobs_finished ON jobs(finished_at);
+CREATE INDEX jobs_norm_url ON jobs(norm_url);
+CREATE TABLE items (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+	idx INTEGER NOT NULL,
+	url TEXT NOT NULL DEFAULT '',
+	extractor TEXT NOT NULL DEFAULT '',
+	video_id TEXT NOT NULL DEFAULT '',
+	archive_key TEXT NOT NULL DEFAULT '',
+	title TEXT NOT NULL DEFAULT '',
+	playlist_title TEXT NOT NULL DEFAULT '',
+	state TEXT NOT NULL,
+	attempts INTEGER NOT NULL DEFAULT 0,
+	error TEXT NOT NULL DEFAULT '',
+	error_class TEXT NOT NULL DEFAULT '',
+	hint TEXT NOT NULL DEFAULT '',
+	retry TEXT NOT NULL DEFAULT '{}',
+	retry_at INTEGER,
+	warnings TEXT NOT NULL DEFAULT '[]',
+	library TEXT NOT NULL DEFAULT '',
+	final_path TEXT NOT NULL DEFAULT '',
+	files TEXT NOT NULL DEFAULT '[]',
+	size INTEGER NOT NULL DEFAULT 0,
+	duration REAL NOT NULL DEFAULT 0,
+	ytdlp_version TEXT NOT NULL DEFAULT '',
+	updated_at INTEGER NOT NULL,
+	finished_at INTEGER
+);
+CREATE INDEX items_job ON items(job_id, idx);
+CREATE INDEX items_key ON items(archive_key);
+CREATE INDEX items_state ON items(state);
+CREATE TABLE archive (
+	key TEXT PRIMARY KEY,
+	extractor TEXT NOT NULL,
+	video_id TEXT NOT NULL,
+	path TEXT NOT NULL DEFAULT '',
+	job_id INTEGER,
+	finalized_at INTEGER NOT NULL,
+	source TEXT NOT NULL DEFAULT 'server'
+);
+CREATE TABLE ytdlp_versions (
+	id TEXT PRIMARY KEY,
+	channel TEXT NOT NULL,
+	tag TEXT NOT NULL,
+	version TEXT NOT NULL DEFAULT '',
+	path TEXT NOT NULL,
+	dir TEXT NOT NULL,
+	asset TEXT NOT NULL DEFAULT '',
+	sha256 TEXT NOT NULL DEFAULT '',
+	bundled INTEGER NOT NULL DEFAULT 0,
+	pinned INTEGER NOT NULL DEFAULT 0,
+	smoke_ok INTEGER NOT NULL DEFAULT 0,
+	smoke_output TEXT NOT NULL DEFAULT '',
+	impersonate_targets TEXT NOT NULL DEFAULT '[]',
+	installed_at INTEGER NOT NULL
+);
+CREATE TABLE site_rules (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	position INTEGER NOT NULL,
+	data TEXT NOT NULL
+);
+CREATE TABLE cookie_profiles (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL UNIQUE,
+	filename TEXT NOT NULL,
+	size INTEGER NOT NULL,
+	created_at INTEGER NOT NULL
+);
+CREATE TABLE api_tokens (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	hash TEXT NOT NULL UNIQUE,
+	prefix TEXT NOT NULL,
+	created_at INTEGER NOT NULL,
+	last_used_at INTEGER
+);
+CREATE TABLE sessions (
+	hash TEXT PRIMARY KEY,
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL
+);
+`,
+}
+
+func (s *Store) migrate(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
+		return err
+	}
+	var v int
+	err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_version(version) VALUES (0)`); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
+	if v > len(migrations) {
+		return fmt.Errorf("database schema version %d is newer than this server supports (%d)", v, len(migrations))
+	}
+	for i := v; i < len(migrations); i++ {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_version SET version = ?`, i+1); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// --- helpers ---
+
+func ms(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UnixMilli()
+}
+
+func fromMs(n sql.NullInt64) time.Time {
+	if !n.Valid {
+		return time.Time{}
+	}
+	return time.UnixMilli(n.Int64)
+}
+
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// --- meta ---
+
+// GetMeta returns a meta value ("" if missing).
+func (s *Store) GetMeta(ctx context.Context, key string) (string, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+// SetMeta stores a meta value.
+func (s *Store) SetMeta(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+// --- settings ---
+
+// LoadSettings returns the stored settings, or ok=false if none exist yet.
+func (s *Store) LoadSettings(ctx context.Context) (config.Settings, bool, error) {
+	var raw string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'runtime'`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return config.Settings{}, false, nil
+	}
+	if err != nil {
+		return config.Settings{}, false, err
+	}
+	var st config.Settings
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		return config.Settings{}, false, fmt.Errorf("decode settings: %w", err)
+	}
+	st.Normalize()
+	return st, true, nil
+}
+
+// SaveSettings persists settings (without the computed Locked list).
+func (s *Store) SaveSettings(ctx context.Context, st config.Settings) error {
+	st.Locked = nil
+	_, err := s.db.ExecContext(ctx, `INSERT INTO settings(key, value) VALUES ('runtime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, mustJSON(st))
+	return err
+}
