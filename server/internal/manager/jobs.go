@@ -41,14 +41,20 @@ type BulkResult struct {
 }
 
 // SubmitBulk creates jobs for many URLs at once (max 500 enforced by API).
+// It runs a constant number of queries for the duplicate check and inserts
+// all jobs in one transaction, so a large import stays fast.
 func (m *Manager) SubmitBulk(ctx context.Context, urls []string, req config.OptionsRequest) []BulkResult {
 	m.submitMu.Lock()
 	defer m.submitMu.Unlock()
 	settings := m.Settings.Settings()
 	rules := m.siteRules()
+	open, err := m.Store.OpenNormURLs(ctx)
+	if err != nil {
+		return []BulkResult{{Err: err}}
+	}
+	cookieOK := map[string]bool{}
 	var results []BulkResult
 	var jobs []*store.Job
-	seen := map[string]bool{}
 	for _, raw := range urls {
 		u := strings.TrimSpace(raw)
 		if u == "" {
@@ -66,13 +72,11 @@ func (m *Manager) SubmitBulk(ctx context.Context, urls []string, req config.Opti
 			continue
 		}
 		norm := config.NormalizeURL(u)
-		if seen[norm] {
+		if open[norm] {
 			r.Dup = &store.Job{URL: u}
-			results = append(results, r)
-			continue
-		}
-		if existing, err := m.Store.FindOpenJobByNormURL(ctx, norm); err == nil {
-			r.Dup = existing
+			if existing, err := m.Store.FindOpenJobByNormURL(ctx, norm); err == nil {
+				r.Dup = existing
+			}
 			results = append(results, r)
 			continue
 		}
@@ -82,43 +86,49 @@ func (m *Manager) SubmitBulk(ctx context.Context, urls []string, req config.Opti
 			results = append(results, r)
 			continue
 		}
-		if opts.CookieProfile != "" {
-			if _, err := m.Store.GetCookieProfile(ctx, opts.CookieProfile); err != nil {
-				r.Err = fmt.Errorf("%w: unknown cookie profile %q", ErrInvalid, opts.CookieProfile)
+		if p := opts.CookieProfile; p != "" {
+			ok, checked := cookieOK[p]
+			if !checked {
+				_, err := m.Store.GetCookieProfile(ctx, p)
+				ok = err == nil
+				cookieOK[p] = ok
+			}
+			if !ok {
+				r.Err = fmt.Errorf("%w: unknown cookie profile %q", ErrInvalid, p)
 				results = append(results, r)
 				continue
 			}
 		}
-		seen[norm] = true
+		open[norm] = true // later duplicates in the same request
 		j := &store.Job{URL: u, NormURL: norm, Site: m.siteGroup(u, opts), State: store.JobQueued, Requested: req, Options: opts}
 		jobs = append(jobs, j)
 		r.Job = j
 		results = append(results, r)
 	}
-	if len(jobs) > 0 {
-		if err := m.Store.CreateJobs(ctx, jobs); err != nil {
-			for i := range results {
-				if results[i].Job != nil {
-					results[i].Job, results[i].Err = nil, err
-				}
-			}
-			return results
-		}
-		for _, j := range jobs {
-			m.Logs.Get(j.ID).Printf("Job created for %s", j.URL)
-			m.Sched.Enqueue(scheduler.Job{ID: j.ID, Pos: j.QueuePos, Site: j.Site})
-			m.publishJob(j.ID)
-		}
+	if len(jobs) == 0 {
+		return results
+	}
+	if err := m.Store.CreateJobs(ctx, jobs); err != nil {
 		for i := range results {
 			if results[i].Job != nil {
-				if full, err := m.Store.GetJob(ctx, results[i].Job.ID); err == nil {
-					results[i].Job = full
-				}
+				results[i].Job, results[i].Err = nil, err
 			}
 		}
+		return results
+	}
+	for _, j := range jobs {
+		m.Logs.Note(j.ID, "Job created for %s", j.URL)
+		m.Hub.Publish(EventJob, m.view(j)) // new job: no items yet
+	}
+	m.publishCounts()
+	for _, j := range jobs {
+		m.Sched.Enqueue(scheduler.Job{ID: j.ID, Pos: j.QueuePos, Site: j.Site})
 	}
 	return results
 }
+
+// JobView converts a job for the API (without items).
+func (m *Manager) JobView(j *store.Job) JobView { return m.view(j) }
 
 // ListFilter selects jobs.
 type ListFilter struct {
@@ -273,7 +283,7 @@ func (m *Manager) Retry(ctx context.Context, id int64, rr RetryRequest) (*store.
 	if len(items) == 0 {
 		desc = "probe"
 	}
-	m.Logs.Get(id).Printf("=== Retry requested: %s (%d reset) ===", desc, reset)
+	m.Logs.Note(id, "=== Retry requested: %s (%d reset) ===", desc, reset)
 	m.Sched.Enqueue(scheduler.Job{ID: job.ID, Pos: job.QueuePos, Site: job.Site})
 	m.publishJob(job.ID)
 	return m.Store.GetJob(ctx, id)
@@ -309,7 +319,7 @@ func (m *Manager) Cancel(ctx context.Context, id int64) (*store.Job, error) {
 		if err := m.Store.UpdateJob(ctx, job); err != nil {
 			return nil, err
 		}
-		m.Logs.Get(id).Line("--- Cancelled ---")
+		m.Logs.Note(id, "--- Cancelled ---")
 	}
 	m.removeWorkDirs(ctx, id, false)
 	m.publishJob(id)

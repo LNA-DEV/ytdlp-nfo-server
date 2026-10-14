@@ -170,10 +170,9 @@ func (s *Server) legacyBulk(w http.ResponseWriter, r *http.Request) {
 			out.Errors++
 		default:
 			it.Status = "created"
-			if v, err := s.m.Get(r.Context(), br.Job.ID); err == nil {
-				l := s.toLegacy(v)
-				it.Job = &l
-			}
+			v := s.m.JobView(br.Job)
+			l := s.toLegacy(&v)
+			it.Job = &l
 			out.Created++
 		}
 		out.Results = append(out.Results, it)

@@ -55,6 +55,14 @@ func (m *Manager) Get(jobID int64) *Log {
 	return l
 }
 
+// Note appends a line for a job that is not necessarily running and closes
+// the file again, so queued jobs don't hold file descriptors.
+func (m *Manager) Note(jobID int64, format string, args ...any) {
+	l := m.Get(jobID)
+	l.Printf(format, args...)
+	l.closeFile()
+}
+
 // Release closes the file handle of a finished job (subscribers stay).
 func (m *Manager) Release(jobID int64) {
 	m.mu.Lock()

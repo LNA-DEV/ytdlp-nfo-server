@@ -98,7 +98,7 @@ func (m *Manager) ItemFinalized(j *store.Job, it *store.Item, root string) {
 		defer cancel()
 		if err := m.Notifier.JellyfinRefresh(ctx, jf, path); err != nil {
 			m.logf("jellyfin: refresh of %s failed: %v", path, err)
-			m.Logs.Get(j.ID).Printf("WARNING: Jellyfin refresh failed: %v", err)
+			m.Logs.Note(j.ID, "WARNING: Jellyfin refresh failed: %v", err)
 		}
 	}()
 }

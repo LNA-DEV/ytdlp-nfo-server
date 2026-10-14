@@ -75,11 +75,8 @@ func (s *Server) handleBulk(w http.ResponseWriter, r *http.Request) {
 			out.Errors++
 		default:
 			it.Status = "created"
-			v, _ := s.m.Get(r.Context(), br.Job.ID)
-			if v != nil {
-				v.Items = nil
-			}
-			it.Job = v
+			v := s.m.JobView(br.Job)
+			it.Job = &v
 			out.Created++
 		}
 		out.Results = append(out.Results, it)
