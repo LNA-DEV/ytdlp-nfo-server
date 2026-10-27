@@ -79,6 +79,17 @@ func TestClassifyResult(t *testing.T) {
 	if c := Classify(res); c.Class != ClassRateLimited {
 		t.Fatalf("got %+v", c)
 	}
+	// A bot check after HTTP 429 is the rate limit; without the 429 it
+	// needs cookies.
+	bot := "ERROR: [example] abc123: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication."
+	res = &Result{ExitCode: 1, Errors: []string{bot},
+		Warnings: []string{"WARNING: [example] abc123: Unable to download webpage: HTTP Error 429: Too Many Requests"}}
+	if c := Classify(res); c.Class != ClassRateLimited {
+		t.Fatalf("bot check after 429: %+v", c)
+	}
+	if c := Classify(&Result{ExitCode: 1, Errors: []string{bot}}); c.Class != ClassAuthRequired {
+		t.Fatalf("bot check: %+v", c)
+	}
 	// The most specific line wins.
 	res = &Result{ExitCode: 1, Errors: []string{"ERROR: Private video", "ERROR: [Errno 104] Connection reset by peer"}}
 	if c := Classify(res); c.Class != ClassPermanent {

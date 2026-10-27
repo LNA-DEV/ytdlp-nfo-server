@@ -49,6 +49,9 @@ func r(class Class, pattern, reason, hint string) rule {
 // (subscriptions concept §5.3), so it must stay stable.
 const ReasonNotYetAvailable = "video is not available yet (premiere or upcoming live stream)"
 
+// ReasonBotCheck is the reason of a "confirm you're not a bot" check.
+const ReasonBotCheck = "the site requires a signed-in session (bot or age check)"
+
 // Hints shown in the UI per class.
 const (
 	HintPermanent       = "Not retried automatically: this error does not go away by waiting."
@@ -70,7 +73,7 @@ var rules = []rule{
 		"impersonation target not available in this yt-dlp build",
 		"Choose another impersonation target or a yt-dlp build with curl_cffi."),
 	r(ClassAuthRequired, `sign in to confirm (your age|you.?re not a bot|you are not a bot)|confirm you.?re not a bot`,
-		"the site requires a signed-in session (bot or age check)", HintAuthRequired),
+		ReasonBotCheck, HintAuthRequired),
 	r(ClassAuthRequired, `age[- ]restricted|inappropriate for some users|age verification`,
 		"age verification required", HintAuthRequired),
 	r(ClassAuthRequired, `members[- ]only|join this channel|available to this channel's members|requires (a )?(paid )?subscription|requires payment|purchase`,
@@ -184,6 +187,16 @@ func Classify(res *Result) Classification {
 			c := ClassifyMessage(e)
 			if rank(c.Class) < rank(best.Class) {
 				best = c
+			}
+		}
+		if best.Class == ClassAuthRequired && best.Reason == ReasonBotCheck {
+			// A bot check right after HTTP 429 is the rate limit, not a
+			// missing login: it goes away after a cooldown.
+			for _, w := range append(append([]string(nil), res.Warnings...), res.Errors...) {
+				if c := ClassifyMessage(w); c.Class == ClassRateLimited {
+					c.Reason = "rate-limited by the site (bot check after HTTP 429)"
+					return c
+				}
 			}
 		}
 		if best.Class == ClassUnknown {
