@@ -1,6 +1,6 @@
 # Subscriptions Concept
 
-> Status: **Implemented** (phases S-1 to S-3, [§13](#13-rollout)). All decisions are recorded in [§14](#14-decisions). The manual run against YouTube from the S-1 exit criteria is still open. · 2026-10-14, revised 2026-10-27
+> Status: **Implemented** (phases S-1 to S-3, [§13](#13-rollout)). All decisions are recorded in [§14](#14-decisions). The manual run against YouTube from the S-1 exit criteria was done on 2026-10-27; its results are in [Appendix A](#appendix-a-yt-dlp-calls). · 2026-10-14, revised 2026-10-27
 > Scope: server, web UI, browser add-on
 > Builds on [overhaul-concept.md](overhaul-concept.md), which lists subscriptions as "later" in §13.
 
@@ -568,12 +568,13 @@ yt-dlp <common> --flat-playlist -J --lazy-playlist -I :50 \
 ```
 
 - `--extractor-args youtubetab:approximate_date` makes YouTube tab listings include an approximate `upload_date`/`timestamp`, which is needed for sorting, the *published after* filter and display. It is a **fixed, server-controlled** argument added only for YouTube tab sources. It is not user input, so it is consistent with "no free-form yt-dlp arguments" ([overhaul §11](overhaul-concept.md#11-security)).
-- `--lazy-playlist` makes yt-dlp process entries as they arrive, so `-I :50` stops after the pages that hold 50 entries. Correctness doesn't depend on it: if a yt-dlp version pages further, a check only costs more requests. The manual run in phase S-1 confirms it for the bundled versions.
+- `--lazy-playlist` makes yt-dlp process entries as they arrive, so `-I :50` stops after the pages that hold 50 entries. Correctness doesn't depend on it: if a yt-dlp version pages further, a check only costs more requests. In the manual run, a channel tab needed 2 page requests for `-I :50` and 4 for `-I :100`, with or without `--lazy-playlist`.
 - Timeouts: 60 s for a preview, 5 min for a windowed listing and 2 h for a full one. A timeout is classified as `transient`.
-- Fields used from flat listings, and what happens when one is missing. The manual run in phase S-1 records which of them the bundled versions report, but no decision depends on the result:
-  - `live_status` per entry. Without it, the classifier path in [§5.3](#53-auto-queue-rules) handles premieres.
-  - `availability` per entry. Without it, members-only videos fail as `auth_required` and stay *failed* (S3).
-  - `channel_id` at the top level. Without it, the canonical URL uses the top-level `id` if it is a YouTube channel ID, and the normalized URL otherwise.
-  - `timestamp` / `upload_date` per entry. Without them, `sort_date` is `first_seen_at`.
+- Fields used from flat listings, what happens when one is missing, and what the manual run found (no decision depends on it):
+  - `live_status` per entry. Without it, the classifier path in [§5.3](#53-auto-queue-rules) handles premieres. Not in the samples of the manual run.
+  - `availability` per entry. Without it, members-only videos fail as `auth_required` and stay *failed* (S3). Not in the samples of the manual run.
+  - `channel_id` at the top level. Without it, the canonical URL uses the top-level `id` if it is a YouTube channel ID, and the normalized URL otherwise. Always present for YouTube tabs.
+  - `timestamp` / `upload_date` per entry. Without them, `sort_date` is `first_seen_at`. The *Videos* tab reports an approximate `timestamp` (day precision) and `duration`, but no `upload_date`. The *Shorts* tab reports neither a date nor a duration. Playlists report `duration` and `playlist_count`, but no dates.
+- Many listings in a row from one address got HTTP 429 and then *"Sign in to confirm you're not a bot"*. After a 429, that check is classified as `rate_limited`, so it waits for the cooldown instead of failing as `auth_required`.
 - Cookie profiles are copied per check, as they are per job ([overhaul §7.3](overhaul-concept.md#73-cookies)), because yt-dlp writes the cookie jar back to the file.
 - Downloads use the existing calls unchanged: fetch meta, download, subtitles ([overhaul Appendix A](overhaul-concept.md#appendix-a-yt-dlp-invocation-sketch)).
