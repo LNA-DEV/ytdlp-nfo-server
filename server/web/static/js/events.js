@@ -18,7 +18,7 @@ function emit(type, data) {
   }
 }
 
-const types = ['job', 'job_removed', 'item', 'progress', 'counts', 'system', 'resync'];
+const types = ['job', 'job_removed', 'item', 'progress', 'counts', 'system', 'resync', 'subscription', 'subscription_removed', 'entries'];
 
 export function connect() {
   if (source) return;

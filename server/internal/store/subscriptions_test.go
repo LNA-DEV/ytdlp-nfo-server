@@ -176,6 +176,10 @@ func TestDerivedEntryStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := counts[sub.ID]
+	if c.Newest.IsZero() {
+		t.Fatal("newest entry date missing")
+	}
+	c.Newest = time.Time{}
 	want := EntryCounts{Total: 12, New: 2, Backlog: 1, Library: 1, Ignored: 1, Failed: 3, Queued: 2, Upcoming: 2,
 		NewTab: 5, BacklogTab: 2}
 	if c != want {

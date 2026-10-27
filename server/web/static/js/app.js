@@ -5,6 +5,7 @@ import { JobsView } from './views/jobs.js';
 import { SettingsView } from './views/settings.js';
 import { DiagnosticsView } from './views/diagnostics.js';
 import { ArchiveView } from './views/archive.js';
+import { SubscriptionsView } from './views/subscriptions.js';
 
 const state = { system: null, view: null, authRequired: false };
 export const app = state;
@@ -87,6 +88,8 @@ const routes = [
   { re: /^#\/settings(?:\/(\w+))?$/, nav: 'settings', make: (m) => new SettingsView(m[1]) },
   { re: /^#\/diagnostics$/, nav: 'diagnostics', make: () => new DiagnosticsView() },
   { re: /^#\/archive$/, nav: 'archive', make: () => new ArchiveView() },
+  { re: /^#\/subscriptions\/(\d+)$/, nav: 'subscriptions', make: (m) => new SubscriptionsView({ id: m[1] }) },
+  { re: /^#\/subscriptions$/, nav: 'subscriptions', make: () => new SubscriptionsView({}) },
   { re: /^#\/jobs\/(\d+)$/, nav: 'jobs', make: (m) => new JobsView({ focus: m[1] }) },
   { re: /^#\/(active|queued|completed|failed)?$/, nav: 'jobs', make: (m) => new JobsView({ tab: m[1] }) },
 ];

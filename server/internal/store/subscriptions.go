@@ -917,18 +917,19 @@ func (s *Store) ListEntries(ctx context.Context, f EntryFilter, p StatusParams) 
 
 // EntryCounts summarizes the entries of a subscription by derived status.
 type EntryCounts struct {
-	Total           int     `json:"total"`
-	New             int     `json:"new"` // the inbox
-	Backlog         int     `json:"backlog"`
-	Library         int     `json:"library"`
-	Ignored         int     `json:"ignored"`
-	Failed          int     `json:"failed"`
-	Queued          int     `json:"queued"`
-	Upcoming        int     `json:"upcoming"`
-	Gone            int     `json:"gone"`
-	NewTab          int     `json:"newTab"`     // new + queued/upcoming from new
-	BacklogTab      int     `json:"backlogTab"` // backlog + queued/upcoming from the backlog
-	BacklogDuration float64 `json:"backlogDuration"`
+	Total           int       `json:"total"`
+	New             int       `json:"new"` // the inbox
+	Backlog         int       `json:"backlog"`
+	Library         int       `json:"library"`
+	Ignored         int       `json:"ignored"`
+	Failed          int       `json:"failed"`
+	Queued          int       `json:"queued"`
+	Upcoming        int       `json:"upcoming"`
+	Gone            int       `json:"gone"`
+	NewTab          int       `json:"newTab"`     // new + queued/upcoming from new
+	BacklogTab      int       `json:"backlogTab"` // backlog + queued/upcoming from the backlog
+	BacklogDuration float64   `json:"backlogDuration"`
+	Newest          time.Time `json:"newest,omitzero"` // newest sort_date
 }
 
 // CountEntries returns the counts per subscription (one GROUP BY over the
@@ -938,9 +939,9 @@ func (s *Store) CountEntries(ctx context.Context, subID int64, p StatusParams) (
 	if subID != 0 {
 		where, args = `WHERE e.subscription_id = ?`, append(args, subID)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT sub, status, backlog, COUNT(*), SUM(gone), SUM(duration) FROM
+	rows, err := s.db.QueryContext(ctx, `SELECT sub, status, backlog, COUNT(*), SUM(gone), SUM(duration), MAX(sort_date) FROM
 		(SELECT e.subscription_id AS sub, `+statusExpr(p)+` AS status, e.backlog AS backlog,
-		e.gone_at IS NOT NULL AS gone, e.duration AS duration`+entryFrom+where+`)
+		e.gone_at IS NOT NULL AS gone, e.duration AS duration, e.sort_date AS sort_date`+entryFrom+where+`)
 		GROUP BY sub, status, backlog`, args...)
 	if err != nil {
 		return nil, err
@@ -954,11 +955,15 @@ func (s *Store) CountEntries(ctx context.Context, subID int64, p StatusParams) (
 			backlog, n  int
 			gone        int
 			durationSum float64
+			newest      int64
 		)
-		if err := rows.Scan(&sub, &status, &backlog, &n, &gone, &durationSum); err != nil {
+		if err := rows.Scan(&sub, &status, &backlog, &n, &gone, &durationSum, &newest); err != nil {
 			return nil, err
 		}
 		c := out[sub]
+		if t := time.UnixMilli(newest); t.After(c.Newest) {
+			c.Newest = t
+		}
 		c.Total += n
 		c.Gone += gone
 		switch status {

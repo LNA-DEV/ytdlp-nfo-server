@@ -24,6 +24,9 @@ type settingsResponse struct {
 	PasswordFromEnv bool            `json:"passwordFromEnv"`
 	DefaultLibrary  string          `json:"defaultLibraryPath"`
 	Channels        []string        `json:"channels"`
+	// UsedBy lists the subscriptions whose options use a library, preset
+	// or cookie profile, shown before it is removed (§5.2).
+	UsedBy map[string]map[string][]string `json:"usedBySubscriptions"`
 }
 
 func (s *Server) settingsResponse() settingsResponse {
@@ -32,6 +35,7 @@ func (s *Server) settingsResponse() settingsResponse {
 		PasswordSet: st.PasswordHash != "" || s.m.Env.Password != "", PasswordFromEnv: s.m.Env.Password != "",
 		DefaultLibrary: s.m.Env.LibraryRoot(), Channels: config.Channels,
 	}
+	resp.UsedBy, _ = s.m.SubscriptionsUsing(context.Background())
 	st.PasswordHash = ""
 	st.Jellyfin.APIKey = mask(st.Jellyfin.APIKey)
 	st.Notifications.GotifyToken = mask(st.Notifications.GotifyToken)
@@ -128,9 +132,16 @@ func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	paths := map[string]string{}
+	for _, l := range libs {
+		paths[l], _ = st.LibraryPath(s.m.Env, l)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"presets": presets, "containers": []string{"mkv", "mp4"}, "libraries": libs, "cookieProfiles": cookieNames,
 		"impersonateTargets": targets, "ytdlpVersions": versions, "defaults": st.Defaults,
+		// For the path preview of the subscription dialog (§7.4).
+		"libraryPaths": paths, "namingTemplate": st.Naming.EffectiveTemplate(),
+		"subscriptionInterval": st.Subscriptions.IntervalMinutes,
 	})
 }
 
