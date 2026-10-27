@@ -206,6 +206,8 @@ func (m *Manager) ImportSubscriptions(ctx context.Context, format, data string) 
 		n++
 	}
 	i := 0
+	created := map[int64]bool{}
+	var order []int64 // import order
 	for _, p := range plan {
 		if _, ok := taken[p.src.Canonical]; ok {
 			continue
@@ -220,12 +222,22 @@ func (m *Manager) ImportSubscriptions(ctx context.Context, format, data string) 
 			continue
 		}
 		m.subs.logs.Note(sub.ID, "Subscription imported: %s", p.src.URL)
-		m.markCounts(sub.ID)
-		if v, err := m.GetSubscription(ctx, sub.ID); err == nil {
-			res.Created = append(res.Created, *v)
-			m.Hub.Publish(EventSubscription, *v)
+		created[sub.ID] = true
+		order = append(order, sub.ID)
+	}
+	if all, err := m.Store.ListSubscriptions(ctx); err == nil {
+		views := map[int64]SubscriptionView{}
+		for _, sub := range all {
+			if created[sub.ID] {
+				views[sub.ID] = m.subView(sub, all)
+			}
+		}
+		for _, id := range order {
+			res.Created = append(res.Created, views[id])
+			m.Hub.Publish(EventSubscription, views[id])
 		}
 	}
+	m.markCounts(0)
 	m.logf("subscriptions: imported %d, skipped %d", len(res.Created), len(res.Skipped))
 	m.subs.loop.Wake()
 	return res, nil

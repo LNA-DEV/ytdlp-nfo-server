@@ -835,3 +835,38 @@ func TestSubscriptionImportedDuplicate(t *testing.T) {
 		t.Fatalf("view of the duplicate: %+v %v", v, err)
 	}
 }
+
+// §13 S-3: an import of 200 channels doesn't cause a request burst. The
+// first checks are spread over one hour, and the loop checks one
+// subscription per site at a time.
+func TestSubscriptionImport200NoBurst(t *testing.T) {
+	w := newWorld(t, &scenario.Scenario{})
+	m := w.startSubs()
+	ctx := context.Background()
+	m.Settings.Update(ctx, func(s *config.Settings) error { s.Subscriptions.Paused = true; return nil })
+	var b strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&b, "https://www.youtube.com/channel/UC%022d/videos\n", i)
+	}
+	res, err := m.ImportSubscriptions(ctx, FormatURLs, b.String())
+	if err != nil || len(res.Created) != 200 {
+		t.Fatalf("import: %d created, %v", len(res.Created), err)
+	}
+	var times []time.Time
+	for _, v := range res.Created {
+		times = append(times, *v.NextCheckAt)
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
+	if span := times[len(times)-1].Sub(times[0]); span < 59*time.Minute || span > time.Hour {
+		t.Fatalf("first checks span %v, want about one hour", span)
+	}
+	for i := 1; i < len(times); i++ {
+		if gap := times[i].Sub(times[i-1]); gap < 17*time.Second {
+			t.Fatalf("checks %d and %d are only %v apart", i-1, i, gap)
+		}
+	}
+	due, _ := m.Store.DueSubscriptions(ctx, time.Now().Add(time.Minute))
+	if len(due) > 4 {
+		t.Fatalf("%d subscriptions due within the first minute", len(due))
+	}
+}
