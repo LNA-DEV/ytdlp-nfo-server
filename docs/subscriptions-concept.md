@@ -323,7 +323,7 @@ All routes live under `/api/v1` and use the existing auth.
 |---|---|---|
 | `POST` | `/subscriptions/preview` | `{url}` → title, kind, tabs, canonical URLs, count, sample entries, existing subscription. A video URL is resolved to its channel; `422` if it has none |
 | `GET` | `/subscriptions?q=` | List with counts (inbox, backlog, in library, failed) and check state |
-| `POST` | `/subscriptions` | Create `{name, folder, sources, mode, backlog, filters, options, intervalMinutes, notify}`. Returns `409` if a source is already subscribed |
+| `POST` | `/subscriptions` | Create `{name, folder, sources, mode, backlog, filters, options, intervalMinutes, notify}`. A YouTube channel root URL stands for its *Videos* tab, as in the add dialog and the import. Returns `409` if a source is already subscribed |
 | `GET` | `/subscriptions/{id}` | Subscription with counts |
 | `PATCH` | `/subscriptions/{id}` | Change mode, enabled, name, folder, filters, options, interval, listing, notify, sources. `{dismissWarning: true}` clears the cap warning. A new source starts with a first listing that records its backlog ([§5.2](#52-check-algorithm)). Returns `409` if a new source is already subscribed |
 | `DELETE` | `/subscriptions/{id}?cancelQueued=` | Remove the subscription and its entries. The library, the archive and finished jobs stay |

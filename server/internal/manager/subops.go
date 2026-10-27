@@ -297,6 +297,7 @@ func invalid(format string, args ...any) error {
 }
 
 // sourcesFromInput validates sources and computes their canonical URL. A
+// YouTube channel root stands for its Videos tab, as in the add dialog. A
 // canonical URL from the preview is accepted if it is the one the URL
 // itself gives, or the channel-ID form of the same tab.
 func sourcesFromInput(in []SourceInput) ([]*store.Source, error) {
@@ -306,6 +307,9 @@ func sourcesFromInput(in []SourceInput) ([]*store.Source, error) {
 		u := strings.TrimSpace(s.URL)
 		if err := config.ValidateURL(u); err != nil {
 			return nil, invalid("source %q: %v", s.URL, err)
+		}
+		if base, tab, ok := subscriptions.YouTubeChannel(u); ok && tab == "" {
+			u = subscriptions.TabURL(base, subscriptions.TabVideos)
 		}
 		canon, tab := subscriptions.Canonical(u, nil)
 		if c := strings.TrimSpace(s.Canonical); c != "" && c != canon {

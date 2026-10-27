@@ -442,6 +442,17 @@ func TestSubscriptionCanonicalConflict(t *testing.T) {
 		Sources: []SourceInput{{URL: "https://www.youtube.com/@chan/videos", Canonical: "https://evil.test/x"}}}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("foreign canonical accepted: %v", err)
 	}
+	// A channel root is its Videos tab, so it conflicts as well.
+	_, err = w.m.CreateSubscription(context.Background(), SubscriptionInput{Name: strp("Root"),
+		Sources: []SourceInput{{URL: "https://www.youtube.com/channel/" + chanID}}})
+	if !errors.As(err, &c) || c.Name != "Chan" {
+		t.Fatalf("channel root: want a conflict with Chan, got %v", err)
+	}
+	v, err := w.m.CreateSubscription(context.Background(), SubscriptionInput{Name: strp("Other"),
+		Sources: []SourceInput{{URL: "https://www.youtube.com/@other"}}})
+	if err != nil || v.Sources[0].URL != "https://www.youtube.com/@other/videos" || v.Sources[0].Tab != "videos" {
+		t.Fatalf("channel root: %+v %v", v, err)
+	}
 }
 
 // §12: preview of a channel offers its tabs; a video URL switches to its
