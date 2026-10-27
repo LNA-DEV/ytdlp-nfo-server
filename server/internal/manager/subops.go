@@ -912,7 +912,7 @@ func (m *Manager) PreviewSubscription(ctx context.Context, raw string) (*Preview
 		res := ytdlp.Run(lctx, ytdlp.Call{Bin: bin.Path, CaptureStdout: true,
 			Args: ytdlp.ListArgs(u, ytdlp.ListSpec{Window: 10, YouTubeTab: tab != ""}, call)})
 		if !res.OK() {
-			cls := ytdlp.Classify(res)
+			cls := subscriptions.ListingClass(ytdlp.Classify(res))
 			if lctx.Err() != nil && ctx.Err() == nil {
 				cls = ytdlp.Classification{Class: ytdlp.ClassTransient, Reason: "the preview timed out"}
 			}
@@ -936,7 +936,7 @@ func (m *Manager) PreviewSubscription(ctx context.Context, raw string) (*Preview
 	if !l.IsPlaylist {
 		// A video: subscribe to its channel instead (§14 decision 20).
 		if l.ChannelURL == "" || config.ValidateURL(l.ChannelURL) != nil {
-			return nil, fmt.Errorf("%w: this video has no channel to subscribe to", ErrUnprocessable)
+			return nil, fmt.Errorf("%w: this video does not name its channel; subscribe to the channel or user page instead", ErrUnprocessable)
 		}
 		if len(l.Entries) > 0 {
 			p.ResolvedFrom = l.Entries[0].Title

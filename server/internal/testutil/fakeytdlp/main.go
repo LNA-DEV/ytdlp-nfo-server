@@ -316,7 +316,9 @@ func ytdlp(args []string) int {
 			n := min(attempt("listing-pl-"+id), len(pl.Listings))
 			ids = pl.Listings[n-1]
 		}
-		return printJSON(playlistJSON(sc, pl, window(args, ids)))
+		m := playlistJSON(sc, pl, window(args, ids))
+		m["webpage_url"] = url
+		return printJSON(m)
 	}
 	id, ok := strings.CutPrefix(url, scenario.VideoPrefix)
 	v, known := sc.Videos[id]

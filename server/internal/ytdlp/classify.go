@@ -49,6 +49,10 @@ func r(class Class, pattern, reason, hint string) rule {
 // (subscriptions concept §5.3), so it must stay stable.
 const ReasonNotYetAvailable = "video is not available yet (premiere or upcoming live stream)"
 
+// ReasonUnavailable is the reason of a missing or removed video (or, for a
+// listing, channel or playlist).
+const ReasonUnavailable = "video is unavailable or was removed"
+
 // ReasonBotCheck is the reason of a "confirm you're not a bot" check.
 const ReasonBotCheck = "the site requires a signed-in session (bot or age check)"
 
@@ -98,7 +102,7 @@ var rules = []rule{
 	r(ClassPermanent, `premieres in|live event will begin|this live event will|is not yet available|is upcoming`,
 		ReasonNotYetAvailable, HintPermanent),
 	r(ClassPermanent, `video unavailable|this video is (no longer )?(un)?available|has been removed|was removed|been terminated|no longer available|does not exist|HTTP Error 404|HTTP Error 410|404: Not Found|content (is )?not available`,
-		"video is unavailable or was removed", HintPermanent),
+		ReasonUnavailable, HintPermanent),
 	r(ClassExtractorBroken, `unable to extract|unable to parse|failed to parse|please report this issue|latest version using\s+yt-dlp -U|is this a bug|signature extraction failed|nsig extraction failed|challenge solving failed|could not find js function|unsupported (player|js)`,
 		"site support may be broken in this yt-dlp version", HintExtractorBroken),
 	r(ClassTransient, `timed? ?out|connection (reset|refused|aborted|closed)|temporary failure|name resolution|network is unreachable|no route to host|HTTP Error 5\d\d|IncompleteRead|remote end closed|\bssl\b|eof occurred|unable to download (webpage|json|api)|giving up after|broken pipe|no space left|errno \d+|read error`,

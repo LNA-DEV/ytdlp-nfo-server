@@ -119,17 +119,56 @@ func Kind(l *ytdlp.Listing) string {
 }
 
 // DisplayName is the default subscription name: the channel for a channel,
-// the title for a playlist.
+// the title for a playlist. A listing without names is named after its URL.
 func DisplayName(l *ytdlp.Listing) string {
+	names := []string{l.Title, l.Uploader}
 	if Kind(l) == "channel" {
-		for _, s := range []string{l.Channel, l.Uploader, l.Title} {
-			if s != "" {
-				return s
-			}
+		names = []string{l.Channel, l.Uploader, l.Title}
+	}
+	for _, s := range names {
+		if s != "" {
+			return s
 		}
 	}
-	if l.Title != "" {
-		return l.Title
+	if s := nameFromURL(l.WebpageURL); s != "" {
+		return s
 	}
-	return l.Uploader
+	return l.ID
+}
+
+// genericSegments are path segments of channel and playlist URLs that are
+// not a name.
+var genericSegments = map[string]bool{"videos": true, "shorts": true, "streams": true, "live": true,
+	"featured": true, "playlists": true, "playlist": true, "uploads": true, "popular": true, "latest": true,
+	"newest": true, "home": true, "about": true, "user": true, "users": true, "channel": true, "channels": true,
+	"c": true, "u": true, "profile": true, "profiles": true, "member": true, "members": true, "creator": true,
+	"creators": true}
+
+// nameFromURL returns the last path segment of a URL that is a name, e.g.
+// "some-user" for https://example.com/users/some-user/videos.
+func nameFromURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i := len(segs) - 1; i >= 0; i-- {
+		s, err := url.PathUnescape(segs[i])
+		if err != nil {
+			s = segs[i]
+		}
+		if s = strings.TrimPrefix(s, "@"); s != "" && !genericSegments[strings.ToLower(s)] {
+			return s
+		}
+	}
+	return ""
+}
+
+// ListingClass rewords a classified listing failure: what is missing is
+// the channel or playlist, not a video.
+func ListingClass(c ytdlp.Classification) ytdlp.Classification {
+	if c.Class == ytdlp.ClassPermanent && c.Reason == ytdlp.ReasonUnavailable {
+		c.Reason = "the channel or playlist does not exist or was removed"
+	}
+	return c
 }

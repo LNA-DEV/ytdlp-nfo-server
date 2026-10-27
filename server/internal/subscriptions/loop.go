@@ -374,7 +374,7 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 			return r
 		}
 		if !res.OK() {
-			cls := ytdlp.Classify(res)
+			cls := ListingClass(ytdlp.Classify(res))
 			if timedOut {
 				cls = ytdlp.Classification{Class: ytdlp.ClassTransient, Reason: "listing timed out after " + timeout.String()}
 			}

@@ -53,4 +53,16 @@ func TestCanonical(t *testing.T) {
 	if DisplayName(&ytdlp.Listing{ID: id, ChannelID: id, Channel: "Chan", Title: "Chan - Videos"}) != "Chan" {
 		t.Error("display name of a channel")
 	}
+	// A listing without names is named after its URL, else its id.
+	for u, want := range map[string]string{
+		"https://example.com/users/some-user/videos": "some-user",
+		"https://example.com/@handle/":               "handle",
+		"https://example.com/channels/a%20b":         "a b",
+		"https://example.com/videos":                 "x1",
+	} {
+		l := &ytdlp.Listing{ID: "x1", ExtractorKey: "ExampleUser", IsPlaylist: true, WebpageURL: u}
+		if got := DisplayName(l); got != want {
+			t.Errorf("display name of %s: %q, want %q", u, got, want)
+		}
+	}
 }

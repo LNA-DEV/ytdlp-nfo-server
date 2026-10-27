@@ -555,6 +555,19 @@ func TestSubscriptionPreview(t *testing.T) {
 	if _, err := m.PreviewSubscription(ctx, scenario.VideoPrefix+"v1"); !errors.Is(err, ErrUnprocessable) {
 		t.Fatalf("video without channel: %v", err)
 	}
+	var perr *PreviewError
+	if _, err := m.PreviewSubscription(ctx, scenario.PlaylistPrefix+"nope"); !errors.As(err, &perr) ||
+		perr.Error() != "the channel or playlist does not exist or was removed" {
+		t.Fatalf("missing channel: %v", err)
+	}
+	// A listing without a title is named after its URL.
+	sc.Playlists["some-user"] = scenario.Playlist{ID: "u123", ExtractorKey: "ExampleUser", Entries: []string{"v1"}}
+	if err := sc.Write(w.dir + "/scenario.json"); err != nil {
+		t.Fatal(err)
+	}
+	if p, err = m.PreviewSubscription(ctx, scenario.PlaylistPrefix+"some-user"); err != nil || p.Name != "some-user" || p.Kind != "channel" {
+		t.Fatalf("listing without names: %+v %v", p, err)
+	}
 }
 
 // §12: a blocked listing that succeeds with impersonation keeps it.
