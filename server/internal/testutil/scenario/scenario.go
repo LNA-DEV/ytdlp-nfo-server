@@ -40,18 +40,33 @@ type Video struct {
 	Languages  []string         `json:"languages,omitempty"` // audio tracks
 	AudioOnly  bool             `json:"audioOnly,omitempty"`
 	SizeBytes  int64            `json:"sizeBytes,omitempty"`
-	Probe      []Behavior       `json:"probe,omitempty"`
-	Meta       []Behavior       `json:"meta,omitempty"`
-	Download   []Behavior       `json:"download,omitempty"`
-	Subs       []Behavior       `json:"subs,omitempty"`
+	ChannelURL string           `json:"channelUrl,omitempty"` // channel_url in the metadata
+	UploadDate string           `json:"uploadDate,omitempty"` // YYYYMMDD (default 20240102)
+	Timestamp  int64            `json:"timestamp,omitempty"`  // in listings
+	// LiveStatus and Availability are reported by listings; a listing
+	// entry "id|live_status=…|availability=…" overrides them.
+	LiveStatus   string     `json:"liveStatus,omitempty"`
+	Availability string     `json:"availability,omitempty"`
+	Probe        []Behavior `json:"probe,omitempty"`
+	Meta         []Behavior `json:"meta,omitempty"`
+	Download     []Behavior `json:"download,omitempty"`
+	Subs         []Behavior `json:"subs,omitempty"`
 }
 
-// Playlist is a fake playlist of video ids.
+// Playlist is a fake playlist (or channel tab) of video ids.
 type Playlist struct {
-	ID      string     `json:"id"`
-	Title   string     `json:"title"`
-	Entries []string   `json:"entries"`
-	Probe   []Behavior `json:"probe,omitempty"`
+	ID      string   `json:"id"`
+	Title   string   `json:"title"`
+	Entries []string `json:"entries"`
+	// Listings, if set, replace Entries: the n-th successful listing of the
+	// playlist returns Listings[n-1] (the last one repeats). An entry may
+	// override listing fields: "id|live_status=is_upcoming".
+	Listings     [][]string `json:"listings,omitempty"`
+	ExtractorKey string     `json:"extractorKey,omitempty"` // default FakePlaylist
+	ChannelID    string     `json:"channelId,omitempty"`
+	Uploader     string     `json:"uploader,omitempty"`
+	Count        int        `json:"count,omitempty"` // reported playlist_count
+	Probe        []Behavior `json:"probe,omitempty"`
 }
 
 // Scenario is the whole fake world.
@@ -60,6 +75,8 @@ type Scenario struct {
 	Targets   []string            `json:"targets"` // available impersonation targets "Client OS"
 	Videos    map[string]Video    `json:"videos"`
 	Playlists map[string]Playlist `json:"playlists"`
+	// Aliases map other URLs (e.g. YouTube-style channel URLs) to fake ones.
+	Aliases map[string]string `json:"aliases,omitempty"`
 }
 
 // URL conventions of the fake site.

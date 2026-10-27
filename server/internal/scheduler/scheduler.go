@@ -14,6 +14,7 @@ import (
 	"errors"
 	"maps"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
@@ -80,6 +81,7 @@ type Status struct {
 
 // Scheduler runs jobs with a global and per-site concurrency limit.
 type Scheduler struct {
+	started   atomic.Bool
 	run       RunFunc
 	cmds      chan func()
 	finished  chan finishedMsg
@@ -134,12 +136,18 @@ func New(run RunFunc, max int, siteLimit func(string) int, onChange func()) *Sch
 // Start runs the loop until Shutdown.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.baseCtx = context.WithoutCancel(ctx)
+	s.started.Store(true)
 	go s.loop()
 }
 
 // do executes f on the loop goroutine and waits for it. It returns false if
-// the scheduler has stopped.
+// the scheduler has stopped. Before Start there is no loop yet (settings
+// applied during startup), so f runs directly.
 func (s *Scheduler) do(f func()) bool {
+	if !s.started.Load() {
+		f()
+		return true
+	}
 	done := make(chan struct{})
 	select {
 	case s.cmds <- func() { f(); close(done) }:

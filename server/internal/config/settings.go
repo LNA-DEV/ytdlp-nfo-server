@@ -124,24 +124,75 @@ type AgeRule struct {
 	Rating string `json:"rating"`
 }
 
+// SubscriptionSettings are the global subscription values (subscriptions
+// concept §10).
+type SubscriptionSettings struct {
+	Paused           bool `json:"paused"`           // pause all checks
+	IntervalMinutes  int  `json:"intervalMinutes"`  // default check interval
+	CheckConcurrency int  `json:"checkConcurrency"` // parallel checks (at most one per site)
+	SiteDelaySeconds int  `json:"siteDelaySeconds"` // pause between checks of the same site
+	Window           int  `json:"window"`           // window size for newest-first sources
+	FullRescanDays   int  `json:"fullRescanDays"`   // full listing interval per source
+	AutoQueueCap     int  `json:"autoQueueCap"`     // safety cap per check (S8)
+	BackgroundSlots  int  `json:"backgroundSlots"`  // slots for auto and backlog jobs together (S7)
+	UpcomingDays     int  `json:"upcomingDays"`     // how long "not available yet" entries are queued again
+	PruneGoneDays    int  `json:"pruneGoneDays"`    // delete gone, never downloaded entries (0 = never)
+}
+
+// DefaultSubscriptionSettings returns the documented defaults.
+func DefaultSubscriptionSettings() SubscriptionSettings {
+	return SubscriptionSettings{IntervalMinutes: 360, CheckConcurrency: 2, SiteDelaySeconds: 10, Window: 50,
+		FullRescanDays: 7, AutoQueueCap: 25, BackgroundSlots: 1, UpcomingDays: 7}
+}
+
+// Limits of subscription intervals.
+const (
+	MinIntervalMinutes = 15
+	MaxIntervalMinutes = 10080
+)
+
+// Validate checks the ranges of §10.
+func (s SubscriptionSettings) Validate() error {
+	for _, r := range []struct {
+		name      string
+		v, lo, hi int
+	}{
+		{"intervalMinutes", s.IntervalMinutes, MinIntervalMinutes, MaxIntervalMinutes},
+		{"checkConcurrency", s.CheckConcurrency, 1, 10},
+		{"siteDelaySeconds", s.SiteDelaySeconds, 0, 300},
+		{"window", s.Window, 10, 500},
+		{"fullRescanDays", s.FullRescanDays, 1, 90},
+		{"autoQueueCap", s.AutoQueueCap, 1, 1000},
+		{"backgroundSlots", s.BackgroundSlots, 1, 50},
+		{"upcomingDays", s.UpcomingDays, 1, 30},
+		{"pruneGoneDays", s.PruneGoneDays, 0, 3650},
+	} {
+		if r.v < r.lo || r.v > r.hi {
+			return fmt.Errorf("subscriptions.%s must be between %d and %d", r.name, r.lo, r.hi)
+		}
+	}
+	return nil
+}
+
 // Settings are the runtime settings persisted in the store.
 type Settings struct {
-	MaxConcurrent            int               `json:"maxConcurrent"`
-	MaxRetries               int               `json:"maxRetries"`
-	Defaults                 Defaults          `json:"defaults"`
-	Presets                  map[string]string `json:"presets"`
-	Naming                   Naming            `json:"naming"`
-	Ytdlp                    YtdlpSettings     `json:"ytdlp"`
-	ImpersonationEscalation  bool              `json:"impersonationEscalation"`
-	RateLimitCooldownMinutes int               `json:"rateLimitCooldownMinutes"`
-	Extras                   Extras            `json:"extras"`
-	AutoPruneDays            int               `json:"autoPruneDays"`
-	Libraries                []Library         `json:"libraries"`
-	Notifications            Notifications     `json:"notifications"`
-	Jellyfin                 Jellyfin          `json:"jellyfin"`
-	AgeRules                 []AgeRule         `json:"ageRules"`
-	MinFreeSpaceMB           int               `json:"minFreeSpaceMB"`
-	PasswordHash             string            `json:"passwordHash,omitempty"`
+	MaxConcurrent            int                  `json:"maxConcurrent"`
+	MaxRetries               int                  `json:"maxRetries"`
+	Defaults                 Defaults             `json:"defaults"`
+	Presets                  map[string]string    `json:"presets"`
+	Naming                   Naming               `json:"naming"`
+	Ytdlp                    YtdlpSettings        `json:"ytdlp"`
+	ImpersonationEscalation  bool                 `json:"impersonationEscalation"`
+	RateLimitCooldownMinutes int                  `json:"rateLimitCooldownMinutes"`
+	Extras                   Extras               `json:"extras"`
+	AutoPruneDays            int                  `json:"autoPruneDays"`
+	Libraries                []Library            `json:"libraries"`
+	Notifications            Notifications        `json:"notifications"`
+	Jellyfin                 Jellyfin             `json:"jellyfin"`
+	AgeRules                 []AgeRule            `json:"ageRules"`
+	MinFreeSpaceMB           int                  `json:"minFreeSpaceMB"`
+	Subscriptions            SubscriptionSettings `json:"subscriptions"`
+	PasswordHash             string               `json:"passwordHash,omitempty"`
 
 	// Locked lists settings fixed by environment variables. Not persisted.
 	Locked []string `json:"locked,omitempty"`
@@ -189,6 +240,7 @@ func DefaultSettings(migrated bool) Settings {
 			{Match: "fetish", Rating: "XXX"},
 		},
 		MinFreeSpaceMB: 1024,
+		Subscriptions:  DefaultSubscriptionSettings(),
 	}
 	if migrated {
 		s.Naming.Preset = NamingLegacy
@@ -281,6 +333,20 @@ func (s *Settings) Normalize() {
 	if s.MinFreeSpaceMB < 0 {
 		s.MinFreeSpaceMB = 0
 	}
+	// Settings stored before subscriptions existed have none of these.
+	sub, ds := &s.Subscriptions, DefaultSubscriptionSettings()
+	if *sub == (SubscriptionSettings{}) {
+		*sub = ds
+	}
+	for _, f := range []struct{ v, d *int }{
+		{&sub.IntervalMinutes, &ds.IntervalMinutes}, {&sub.CheckConcurrency, &ds.CheckConcurrency},
+		{&sub.Window, &ds.Window}, {&sub.FullRescanDays, &ds.FullRescanDays}, {&sub.AutoQueueCap, &ds.AutoQueueCap},
+		{&sub.BackgroundSlots, &ds.BackgroundSlots}, {&sub.UpcomingDays, &ds.UpcomingDays},
+	} {
+		if *f.v <= 0 {
+			*f.v = *f.d
+		}
+	}
 }
 
 // Validate checks user-editable settings.
@@ -362,7 +428,7 @@ func (s *Settings) Validate() error {
 			return fmt.Errorf("age rules need a match and a rating")
 		}
 	}
-	return nil
+	return s.Subscriptions.Validate()
 }
 
 func validName(s string) bool {

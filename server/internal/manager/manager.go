@@ -193,6 +193,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("recovery: %w", err)
 	}
 	m.Sched.Start(m.ctx)
+	m.Sched.SetBackgroundSlots(m.Settings.Settings().Subscriptions.BackgroundSlots)
 	if err := m.enqueueOpen(m.ctx); err != nil {
 		return err
 	}

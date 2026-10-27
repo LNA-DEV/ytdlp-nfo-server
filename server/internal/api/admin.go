@@ -76,6 +76,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		if in.Notifications.GotifyToken == masked {
 			st.Notifications.GotifyToken = keep.Notifications.GotifyToken
 		}
+		if in.Subscriptions == (config.SubscriptionSettings{}) {
+			st.Subscriptions = keep.Subscriptions // a client that predates subscriptions
+		}
 		return nil
 	})
 	if err != nil {

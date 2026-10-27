@@ -73,6 +73,29 @@ func ProbeArgs(url string, o CallOptions) []string {
 	return append(args, "--", url)
 }
 
+// ListSpec describes a subscription listing (subscriptions concept,
+// Appendix A).
+type ListSpec struct {
+	// Window > 0 lists only the newest Window entries of a newest-first
+	// source (--lazy-playlist -I :W); 0 is a full listing.
+	Window int
+	// YouTubeTab adds the fixed, server-controlled extractor argument that
+	// makes YouTube tab listings report an approximate upload date.
+	YouTubeTab bool
+}
+
+// ListArgs lists the entries of a channel tab or playlist.
+func ListArgs(url string, l ListSpec, o CallOptions) []string {
+	args := append(o.common(), "--flat-playlist", "-J")
+	if l.Window > 0 {
+		args = append(args, "--lazy-playlist", "-I", ":"+strconv.Itoa(l.Window))
+	}
+	if l.YouTubeTab {
+		args = append(args, "--extractor-args", "youtubetab:approximate_date")
+	}
+	return append(args, "--", url)
+}
+
 // MetaArgs fetches full metadata for one entry, just in time. If the entry
 // turns out to be a playlist, --flat-playlist keeps the listing cheap.
 func MetaArgs(url string, o CallOptions) []string {

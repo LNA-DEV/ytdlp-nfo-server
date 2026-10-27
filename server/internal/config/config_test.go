@@ -118,3 +118,23 @@ func TestVersionSpec(t *testing.T) {
 		}
 	}
 }
+
+func TestSubscriptionSettings(t *testing.T) {
+	var s Settings // stored before subscriptions existed
+	s.Normalize()
+	if s.Subscriptions != DefaultSubscriptionSettings() {
+		t.Fatalf("defaults not filled: %+v", s.Subscriptions)
+	}
+	if err := s.Subscriptions.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	s.Subscriptions.SiteDelaySeconds, s.Subscriptions.PruneGoneDays = 0, 0
+	s.Normalize()
+	if s.Subscriptions.SiteDelaySeconds != 0 || s.Subscriptions.PruneGoneDays != 0 {
+		t.Fatal("valid zero values were overwritten")
+	}
+	s.Subscriptions.IntervalMinutes = 14
+	if err := s.Subscriptions.Validate(); err == nil {
+		t.Fatal("interval below 15 minutes accepted")
+	}
+}

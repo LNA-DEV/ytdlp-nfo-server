@@ -163,11 +163,18 @@ func videoJSON(v scenario.Video) map[string]any {
 	for _, l := range v.Subtitles {
 		subs[l] = []map[string]any{{"ext": "vtt", "url": "https://fake.test/sub/" + l}}
 	}
+	date := v.UploadDate
+	if date == "" {
+		date = "20240102"
+	}
 	m := map[string]any{
 		"id": v.ID, "title": v.Title, "fulltitle": v.Title, "extractor": "fake", "extractor_key": "Fake",
 		"webpage_url": scenario.VideoPrefix + v.ID, "webpage_url_domain": "fake.test", "duration": v.Duration,
-		"uploader": v.Uploader, "upload_date": "20240102", "formats": formats, "subtitles": subs,
+		"uploader": v.Uploader, "upload_date": date, "formats": formats, "subtitles": subs,
 		"http_headers": map[string]string{"User-Agent": "FakeUA"}, "_type": "video",
+	}
+	if v.ChannelURL != "" {
+		m["channel_url"] = v.ChannelURL
 	}
 	if v.SizeBytes > 0 {
 		m["filesize_approx"] = v.SizeBytes
@@ -181,19 +188,70 @@ func videoJSON(v scenario.Video) map[string]any {
 	return m
 }
 
-func playlistJSON(sc *scenario.Scenario, pl scenario.Playlist) map[string]any {
-	var entries []map[string]any
-	for _, id := range pl.Entries {
+func playlistJSON(sc *scenario.Scenario, pl scenario.Playlist, ids []string) map[string]any {
+	entries := []map[string]any{}
+	for _, spec := range ids {
+		id, overrides, _ := strings.Cut(spec, "|")
 		if sub, ok := sc.Playlists[id]; ok {
 			entries = append(entries, map[string]any{"_type": "url", "ie_key": "FakePlaylist", "id": sub.ID,
 				"url": scenario.PlaylistPrefix + sub.ID, "title": sub.Title})
 			continue
 		}
-		v := sc.Videos[id]
-		entries = append(entries, map[string]any{"_type": "url", "ie_key": "Fake", "id": id,
-			"url": scenario.VideoPrefix + id, "title": v.Title})
+		v, ok := sc.Videos[id]
+		if !ok {
+			v = scenario.Video{ID: id, Title: id}
+		}
+		e := map[string]any{"_type": "url", "ie_key": "Fake", "id": id, "url": scenario.VideoPrefix + id, "title": v.Title}
+		if v.Duration > 0 {
+			e["duration"] = v.Duration
+		}
+		if v.Timestamp > 0 {
+			e["timestamp"] = v.Timestamp
+		}
+		if v.UploadDate != "" {
+			e["upload_date"] = v.UploadDate
+		}
+		if v.LiveStatus != "" {
+			e["live_status"] = v.LiveStatus
+		}
+		if v.Availability != "" {
+			e["availability"] = v.Availability
+		}
+		for _, kv := range strings.Split(overrides, "|") {
+			if k, val, ok := strings.Cut(kv, "="); ok {
+				if val == "" {
+					delete(e, k)
+				} else {
+					e[k] = val
+				}
+			}
+		}
+		entries = append(entries, e)
 	}
-	return map[string]any{"_type": "playlist", "id": pl.ID, "title": pl.Title, "entries": entries, "extractor_key": "FakePlaylist"}
+	key := pl.ExtractorKey
+	if key == "" {
+		key = "FakePlaylist"
+	}
+	m := map[string]any{"_type": "playlist", "id": pl.ID, "title": pl.Title, "entries": entries, "extractor_key": key,
+		"thumbnails": []map[string]any{{"url": "https://fake.test/img/" + pl.ID + ".jpg", "width": 100}}}
+	if pl.ChannelID != "" {
+		m["channel_id"] = pl.ChannelID
+	}
+	if pl.Uploader != "" {
+		m["uploader"], m["channel"] = pl.Uploader, pl.Uploader
+	}
+	if pl.Count > 0 {
+		m["playlist_count"] = pl.Count
+	}
+	return m
+}
+
+// window applies "-I :N" (the only item selection the server uses).
+func window(args []string, ids []string) []string {
+	if n, err := strconv.Atoi(strings.TrimPrefix(value(args, "-I"), ":")); err == nil && n < len(ids) {
+		return ids[:n]
+	}
+	return ids
 }
 
 func ytdlp(args []string) int {
@@ -217,6 +275,9 @@ func ytdlp(args []string) int {
 	url := ""
 	if i := slices.Index(args, "--"); i >= 0 && i+1 < len(args) {
 		url = args[i+1]
+	}
+	if alias, ok := sc.Aliases[url]; ok {
+		url = alias
 	}
 	if info := value(args, "--load-info-json"); info != "" {
 		raw, err := os.ReadFile(info)
@@ -250,7 +311,12 @@ func ytdlp(args []string) int {
 		if code, stop := apply(sc, pick(pl.Probe, attempt(kind+"-pl-"+id)), args); stop {
 			return code
 		}
-		return printJSON(playlistJSON(sc, pl))
+		ids := pl.Entries
+		if len(pl.Listings) > 0 {
+			n := min(attempt("listing-pl-"+id), len(pl.Listings))
+			ids = pl.Listings[n-1]
+		}
+		return printJSON(playlistJSON(sc, pl, window(args, ids)))
 	}
 	id, ok := strings.CutPrefix(url, scenario.VideoPrefix)
 	v, known := sc.Videos[id]

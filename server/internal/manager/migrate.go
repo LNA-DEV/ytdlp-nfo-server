@@ -83,6 +83,9 @@ func (m *Manager) settingsChanged(old, cur config.Settings) {
 	if old.MaxConcurrent != cur.MaxConcurrent && m.Sched != nil {
 		m.Sched.SetMax(cur.MaxConcurrent)
 	}
+	if old.Subscriptions.BackgroundSlots != cur.Subscriptions.BackgroundSlots && m.Sched != nil {
+		m.Sched.SetBackgroundSlots(cur.Subscriptions.BackgroundSlots)
+	}
 	m.systemChanged()
 }
 
