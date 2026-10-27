@@ -379,8 +379,8 @@ func TestSubscriptionRateLimited(t *testing.T) {
 	}
 }
 
-// §12: removed library → the check records nothing; restored → the next
-// check finds and queues the new videos. A second library with a folder.
+// §12: removed library → the check records nothing; restored → a check
+// runs at once and queues the new videos. A second library with a folder.
 func TestSubscriptionLibraryAndFolder(t *testing.T) {
 	sc := &scenario.Scenario{}
 	channel(sc, 3, newest(1, 1), newest(1, 2), newest(1, 3))
@@ -403,8 +403,14 @@ func TestSubscriptionLibraryAndFolder(t *testing.T) {
 	if sub.Error != `unknown library "Kinder"` || len(w.entries(id, "")) != 1 {
 		t.Fatalf("removed library: %q, %d entries", sub.Error, len(w.entries(id, "")))
 	}
+	if sub.NextCheckAt.Before(time.Now().Add(23 * time.Hour)) {
+		t.Fatalf("options error: next check %v", sub.NextCheckAt)
+	}
+	restored := time.Now()
 	setLibs([]config.Library{{Name: "Kinder", Path: kids}})
-	w.checkNow(id)
+	if sub = w.waitChecked(id, restored); sub.ErrorClass != "" {
+		t.Fatalf("after restoring the library: %+v", sub)
+	}
 	jobs := w.subJobs(id)
 	if len(jobs) != 1 {
 		t.Fatalf("after restoring the library: %d jobs", len(jobs))
@@ -422,6 +428,37 @@ func TestSubscriptionLibraryAndFolder(t *testing.T) {
 	j = w.wait(jobs[len(jobs)-1].ID, store.JobCompleted)
 	if it := w.items(j.ID)[0]; !strings.HasPrefix(it.FinalPath, "Y/") {
 		t.Fatalf("after the folder change: %s", it.FinalPath)
+	}
+}
+
+// A removed cookie profile is an options error; uploading it again checks
+// the subscription at once.
+func TestSubscriptionCookieProfileRestored(t *testing.T) {
+	sc := &scenario.Scenario{}
+	channel(sc, 3, newest(1, 1))
+	w := newWorld(t, sc)
+	m := w.startSubs()
+	ctx := context.Background()
+	cookies := []byte("# Netscape HTTP Cookie File\n")
+	if _, err := m.SaveCookieProfile(ctx, "acc", cookies); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("Chan"), Mode: strp(store.ModeManual),
+		Options: &config.OptionsRequest{CookieProfile: strp("acc")}, Sources: []SourceInput{{URL: chanVideos}}}))
+	w.waitChecked(id, start)
+	if err := m.DeleteCookieProfile(ctx, "acc"); err != nil {
+		t.Fatal(err)
+	}
+	if sub := w.checkNow(id); !subscriptions.IsOptionsError(sub) {
+		t.Fatalf("removed cookie profile: %+v", sub)
+	}
+	restored := time.Now()
+	if _, err := m.SaveCookieProfile(ctx, "acc", cookies); err != nil {
+		t.Fatal(err)
+	}
+	if sub := w.waitChecked(id, restored); sub.ErrorClass != "" {
+		t.Fatalf("after uploading the profile again: %+v", sub)
 	}
 }
 

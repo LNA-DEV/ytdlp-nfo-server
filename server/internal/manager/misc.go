@@ -102,7 +102,11 @@ func (m *Manager) SaveSiteRule(ctx context.Context, r config.SiteRule) (config.S
 	if err := m.Store.SaveSiteRule(ctx, &r); err != nil {
 		return r, err
 	}
-	return r, m.reloadRules(ctx)
+	if err := m.reloadRules(ctx); err != nil {
+		return r, err
+	}
+	m.recheckOptionErrors(ctx)
+	return r, nil
 }
 
 // DeleteSiteRule removes a rule.
@@ -110,7 +114,11 @@ func (m *Manager) DeleteSiteRule(ctx context.Context, id int64) error {
 	if err := m.Store.DeleteSiteRule(ctx, id); err != nil {
 		return err
 	}
-	return m.reloadRules(ctx)
+	if err := m.reloadRules(ctx); err != nil {
+		return err
+	}
+	m.recheckOptionErrors(ctx)
+	return nil
 }
 
 // --- cookies ---
@@ -146,6 +154,7 @@ func (m *Manager) SaveCookieProfile(ctx context.Context, name string, data []byt
 	if old != nil && old.Filename != file {
 		os.Remove(filepath.Join(m.cookieDir, filepath.Base(old.Filename)))
 	}
+	m.recheckOptionErrors(ctx)
 	return m.Store.GetCookieProfile(ctx, name)
 }
 

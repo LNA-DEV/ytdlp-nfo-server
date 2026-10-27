@@ -89,6 +89,7 @@ func (m *Manager) settingsChanged(old, cur config.Settings) {
 	if old.Subscriptions != cur.Subscriptions && m.subs.loop != nil {
 		m.subs.loop.Wake() // e.g. resumed after "Pause all"
 	}
+	m.recheckOptionErrors(context.Background())
 	m.systemChanged()
 }
 

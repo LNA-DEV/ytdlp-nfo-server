@@ -212,6 +212,18 @@ func (l *Loop) dispatch(ctx context.Context, wg *sync.WaitGroup) time.Time {
 	return wakeAt
 }
 
+// Hints of a check that could not use its download options.
+const (
+	HintOptions       = "Edit the subscription's download options, or restore what it uses."
+	HintCookieProfile = "Upload the cookie profile again or choose another one."
+)
+
+// IsOptionsError reports whether the last check of sub failed on its
+// download options (a removed library, cookie profile or preset).
+func IsOptionsError(sub *store.Subscription) bool {
+	return sub.ErrorClass != "" && (sub.Hint == HintOptions || sub.Hint == HintCookieProfile)
+}
+
 // check runs one check: list every source, then commit.
 func (l *Loop) check(ctx context.Context, sub *store.Subscription, opts config.Options, site string, optErr error, full bool) {
 	bg := context.WithoutCancel(ctx)
@@ -227,7 +239,7 @@ func (l *Loop) check(ctx context.Context, sub *store.Subscription, opts config.O
 	if optErr != nil {
 		log.Printf("--- Download options: %v. Nothing is listed or recorded ---", optErr)
 		res.OptionsErr = &ytdlp.Classification{Class: ytdlp.ClassPermanent, Reason: optErr.Error(),
-			Hint: "Edit the subscription's download options, or restore what it uses."}
+			Hint: HintOptions}
 		l.commit(ctx, res, log)
 		return
 	}
@@ -263,7 +275,7 @@ func (l *Loop) check(ctx context.Context, sub *store.Subscription, opts config.O
 		if err != nil {
 			log.Printf("--- Cookie profile %q: %v ---", opts.CookieProfile, err)
 			res.OptionsErr = &ytdlp.Classification{Class: ytdlp.ClassPermanent, Reason: "cookie profile: " + err.Error(),
-				Hint: "Upload the cookie profile again or choose another one."}
+				Hint: HintCookieProfile}
 			l.commit(ctx, res, log)
 			return
 		}

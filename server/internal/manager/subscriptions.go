@@ -115,6 +115,34 @@ func firstURL(sub *store.Subscription) string {
 	return sub.Sources[0].URL
 }
 
+// recheckOptionErrors makes subscriptions whose last check failed on their
+// download options due now if the options resolve again, e.g. after a
+// library, site rule or cookie profile was restored (§5.2 "options first").
+func (m *Manager) recheckOptionErrors(ctx context.Context) {
+	if m.subs.loop == nil {
+		return
+	}
+	subs, err := m.Store.ListSubscriptions(ctx)
+	if err != nil {
+		return
+	}
+	var ids []int64
+	for _, sub := range subs {
+		if !sub.Enabled || !subscriptions.IsOptionsError(sub) {
+			continue
+		}
+		if _, _, err := m.resolveSub(ctx, sub); err == nil {
+			ids = append(ids, sub.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	if _, err := m.Store.SetNextCheck(ctx, ids, time.Now()); err == nil {
+		m.subs.loop.Wake()
+	}
+}
+
 // resolveSub resolves the download options of a subscription (subscription
 // option > site rule > global default) and its scheduler site key. An
 // error means the options can't be used, e.g. a removed library.
