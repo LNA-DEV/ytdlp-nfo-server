@@ -977,3 +977,30 @@ func TestSubscriptionNewestFirstOutsideYouTube(t *testing.T) {
 		t.Fatalf("inbox: %s", got)
 	}
 }
+
+// An OPML export of Shorts and Live tabs imports as the same tabs, not as
+// the Videos tab its feed URL stands for.
+func TestSubscriptionOPMLKeepsTabs(t *testing.T) {
+	sc := &scenario.Scenario{}
+	channel(sc, 1, newest(1, 1))
+	w := newWorld(t, sc)
+	m := w.startSubs()
+	ctx := context.Background()
+	shorts := subscriptions.ChannelTabURL(chanID, subscriptions.TabShorts)
+	streams := subscriptions.ChannelTabURL(chanID, subscriptions.TabStreams)
+	v := w.subscribe(SubscriptionInput{Name: strp("Chan"), Sources: []SourceInput{{URL: shorts}, {URL: streams}}})
+	out, err := m.ExportSubscriptions(ctx, FormatOPML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DeleteSubscription(ctx, sid(v), false); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.ImportSubscriptions(ctx, FormatOPML, string(out))
+	if err != nil || len(res.Created) != 2 || len(res.Skipped) != 0 {
+		t.Fatalf("import: %+v %v", res, err)
+	}
+	if got := res.Created[0].Sources[0].Canonical + " " + res.Created[1].Sources[0].Canonical; got != shorts+" "+streams {
+		t.Fatalf("imported tabs: %s", got)
+	}
+}

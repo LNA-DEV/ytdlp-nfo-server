@@ -94,8 +94,11 @@ func parseImport(format, data string) ([]importItem, error) {
 				if title == "" {
 					title = strings.TrimSpace(o.Text)
 				}
+				// A feed URL stands for the whole channel: the Videos tab,
+				// unless htmlUrl names another tab (our own export does).
+				_, tab, isTab := subscriptions.YouTubeChannel(strings.TrimSpace(o.HTMLURL))
 				switch id := youTubeFeedChannel(o.XMLURL); {
-				case id != "":
+				case id != "" && !(isTab && tab != ""):
 					items = append(items, importItem{URL: subscriptions.ChannelTabURL(id, subscriptions.TabVideos), Title: title})
 				case o.HTMLURL != "":
 					items = append(items, importItem{URL: strings.TrimSpace(o.HTMLURL), Title: title})
