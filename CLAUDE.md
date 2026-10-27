@@ -33,6 +33,11 @@ docker build -t ytdlp-nfo-server .
 
 Tests never touch the network: `internal/testutil/fakeytdlp` is a fake yt-dlp (also `ffprobe`/`ffmpeg` by name) driven by `internal/testutil/scenario` files. Failpoints (`internal/failpoint`, env `YTDLP_NFO_FAILPOINTS`) kill the process at named steps.
 
+## Workflow
+
+- Work stage by stage (for a concept: its rollout phases, split into steps that build on each other). Finish and test each stage before starting the next one: `go build`, `go vet ./...` and `go test -race ./...` must pass, plus new tests for what the stage adds.
+- Commit at sensible intervals: one commit per finished and tested stage or step, never a broken or half-done state. Push the development branch after each phase.
+
 ## Key Files
 
 - `server/main.go` — entry point, signals, `healthcheck` and `bundle` subcommands

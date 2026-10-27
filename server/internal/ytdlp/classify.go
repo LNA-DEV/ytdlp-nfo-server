@@ -44,6 +44,11 @@ func r(class Class, pattern, reason, hint string) rule {
 	return rule{class: class, re: regexp.MustCompile(`(?i)` + pattern), reason: reason, hint: hint}
 }
 
+// ReasonNotYetAvailable is the reason of a premiere or an upcoming live
+// stream. Subscriptions treat an item that failed with it as upcoming
+// (subscriptions concept §5.3), so it must stay stable.
+const ReasonNotYetAvailable = "video is not available yet (premiere or upcoming live stream)"
+
 // Hints shown in the UI per class.
 const (
 	HintPermanent       = "Not retried automatically: this error does not go away by waiting."
@@ -88,7 +93,7 @@ var rules = []rule{
 	r(ClassPermanent, `no video formats found|requested format is not available|no formats? (found|available)`,
 		"no downloadable formats", HintPermanent),
 	r(ClassPermanent, `premieres in|live event will begin|this live event will|is not yet available|is upcoming`,
-		"video is not available yet (premiere or upcoming live stream)", HintPermanent),
+		ReasonNotYetAvailable, HintPermanent),
 	r(ClassPermanent, `video unavailable|this video is (no longer )?(un)?available|has been removed|was removed|been terminated|no longer available|does not exist|HTTP Error 404|HTTP Error 410|404: Not Found|content (is )?not available`,
 		"video is unavailable or was removed", HintPermanent),
 	r(ClassExtractorBroken, `unable to extract|unable to parse|failed to parse|please report this issue|latest version using\s+yt-dlp -U|is this a bug|signature extraction failed|nsig extraction failed|challenge solving failed|could not find js function|unsupported (player|js)`,
