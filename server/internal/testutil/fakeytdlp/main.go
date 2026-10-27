@@ -390,6 +390,9 @@ func download(sc *scenario.Scenario, v scenario.Video, args []string) int {
 	if ext == "" {
 		ext = "mkv"
 	}
+	if v.Single != "" {
+		ext = v.Single
+	}
 	info := scenario.MediaInfo{FakeMedia: true, Duration: v.Duration, Video: 1, Audio: max(1, len(v.Languages))}
 	if v.AudioOnly {
 		info.Video = 0
@@ -403,8 +406,17 @@ func download(sc *scenario.Scenario, v scenario.Video, args []string) int {
 	if err := os.WriteFile(media, data, 0o644); err != nil {
 		return fail("fake: %v", err)
 	}
-	fmt.Printf("[Merger] Merging formats into \"%s\"\n", media)
 	formatID := "137+251-0"
+	if v.Single == "" {
+		fmt.Printf("[Merger] Merging formats into \"%s\"\n", media)
+	} else if to := value(args, "--remux-video"); to != "" && to != ext {
+		remuxed := filepath.Join(home, "media."+to)
+		fmt.Printf("[VideoRemuxer] Remuxing video from %s to %s; Destination: %s\n", ext, to, remuxed)
+		if err := os.Rename(media, remuxed); err != nil {
+			return fail("fake: %v", err)
+		}
+		media = remuxed
+	}
 	if len(v.Languages) > 1 {
 		ids := []string{"137"}
 		for i := range v.Languages {
@@ -414,6 +426,9 @@ func download(sc *scenario.Scenario, v scenario.Video, args []string) int {
 	}
 	if v.AudioOnly {
 		formatID = "251-0"
+	}
+	if v.Single != "" {
+		formatID = "18"
 	}
 	for i, a := range args {
 		if a == "--print-to-file" && i+2 < len(args) {

@@ -157,8 +157,14 @@ func TestArgsSafety(t *testing.T) {
 			t.Fatalf("download must not contain %s: %v", bad, d)
 		}
 	}
-	if !slices.Contains(d, "--abort-on-unavailable-fragments") || !slices.Contains(d, "--load-info-json") {
+	if !slices.Contains(d, "--abort-on-unavailable-fragments") || !slices.Contains(d, "--load-info-json") ||
+		!strings.Contains(strings.Join(d, " "), "--remux-video mkv") {
 		t.Fatalf("missing flags: %v", d)
+	}
+	for _, spec := range []DownloadSpec{{Container: "mp4"}, {Container: "mkv", AudioOnly: true}} {
+		if d := DownloadArgs(spec, CallOptions{}); slices.Contains(d, "--remux-video") {
+			t.Fatalf("remux for %+v: %v", spec, d)
+		}
 	}
 	s := SubtitleArgs("/w", false, CallOptions{})
 	if !slices.Contains(s, "all,-live_chat") || !slices.Contains(s, "--skip-download") {

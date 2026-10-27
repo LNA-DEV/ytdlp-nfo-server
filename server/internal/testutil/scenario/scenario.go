@@ -39,10 +39,13 @@ type Video struct {
 	Subtitles  []string         `json:"subtitles,omitempty"`
 	Languages  []string         `json:"languages,omitempty"` // audio tracks
 	AudioOnly  bool             `json:"audioOnly,omitempty"`
-	SizeBytes  int64            `json:"sizeBytes,omitempty"`
-	ChannelURL string           `json:"channelUrl,omitempty"` // channel_url in the metadata
-	UploadDate string           `json:"uploadDate,omitempty"` // YYYYMMDD (default 20240102)
-	Timestamp  int64            `json:"timestamp,omitempty"`  // in listings
+	// Single is the extension of a single-file format: it is downloaded
+	// without a merge, so --merge-output-format does not apply.
+	Single     string `json:"single,omitempty"`
+	SizeBytes  int64  `json:"sizeBytes,omitempty"`
+	ChannelURL string `json:"channelUrl,omitempty"` // channel_url in the metadata
+	UploadDate string `json:"uploadDate,omitempty"` // YYYYMMDD (default 20240102)
+	Timestamp  int64  `json:"timestamp,omitempty"`  // in listings
 	// LiveStatus and Availability are reported by listings; a listing
 	// entry "id|live_status=…|availability=…" overrides them.
 	LiveStatus   string     `json:"liveStatus,omitempty"`

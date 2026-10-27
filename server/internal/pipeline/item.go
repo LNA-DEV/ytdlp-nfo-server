@@ -258,7 +258,7 @@ func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refe
 	it.State = store.ItemDownloading
 	it.YtdlpVersion = rc.bin.ID
 	p.saveItem(it)
-	mediaPath, formatID, err := p.download(ctx, rc, it, dir, sel)
+	mediaPath, formatID, err := p.download(ctx, rc, it, dir, sel, formats.AudioOnlySource(meta.Formats))
 	if err != nil {
 		return err
 	}
@@ -415,12 +415,12 @@ func (p *Pipeline) checkDisk(rc *runCtx, estimate int64) error {
 
 // download runs the media-only download and returns the media path and the
 // chosen format id.
-func (p *Pipeline) download(ctx context.Context, rc *runCtx, it *store.Item, dir string, sel formats.Selection) (string, string, error) {
+func (p *Pipeline) download(ctx context.Context, rc *runCtx, it *store.Item, dir string, sel formats.Selection, audioOnly bool) (string, string, error) {
 	resultPath := filepath.Join(dir, ytdlp.ResultFile)
 	os.Remove(resultPath)
 	spec := ytdlp.DownloadSpec{
 		WorkDir: dir, Format: sel.Format, AudioMultistream: sel.AudioMultistream, Sort: sel.Sort,
-		Container: rc.job.Options.Container, EmbedChapters: rc.settings.Extras.EmbedChapters,
+		Container: rc.job.Options.Container, AudioOnly: audioOnly, EmbedChapters: rc.settings.Extras.EmbedChapters,
 		SponsorBlockMark: rc.settings.Extras.SponsorBlockMark,
 	}
 	parts := strings.Count(strings.SplitN(sel.Format, "/", 2)[0], "+") + 1

@@ -286,7 +286,7 @@ Completed items with warnings get the action *Re-run extras*. It fetches the thu
   - *Best* (default): no sort override.
   - *Compatible*: `-S "res:1080,vcodec:h264,acodec:aac"`, so Jellyfin clients without AV1/VP9 can direct-play.
   - *Max 1080p* / *Max 720p*: `-S "res:1080"` / `-S "res:720"`.
-- Container: `mkv` (default) or `mp4`.
+- Container: `mkv` (default) or `mp4`. Merged downloads use `--merge-output-format`. A single-file format is not merged, so for `mkv` it is also remuxed (`--remux-video mkv`), unless the source is audio-only. `mp4` does not remux, because not every codec fits into mp4.
 
 ### 5.3 NFO
 
@@ -641,7 +641,7 @@ yt-dlp --ignore-config --no-playlist -J [...] -- "$ENTRY_URL" > "$WORK/info.json
 yt-dlp --ignore-config --no-playlist \
   --load-info-json "$WORK/info.json" \
   -f "bv+251-0+251-1/bv*+ba/best" --audio-multistreams \
-  --merge-output-format mkv \
+  --merge-output-format mkv [--remux-video mkv] \
   -P "home:$WORK" -P "temp:$WORK/.tmp" -o "media.%(ext)s" \
   --retries 10 --fragment-retries 10 --extractor-retries 5 --socket-timeout 30 \
   --retry-sleep http:exp=1:30 --retry-sleep fragment:exp=1:30 \

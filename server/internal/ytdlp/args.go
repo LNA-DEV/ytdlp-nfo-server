@@ -110,6 +110,7 @@ type DownloadSpec struct {
 	AudioMultistream bool
 	Sort             string
 	Container        string // mkv | mp4
+	AudioOnly        bool   // the source has no video (nothing is remuxed)
 	EmbedChapters    bool
 	SponsorBlockMark bool
 }
@@ -127,8 +128,14 @@ func DownloadArgs(s DownloadSpec, o CallOptions) []string {
 	if s.Sort != "" {
 		args = append(args, "-S", s.Sort)
 	}
+	args = append(args, "--merge-output-format", s.Container)
+	if s.Container == "mkv" && !s.AudioOnly {
+		// A single-file format is not merged: remux it, so every video
+		// ends up in the requested container. Only mkv, which takes any
+		// codec; remuxing into mp4 can fail.
+		args = append(args, "--remux-video", "mkv")
+	}
 	args = append(args,
-		"--merge-output-format", s.Container,
 		"-P", "home:"+s.WorkDir,
 		"-P", "temp:"+filepath.Join(s.WorkDir, TmpDir),
 		"-o", MediaBase+".%(ext)s",
