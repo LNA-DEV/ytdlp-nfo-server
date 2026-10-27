@@ -33,6 +33,7 @@ func (m *Manager) RemoveArchive(ctx context.Context, key string) error {
 	if err := m.Archive.Remove(key); err != nil {
 		m.logf("archive: could not update %s: %v", m.Archive.Path, err)
 	}
+	m.markCounts(0)
 	return nil
 }
 
@@ -47,6 +48,7 @@ func (m *Manager) ImportArchive(ctx context.Context, data []byte) (int, error) {
 		return 0, err
 	}
 	if n > 0 { // keep the shared legacy file in sync
+		m.markCounts(0)
 
 		all, err := m.Store.AllArchiveKeys(ctx)
 		if err == nil {

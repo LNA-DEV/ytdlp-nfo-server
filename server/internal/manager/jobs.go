@@ -344,7 +344,8 @@ func (m *Manager) removeWorkDirs(ctx context.Context, jobID int64, all bool) {
 // Delete removes a job record, cancelling it first if it runs. Files in the
 // library are never touched.
 func (m *Manager) Delete(ctx context.Context, id int64) error {
-	if _, err := m.Store.GetJob(ctx, id); err != nil {
+	job, err := m.Store.GetJob(ctx, id)
+	if err != nil {
 		return err
 	}
 	// Wait until the process group is gone before deleting files (F9).
@@ -359,6 +360,9 @@ func (m *Manager) Delete(ctx context.Context, id int64) error {
 	delete(m.live, id)
 	m.mu.Unlock()
 	m.Hub.Publish(EventJobRemoved, map[string]string{"id": itoa(id)})
+	if job.SubscriptionID != 0 {
+		m.markCounts(job.SubscriptionID) // its entries lost their item
+	}
 	m.publishCounts()
 	return nil
 }

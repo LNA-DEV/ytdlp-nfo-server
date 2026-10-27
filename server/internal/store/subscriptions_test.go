@@ -380,3 +380,23 @@ func TestMigrationFromVersion1(t *testing.T) {
 	}
 	newSub(t, s, "after migration", "https://fake.test/pl/m")
 }
+
+func TestPruneGoneEntries(t *testing.T) {
+	s := openTest(t, false)
+	ctx := context.Background()
+	sub := newSub(t, s, "S", "https://fake.test/pl/s")
+	old := time.Now().Add(-48 * time.Hour)
+	s.ImportArchiveKeys(ctx, []string{"fake kept-archived"}, "test")
+	gone := addEntry(t, s, &Entry{SubscriptionID: sub.ID, Key: "fake gone", GoneAt: old})
+	addEntry(t, s, &Entry{SubscriptionID: sub.ID, Key: "fake kept-archived", GoneAt: old})
+	addEntry(t, s, &Entry{SubscriptionID: sub.ID, Key: "fake kept-recent", GoneAt: time.Now()})
+	addEntry(t, s, &Entry{SubscriptionID: sub.ID, Key: "fake listed"})
+	n, err := s.PruneGoneEntries(ctx, time.Now().Add(-24*time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("pruned %d: %v", n, err)
+	}
+	keys, _ := s.EntryKeys(ctx, sub.ID)
+	if len(keys) != 3 || keys[gone.Key] {
+		t.Fatalf("keys after prune: %v", keys)
+	}
+}

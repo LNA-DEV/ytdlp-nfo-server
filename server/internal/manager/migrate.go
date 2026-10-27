@@ -86,6 +86,9 @@ func (m *Manager) settingsChanged(old, cur config.Settings) {
 	if old.Subscriptions.BackgroundSlots != cur.Subscriptions.BackgroundSlots && m.Sched != nil {
 		m.Sched.SetBackgroundSlots(cur.Subscriptions.BackgroundSlots)
 	}
+	if old.Subscriptions != cur.Subscriptions && m.subs.loop != nil {
+		m.subs.loop.Wake() // e.g. resumed after "Pause all"
+	}
 	m.systemChanged()
 }
 

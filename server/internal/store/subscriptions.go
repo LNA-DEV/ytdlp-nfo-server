@@ -571,6 +571,15 @@ func (t *Tx) ResetImpersonation(ctx context.Context, subID int64) error {
 
 // SourcesByCanonical returns the sources using any of the canonical URLs.
 func (s *Store) SourcesByCanonical(ctx context.Context, canonicals []string) ([]*Source, error) {
+	return sourcesByCanonical(ctx, s.db, canonicals)
+}
+
+// SourcesByCanonical reads sources by canonical URL inside the transaction.
+func (t *Tx) SourcesByCanonical(ctx context.Context, canonicals []string) ([]*Source, error) {
+	return sourcesByCanonical(ctx, t.tx, canonicals)
+}
+
+func sourcesByCanonical(ctx context.Context, q querier, canonicals []string) ([]*Source, error) {
 	if len(canonicals) == 0 {
 		return nil, nil
 	}
@@ -578,7 +587,7 @@ func (s *Store) SourcesByCanonical(ctx context.Context, canonicals []string) ([]
 	for i, c := range canonicals {
 		args[i] = c
 	}
-	return querySources(ctx, s.db, `WHERE canonical IN (`+placeholders(len(canonicals))+`)`, args...)
+	return querySources(ctx, q, `WHERE canonical IN (`+placeholders(len(canonicals))+`)`, args...)
 }
 
 // SubscriptionJobIDs returns the open jobs of a subscription.
@@ -672,6 +681,26 @@ func queryEntries(ctx context.Context, q querier, p StatusParams, where string, 
 			return nil, err
 		}
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// EntryKeys returns the keys of all entries of a subscription (including
+// ignored and gone ones): a windowed listing that contains none of them
+// has a gap (§5.2).
+func (s *Store) EntryKeys(ctx context.Context, subID int64) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key FROM subscription_entries WHERE subscription_id = ?`, subID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		out[k] = true
 	}
 	return out, rows.Err()
 }

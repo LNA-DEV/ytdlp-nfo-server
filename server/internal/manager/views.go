@@ -34,6 +34,8 @@ type JobView struct {
 	Counts       store.Counts          `json:"counts"`
 	Progress     *pipeline.Live        `json:"progress,omitempty"`
 	Legacy       bool                  `json:"legacy,omitempty"`
+	Subscription string                `json:"subscriptionId,omitempty"`
+	Band         string                `json:"band"`
 	Items        []ItemView            `json:"items,omitempty"`
 }
 
@@ -76,7 +78,10 @@ func jobView(j *store.Job, live *pipeline.Live) JobView {
 		IsPlaylist: j.IsPlaylist, State: j.State, Tab: j.State.Tab(), Error: j.Error, ErrorClass: j.ErrorClass,
 		Hint: j.Hint, Attempts: j.Attempts, RetryAt: tptr(j.RetryAt), Options: j.Options, Requested: j.Requested,
 		YtdlpVersion: j.YtdlpVersion, CreatedAt: j.CreatedAt, StartedAt: tptr(j.StartedAt),
-		FinishedAt: tptr(j.FinishedAt), QueuePos: j.QueuePos, Counts: j.Counts, Legacy: j.Legacy,
+		FinishedAt: tptr(j.FinishedAt), QueuePos: j.QueuePos, Counts: j.Counts, Legacy: j.Legacy, Band: j.Band.String(),
+	}
+	if j.SubscriptionID != 0 {
+		v.Subscription = itoa(j.SubscriptionID)
 	}
 	if live != nil && (j.State == store.JobRunning || j.State == store.JobProbing) {
 		l := *live
