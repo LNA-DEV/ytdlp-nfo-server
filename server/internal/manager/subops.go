@@ -100,6 +100,9 @@ func (m *Manager) subView(sub *store.Subscription, all []*store.Subscription) Su
 		Hint: sub.Hint, Warning: sub.Warning, LastCheckAt: tptr(sub.LastCheckAt), LastOKAt: tptr(sub.LastOKAt),
 		NextCheckAt: tptr(sub.NextCheckAt), CreatedAt: sub.CreatedAt, Sources: []SourceView{}, Counts: m.subCounts(sub.ID),
 	}
+	if v.Name == "" {
+		v.Name = firstURL(sub) // imported, not listed yet
+	}
 	if m.subs.loop.Running(sub.ID) {
 		v.State = store.SubChecking // until the loop has released it, a Check now would be ignored
 	}
@@ -596,7 +599,10 @@ func (m *Manager) DeleteSubscription(ctx context.Context, id int64, cancelQueued
 // --- checks ---
 
 // CheckSubscription makes a subscription due now (Check now); full lists
-// every source completely. A running check is not started twice.
+// every source completely. A subscription is never checked twice at the
+// same time: during the listing of a running check the request is absorbed
+// by that check (its commit schedules the next one), after its commit it
+// starts a new check once the loop has released the running one.
 func (m *Manager) CheckSubscription(ctx context.Context, id int64, full bool) error {
 	sub, err := m.Store.GetSubscription(ctx, id)
 	if err != nil {
@@ -604,9 +610,6 @@ func (m *Manager) CheckSubscription(ctx context.Context, id int64, full bool) er
 	}
 	if !sub.Enabled {
 		return fmt.Errorf("%w: the subscription is paused", ErrConflict)
-	}
-	if m.subs.loop.Running(id) {
-		return nil
 	}
 	if full {
 		m.subs.loop.RequestFull(id)

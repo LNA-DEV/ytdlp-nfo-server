@@ -144,6 +144,16 @@ h1 {
   background: #3a8eef;
 }
 
+.submit-btn.secondary {
+  margin-top: 0.4rem;
+  background: #2a2a2a;
+  color: #e0e0e0;
+}
+
+.submit-btn.secondary:hover {
+  background: #333;
+}
+
 .submit-btn:disabled {
   background: #333;
   color: #666;

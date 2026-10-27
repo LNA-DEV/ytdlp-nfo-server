@@ -127,6 +127,22 @@ func TestSubscriptionsAPI(t *testing.T) {
 		t.Fatalf("log:\n%s", logText)
 	}
 
+	resp, imp := do(t, c, "POST", api+"/subscriptions/import", "pw", map[string]string{"format": "urls", "data": url + "\n" + scenario.PlaylistPrefix + "other\n"})
+	if resp.StatusCode != 200 || len(imp["created"].([]any)) != 1 || len(imp["skipped"].([]any)) != 1 {
+		t.Fatalf("import: %d %v", resp.StatusCode, imp)
+	}
+	req, _ = http.NewRequest("GET", api+"/subscriptions/export?format=opml", nil)
+	req.Header.Set("Authorization", "Bearer pw")
+	er, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opml, _ := io.ReadAll(er.Body)
+	er.Body.Close()
+	if !strings.HasPrefix(er.Header.Get("Content-Type"), "text/x-opml") || strings.Count(string(opml), "<outline") != 2 {
+		t.Fatalf("export: %s\n%s", er.Header.Get("Content-Type"), opml)
+	}
+
 	resp, _ = do(t, c, "DELETE", api+"/subscriptions/"+id+"?cancelQueued=1", "pw", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("delete: %d", resp.StatusCode)

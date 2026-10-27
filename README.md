@@ -37,6 +37,7 @@ A self-hosted download server for [yt-dlp](https://github.com/yt-dlp/yt-dlp) tha
 
 - **Library-safe downloads**: an item only appears in the library after it was downloaded, verified with `ffprobe` and fsynced; it is moved in with a single atomic rename. Nothing in the library is overwritten by a different video.
 - **Per-item tracking**: a playlist job has one item per video, each with its own state, retries and log. A failed video never affects the ones that already finished.
+- **Subscriptions**: watch channels (with a choice of tabs) and playlists. New videos are downloaded automatically or land in an inbox to pick from; existing videos are only downloaded if asked. Checks are cheap and gentle on sites, and automatic downloads always give way to the ones you start by hand.
 - **Smart retries**: errors are classified (permanent, blocked, rate-limited, extractor broken, crash, transient). Permanent errors are not retried, backoff is capped at 15 minutes, and every failed attempt is explained in the log.
 - **yt-dlp version manager**: choose stable, nightly or master and a specific version in the UI, with SHA-256 verification, smoke test, auto-update and one-click rollback. Verified builds are bundled in the image, so it works offline on first start.
 - **Impersonation** (`curl_cffi`) per job, per site rule, and as an automatic one-time escalation when a site blocks access.
@@ -138,18 +139,31 @@ When a site's support breaks in the active version, the server retries once with
 
 A thumbnail or subtitle problem never fails a video; the item completes with a warning and can be repaired with **Re-run extras**.
 
+### Subscriptions
+
+**Subscriptions → + Add subscription** previews a channel, playlist or video page (a video subscribes to its channel) and lets you choose the tabs (Videos, Shorts, Live), the library and folder, the mode and what happens with the videos that already exist:
+
+- **Manual** (default): new videos land in the inbox (the **Feed** tab and the badge in the navigation); download or ignore them one by one or in bulk.
+- **All new videos**: every check queues the new videos as one job, oldest first. More than 25 new videos at once (a changed URL, a broken listing) are listed for review instead.
+- Existing videos (the **backlog**) are not downloaded unless you choose *latest N* or *all*, now or later with **Download backlog…**.
+
+Subscriptions are checked every 6 hours by default (15 minutes to 7 days per subscription); for exact times, call `POST /api/v1/subscriptions/check` from a cron job. Checks list only the newest 50 videos of a channel tab, run one at a time per site and respect rate limits. Each subscription has its own folder in the library (its name by default); filters by duration, title and date keep the inbox clean. Downloads of new videos and backlogs run in the background and give way to downloads you start by hand. Subscriptions can be imported from a URL list, OPML or the CSV of a YouTube subscriptions export, and exported as a URL list or OPML. See [`docs/subscriptions-concept.md`](docs/subscriptions-concept.md) for the details.
+
 ### Browser add-on
 
-The add-on in [`browser-addon/`](browser-addon/) sends the current tab, or any link via the context menu, to the server. Create an API token in **Settings → Security** and enter it in the add-on settings (the server password still works but is deprecated). The add-on also works with v1 servers.
+The add-on in [`browser-addon/`](browser-addon/) sends the current tab, or any link via the context menu, to the server, and **Subscribe** subscribes to the channel or playlist of the page (manual mode, no backlog). Create an API token in **Settings → Security** and enter it in the add-on settings (the server password still works but is deprecated). The add-on also works with v1 servers.
 
 ### API
 
-The UI uses `/api/v1` (jobs, events, settings, versions, sites, cookies, tokens, archive, system); see [`docs/overhaul-concept.md`](docs/overhaul-concept.md#9-api). Authenticate with `Authorization: Bearer <api token>`. The v1 routes (`POST /api/download`, `GET /api/jobs`, …) remain available. `GET /healthz` needs no authentication.
+The UI uses `/api/v1` (jobs, events, settings, versions, sites, cookies, tokens, archive, system, subscriptions, feed); see [`docs/overhaul-concept.md`](docs/overhaul-concept.md#9-api) and [`docs/subscriptions-concept.md`](docs/subscriptions-concept.md#8-api). Authenticate with `Authorization: Bearer <api token>`. The v1 routes (`POST /api/download`, `GET /api/jobs`, …) remain available. `GET /healthz` needs no authentication.
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/jobs \
   -H "Authorization: Bearer ytn_…" -H "Content-Type: application/json" \
   -d '{"url": "https://example.com/watch?v=…", "options": {"preset": "compatible"}}'
+
+# Check all subscriptions now (e.g. from cron)
+curl -X POST http://localhost:8080/api/v1/subscriptions/check -H "Authorization: Bearer ytn_…"
 ```
 
 ## Development

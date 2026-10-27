@@ -2,10 +2,14 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -673,5 +677,161 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("timeout")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// §11: one notification per check with new entries (notify), one when the
+// subscription enters the error state (onFailed), not on every check.
+func TestSubscriptionNotifications(t *testing.T) {
+	var mu sync.Mutex
+	var got []map[string]any
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]any
+		json.NewDecoder(r.Body).Decode(&m)
+		mu.Lock()
+		got = append(got, m)
+		mu.Unlock()
+	}))
+	defer hook.Close()
+	sc := &scenario.Scenario{}
+	channel(sc, 3, newest(1, 1), newest(1, 3))
+	pl := sc.Playlists["chan"]
+	pl.Probe = []scenario.Behavior{{}, {}, {Exit: 1, Stderr: []string{"ERROR: [youtube:tab] chan: This channel does not exist."}}}
+	sc.Playlists["chan"] = pl
+	w := newWorld(t, sc)
+	m := w.startSubs()
+	m.Settings.Update(context.Background(), func(s *config.Settings) error {
+		s.Notifications = config.Notifications{WebhookURL: hook.URL, OnFailed: true}
+		return nil
+	})
+	events := func(n int) []map[string]any {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			mu.Lock()
+			c := append([]map[string]any(nil), got...)
+			mu.Unlock()
+			if len(c) >= n || time.Now().After(deadline) {
+				return c
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	start := time.Now()
+	notifyOn := true
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("Chan"), Notify: &notifyOn, Sources: []SourceInput{{URL: chanVideos}}}))
+	w.waitChecked(id, start)
+	w.checkNow(id)
+	ev := events(1)
+	if len(ev) != 1 || ev[0]["event"] != "subscription.new" || ev[0]["message"] != "Chan: 2 new videos" ||
+		ev[0]["subscription"].(map[string]any)["count"] != 2.0 {
+		t.Fatalf("new videos: %v", ev)
+	}
+	w.checkNow(id)
+	w.checkNow(id) // still failing: no second message
+	events(2)
+	time.Sleep(200 * time.Millisecond)
+	if ev = events(2); len(ev) != 2 || ev[1]["event"] != "subscription.error" {
+		t.Fatalf("error notifications: %v", ev)
+	}
+}
+
+// §11: import from a URL list, OPML and the YouTube CSV; duplicates and
+// existing sources are skipped; the first checks are spread out; export
+// writes the canonical URLs.
+func TestSubscriptionImportExport(t *testing.T) {
+	sc := &scenario.Scenario{}
+	channel(sc, 2, newest(1, 2))
+	w := newWorld(t, sc)
+	m := w.startSubs()
+	ctx := context.Background()
+	w.subscribe(SubscriptionInput{Name: strp("Existing"), Sources: []SourceInput{{URL: scenario.PlaylistPrefix + "other"}}})
+	const other = "UCabcdefghijabcdefghij12"
+	csvData := "Channel Id,Channel Url,Channel Title\n" + chanID + ",http://www.youtube.com/channel/" + chanID + ",Chan\n" +
+		other + ",http://www.youtube.com/channel/" + other + ",Other\n"
+	res, err := m.ImportSubscriptions(ctx, FormatYouTubeCSV, csvData)
+	if err != nil || len(res.Created) != 2 || res.Created[0].Name != "Chan" || res.Created[0].Sources[0].Canonical != chanVideos {
+		t.Fatalf("csv: %+v %v", res, err)
+	}
+	if res.Created[0].Mode != "manual" || res.Created[1].NextCheckAt.Before(res.Created[0].NextCheckAt.Add(20*time.Minute)) {
+		t.Fatalf("imported subscriptions must be manual with spread first checks: %+v", res.Created)
+	}
+	opml := `<?xml version="1.0"?><opml version="1.1"><body><outline text="YouTube">
+		<outline text="Chan again" xmlUrl="https://www.youtube.com/feeds/videos.xml?channel_id=` + chanID + `"/>
+		<outline title="A list" htmlUrl="` + scenario.PlaylistPrefix + `pl"/></outline></body></opml>`
+	res, err = m.ImportSubscriptions(ctx, FormatOPML, opml)
+	if err != nil || len(res.Created) != 1 || len(res.Skipped) != 1 || res.Skipped[0].Reason != "already subscribed" {
+		t.Fatalf("opml: %+v %v", res, err)
+	}
+	res, err = m.ImportSubscriptions(ctx, FormatURLs, "# comment\n"+scenario.PlaylistPrefix+"other/\nnot a url\nhttps://www.youtube.com/@someone\nhttps://www.youtube.com/@someone/videos\n")
+	if err != nil || len(res.Created) != 1 || len(res.Skipped) != 3 {
+		t.Fatalf("urls: %+v %v", res, err)
+	}
+	if v := res.Created[0]; v.Name != "https://www.youtube.com/@someone/videos" || v.Sources[0].Tab != "videos" {
+		t.Fatalf("handle URL: %+v", v)
+	}
+	if _, err := m.ImportSubscriptions(ctx, "xls", ""); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown format: %v", err)
+	}
+	// The imported channel without a title is named after its first listing.
+	chanSub := int64(0)
+	subs, _ := m.ListSubscriptions(ctx, "")
+	for _, s := range subs {
+		if s.Sources[0].Canonical == chanVideos {
+			chanSub = sid(&s)
+		}
+	}
+	m.Store.InTx(ctx, func(tx *store.Tx) error {
+		sub, _ := tx.GetSubscription(ctx, chanSub)
+		sub.Name = ""
+		return tx.UpdateSubscription(ctx, sub)
+	})
+	if sub := w.checkNow(chanSub); sub.Name != "Chan" {
+		t.Fatalf("name from the listing: %q", sub.Name)
+	}
+
+	urls, _ := m.ExportSubscriptions(ctx, FormatURLs)
+	if !strings.Contains(string(urls), chanVideos+"\n") || strings.Count(string(urls), "\n") != 6 {
+		t.Fatalf("url export:\n%s", urls)
+	}
+	out, _ := m.ExportSubscriptions(ctx, FormatOPML)
+	if !strings.Contains(string(out), `xmlUrl="https://www.youtube.com/feeds/videos.xml?channel_id=`+chanID+`"`) {
+		t.Fatalf("opml export:\n%s", out)
+	}
+	// The export imports again without creating anything.
+	if res, _ = m.ImportSubscriptions(ctx, FormatOPML, string(out)); len(res.Created) != 0 || len(res.Skipped) != 5 {
+		t.Fatalf("re-import: %+v", res)
+	}
+}
+
+// §11: a handle URL of an imported list gets its canonical URL from the
+// first listing; if that channel is subscribed already, the source is
+// removed again and the subscription gets a warning (and is paused when
+// nothing is left).
+func TestSubscriptionImportedDuplicate(t *testing.T) {
+	sc := &scenario.Scenario{}
+	channel(sc, 2, newest(1, 2))
+	// Checks list the provisional canonical URL of a handle.
+	sc.Aliases["https://youtube.com/@chan/videos"] = scenario.PlaylistPrefix + "chan"
+	w := newWorld(t, sc)
+	m := w.startSubs()
+	ctx := context.Background()
+	start := time.Now()
+	orig := sid(w.subscribe(SubscriptionInput{Name: strp("Chan"), Sources: []SourceInput{{URL: chanVideos}}}))
+	w.waitChecked(orig, start)
+	res, err := m.ImportSubscriptions(ctx, FormatURLs, "https://www.youtube.com/@chan\n")
+	if err != nil || len(res.Created) != 1 {
+		t.Fatalf("import: %+v %v", res, err)
+	}
+	dup := sid(&res.Created[0])
+	sub := w.waitChecked(dup, start)
+	if len(sub.Sources) != 0 || sub.Enabled || !strings.Contains(sub.Warning, `already subscribed in "Chan"`) {
+		t.Fatalf("duplicate: %+v", sub)
+	}
+	if n := len(w.entries(dup, "")); n != 0 {
+		t.Fatalf("the duplicate recorded %d entries", n)
+	}
+	if v, err := m.GetSubscription(ctx, dup); err != nil || v.Name != "https://www.youtube.com/@chan/videos" {
+		t.Fatalf("view of the duplicate: %+v %v", v, err)
 	}
 }

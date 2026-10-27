@@ -396,9 +396,47 @@ async function editDialog(sub) {
 
 // --- view ---
 
+const FEED_FILTERS = [['new', 'New'], ['', 'All'], ['queued', 'Queued'], ['failed', 'Failed'], ['upcoming', 'Upcoming']];
+
+// importDialog imports a URL list, OPML or the CSV of a YouTube
+// subscriptions export (§11).
+async function importDialog() {
+  return modal((close) => {
+    const format = select('format', [['urls', 'URL list (one per line)'], ['opml', 'OPML'], ['youtube-csv', 'YouTube subscriptions CSV']], 'urls');
+    const ta = h('textarea', { rows: 10, placeholder: 'https://www.youtube.com/@channel\nhttps://…/playlist?list=…' });
+    const file = h('input', { type: 'file', accept: '.txt,.opml,.xml,.csv,text/plain,text/csv,text/xml' });
+    file.addEventListener('change', async () => {
+      const f = file.files[0];
+      if (!f) return;
+      ta.value = await f.text();
+      const n = f.name.toLowerCase();
+      format.value = n.endsWith('.csv') ? 'youtube-csv' : n.endsWith('.opml') || n.endsWith('.xml') ? 'opml' : 'urls';
+    });
+    const result = h('div', {});
+    const go = h('button', { class: 'btn primary' }, 'Import');
+    go.addEventListener('click', async () => {
+      go.disabled = true;
+      try {
+        const r = await post('/subscriptions/import', { format: format.value, data: ta.value });
+        clear(result).append(h('p', {}, `${r.created.length} subscriptions created, ${r.skipped.length} skipped. They are manual, without backlog, and their first checks are spread over one hour.`));
+        if (r.skipped.length) result.append(h('ul', { class: 'small' }, r.skipped.slice(0, 50).map((x) => h('li', {}, `${x.url}: ${x.reason}${x.name ? ` (“${x.name}”)` : ''}`))));
+        go.classList.add('hidden');
+      } catch (ex) { toast(ex.message, 'err'); go.disabled = false; }
+    });
+    return h('div', { class: 'wide' }, h('h2', {}, 'Import subscriptions'),
+      h('p', { class: 'muted' }, 'Each channel gets its Videos tab. Sources that are already subscribed are skipped.'),
+      h('div', { class: 'form-row' }, h('label', { class: 'field' }, 'Format', format), h('label', { class: 'field' }, 'File', file)),
+      h('label', { class: 'field' }, 'Content', ta), result,
+      h('div', { class: 'btn-row' }, h('button', { class: 'btn', onclick: () => close() }, 'Close'), go));
+  });
+}
+
 export class SubscriptionsView {
-  constructor({ id }) {
+  constructor({ id, tab }) {
     this.id = id || null;
+    this.page = id ? 'detail' : tab === 'list' ? 'list' : 'feed';
+    this.feedStatus = 'new';
+    this.feedSub = '';
     this.unsub = [];
     this.subs = new Map();
     this.sort = 'name';
@@ -415,6 +453,7 @@ export class SubscriptionsView {
     this.unsub.push(events.on('subscription', (s) => this.onSub(s)));
     this.unsub.push(events.on('subscription_removed', (s) => this.onRemoved(s.id)));
     this.unsub.push(events.on('entries', (e) => this.onEntries(e)));
+    this.unsub.push(events.on('counts', (c) => { if (this.inboxEl) this.inboxEl.textContent = c.inbox || ''; }));
     this.unsub.push(events.on('resync', () => this.reload()));
     this.unsub.push(events.on('connection', (ok) => { if (ok) this.reload(); }));
     this.reloadEntries = debounce(() => this.loadEntries(true), 400);
@@ -422,15 +461,17 @@ export class SubscriptionsView {
     return this.root;
   }
 
-  reload() { return this.id ? this.loadDetail() : this.loadList(); }
+  reload() { return { detail: () => this.loadDetail(), list: () => this.loadList(), feed: () => this.loadFeed() }[this.page](); }
 
   onSub(s) {
-    if (this.id) {
+    if (this.page === 'detail') {
       if (s.id === this.id) { this.sub = s; this.renderDetailHead(); }
       return;
     }
+    const isNew = !this.subs.has(s.id);
     this.subs.set(s.id, s);
-    this.renderRows();
+    if (this.page === 'list') this.renderRows();
+    else if (isNew && this.subSelect) this.renderFeedTools();
   }
 
   onRemoved(id) {
@@ -439,7 +480,55 @@ export class SubscriptionsView {
     this.renderRows();
   }
 
-  onEntries(e) { if (this.id && e.subscription === this.id) this.reloadEntries(); }
+  onEntries(e) {
+    if (this.page === 'detail' ? e.subscription === this.id : this.page === 'feed' && (!this.feedSub || e.subscription === this.feedSub)) this.reloadEntries();
+  }
+
+  // top renders the Feed / Subscriptions tabs with their actions.
+  top(active) {
+    this.inboxEl = h('span', { class: 'count' }, this.inbox || '');
+    this.countEl = h('span', { class: 'count' }, this.subs.size || '');
+    return h('div', { class: 'tabs' },
+      h('a', { class: 'tab' + (active === 'feed' ? ' active' : ''), href: '#/subscriptions/feed' }, 'Feed', this.inboxEl),
+      h('a', { class: 'tab' + (active === 'list' ? ' active' : ''), href: '#/subscriptions/list' }, 'Subscriptions', this.countEl),
+      h('div', { class: 'tab-actions' },
+        h('button', { class: 'btn small primary', onclick: async () => { const s = await addDialog(); if (s) location.hash = '#/subscriptions/' + s.id; } }, '+ Add subscription'),
+        h('button', { class: 'btn small', title: 'Check all subscriptions now', onclick: async () => { try { const x = await post('/subscriptions/check', {}); toast(`Checking ${x.due} subscriptions`); } catch (ex) { toast(ex.message, 'err'); } } }, '⟳ All'),
+        menu([
+          ['Import…', async () => { await importDialog(); this.reload(); }],
+          ['Export URL list', () => { location.href = '/api/v1/subscriptions/export?format=urls'; }],
+          ['Export OPML', () => { location.href = '/api/v1/subscriptions/export?format=opml'; }],
+        ])));
+  }
+
+  // --- feed (§7.2) ---
+
+  async loadFeed() {
+    let data;
+    try { data = await get('/subscriptions'); } catch (ex) { if (ex.status !== 401) toast(ex.message, 'err'); return; }
+    this.subs = new Map(data.subscriptions.map((s) => [s.id, s]));
+    this.inbox = data.inbox;
+    const r = clear(this.root);
+    this.toolsEl = h('div', { class: 'feed-tools' });
+    this.actionsEl = h('div', { class: 'entry-actions' });
+    this.entriesEl = h('div', { class: 'entries' });
+    this.moreBtn = h('button', { class: 'btn load-more hidden', onclick: () => this.loadEntries(false) }, 'Load more');
+    r.append(this.top('feed'), this.toolsEl, this.actionsEl, this.entriesEl, this.moreBtn);
+    this.renderFeedTools();
+    this.loadEntries(true);
+  }
+
+  renderFeedTools() {
+    const show = select('status', FEED_FILTERS, this.feedStatus);
+    show.addEventListener('change', () => { this.feedStatus = show.value; this.selected.clear(); this.loadEntries(true); });
+    const names = [...this.subs.values()].sort((a, b) => a.name.localeCompare(b.name));
+    this.subSelect = select('subscription', [['', 'All'], ...names.map((x) => [x.id, x.name])], this.feedSub);
+    this.subSelect.addEventListener('change', () => { this.feedSub = this.subSelect.value; this.selected.clear(); this.loadEntries(true); });
+    const all = h('input', { type: 'checkbox', onchange: (e) => { for (const x of this.entries || []) e.target.checked ? this.selected.add(x.id) : this.selected.delete(x.id); this.renderEntries(); } });
+    clear(this.toolsEl).append(h('label', {}, 'Show ', show), h('label', {}, 'Subscription ', this.subSelect),
+      h('input', { type: 'text', class: 'filter', placeholder: 'Search…', value: this.entryQuery || '', oninput: debounce((e) => { this.entryQuery = e.target.value.trim(); this.loadEntries(true); }, 300) }),
+      h('label', { class: 'check' }, all, 'select all'));
+  }
 
   // --- list (§7.1) ---
 
@@ -447,17 +536,12 @@ export class SubscriptionsView {
     let data;
     try { data = await get('/subscriptions'); } catch (ex) { if (ex.status !== 401) toast(ex.message, 'err'); return; }
     this.subs = new Map(data.subscriptions.map((s) => [s.id, s]));
+    this.inbox = data.inbox;
     const r = clear(this.root);
     const filter = h('input', { type: 'text', class: 'filter', placeholder: 'Filter…', value: this.query, oninput: debounce((e) => { this.query = e.target.value.trim().toLowerCase(); this.renderRows(); }, 200) });
     const sort = select('sort', [['name', 'Name'], ['newest', 'Newest video'], ['inbox', 'New videos']], this.sort);
     sort.addEventListener('change', () => { this.sort = sort.value; this.renderRows(); });
-    this.countEl = h('span', { class: 'count' });
-    r.append(h('div', { class: 'tabs' },
-      h('button', { class: 'tab active' }, 'Subscriptions', this.countEl),
-      h('div', { class: 'tab-actions' },
-        h('button', { class: 'btn small primary', onclick: async () => { const s = await addDialog(); if (s) location.hash = '#/subscriptions/' + s.id; } }, '+ Add subscription'),
-        h('button', { class: 'btn small', title: 'Check all subscriptions now', onclick: async () => { try { const x = await post('/subscriptions/check', {}); toast(`Checking ${x.due} subscriptions`); } catch (ex) { toast(ex.message, 'err'); } } }, '⟳ All'))),
-      h('div', { class: 'list-tools' }, filter, h('label', { class: 'muted' }, 'Sort ', sort)));
+    r.append(this.top('list'), h('div', { class: 'list-tools' }, filter, h('label', { class: 'muted' }, 'Sort ', sort)));
     this.listEl = h('div', {});
     r.append(this.listEl);
     this.renderRows();
@@ -589,26 +673,29 @@ export class SubscriptionsView {
   renderEntryActions() {
     const a = clear(this.actionsEl);
     const n = this.selected.size;
-    const c = this.sub.counts || {};
+    const c = (this.sub && this.sub.counts) || {};
     if (n) {
       a.append(h('span', { class: 'muted' }, `${n} selected:`),
         h('button', { class: 'btn small primary', onclick: () => this.download([...this.selected]) }, 'Download selected'),
-        this.tab === 'ignored'
+        this.page === 'detail' && this.tab === 'ignored'
           ? h('button', { class: 'btn small', onclick: () => this.ignore([...this.selected], false) }, 'Unignore selected')
           : h('button', { class: 'btn small', onclick: () => this.ignore([...this.selected], true) }, 'Ignore selected'),
         h('button', { class: 'btn small', onclick: () => { this.selected.clear(); this.renderEntries(); } }, 'Clear selection'));
       return;
     }
+    if (this.page !== 'detail') return;
     if (this.tab === 'new' && c.new) a.append(h('button', { class: 'btn small primary', onclick: () => this.downloadStatus('new') }, `Download all new (${c.new})`));
     if (this.tab === 'backlog' && c.backlog) a.append(h('button', { class: 'btn small', onclick: () => this.backlogDialog() }, 'Download backlog…'));
   }
 
   async loadEntries(reset) {
     if (reset) { this.offset = 0; this.entries = []; }
-    const q = new URLSearchParams({ status: this.tab, offset: this.offset });
+    const feed = this.page === 'feed';
+    const q = new URLSearchParams({ status: feed ? this.feedStatus : this.tab, offset: this.offset });
     if (this.entryQuery) q.set('q', this.entryQuery);
+    if (feed && this.feedSub) q.set('subscription', this.feedSub);
     let data;
-    try { data = await get(`/subscriptions/${this.id}/entries?` + q); } catch (ex) { if (ex.status !== 401 && ex.status !== 404) toast(ex.message, 'err'); return; }
+    try { data = await get((feed ? '/feed?' : `/subscriptions/${this.id}/entries?`) + q); } catch (ex) { if (ex.status !== 401 && ex.status !== 404) toast(ex.message, 'err'); return; }
     this.entries = reset ? data.entries : this.entries.concat(data.entries);
     this.offset = data.nextOffset ? Number(data.nextOffset) : this.offset + data.entries.length;
     this.moreBtn.classList.toggle('hidden', !data.nextOffset);
@@ -622,8 +709,14 @@ export class SubscriptionsView {
   renderEntries() {
     const l = clear(this.entriesEl);
     if (!this.entries.length) {
-      const text = { new: 'No new videos.', backlog: 'No backlog.', library: 'Nothing downloaded yet.', ignored: 'No ignored videos.', failed: 'No failed downloads.' }[this.tab];
-      l.append(h('div', { class: 'empty' }, text));
+      if (this.page === 'feed') {
+        l.append(h('div', { class: 'empty' }, this.subs.size
+          ? (this.feedStatus === 'new' ? 'No new videos. New videos of all subscriptions appear here.' : 'Nothing to show.')
+          : h('span', {}, 'No subscriptions yet. ', h('a', { href: '#/subscriptions/list' }, 'Add a channel or playlist'), ' to see its new videos here.')));
+      } else {
+        const text = { new: 'No new videos.', backlog: 'No backlog.', library: 'Nothing downloaded yet.', ignored: 'No ignored videos.', failed: 'No failed downloads.' }[this.tab];
+        l.append(h('div', { class: 'empty' }, text));
+      }
     }
     for (const e of this.entries) l.append(this.entryRow(e));
     this.renderEntryActions();
@@ -631,7 +724,11 @@ export class SubscriptionsView {
 
   entryRow(e) {
     const act = (label, fn, cls = '') => h('button', { class: 'btn small ' + cls, onclick: async (ev) => { ev.stopPropagation(); ev.target.disabled = true; try { await fn(); } catch (ex) { toast(ex.message, 'err'); } ev.target.disabled = false; } }, label);
-    const meta = [date(e.uploadDate), e.duration ? duration(e.duration) : ''].filter(Boolean);
+    const meta = this.page === 'feed'
+      ? [h('a', { class: 'entry-sub', href: '#/subscriptions/' + e.subscriptionId, onclick: (ev) => ev.stopPropagation() }, e.subscription), ago(e.sortDate), e.duration ? duration(e.duration) : '']
+      : [date(e.uploadDate), e.duration ? duration(e.duration) : ''];
+    const metaLine = [];
+    for (const m of meta.filter(Boolean)) { if (metaLine.length) metaLine.push(' · '); metaLine.push(m); }
     const actions = h('div', { class: 'entry-buttons' });
     let badge = null;
     switch (e.status) {
@@ -666,7 +763,7 @@ export class SubscriptionsView {
       img('entry-thumb', e.thumbnail),
       h('div', { class: 'entry-main' },
         h('a', { class: 'entry-title', href: e.url, target: '_blank', rel: 'noreferrer', title: e.title }, e.title || e.url),
-        h('div', { class: 'muted small' }, meta.join(' · '), badge ? ' ' : '', badge,
+        h('div', { class: 'muted small' }, metaLine, badge ? ' ' : '', badge,
           e.goneAt ? h('span', { class: 'warn-tag', title: 'No longer listed by the source; files in the library are not touched' }, 'removed from source') : null),
         e.status === 'failed' && (e.error || e.hint) ? h('div', { class: 'bad small' }, e.error, e.hint ? h('span', { class: 'muted' }, ` — ${e.hint}`) : null) : null),
       actions);

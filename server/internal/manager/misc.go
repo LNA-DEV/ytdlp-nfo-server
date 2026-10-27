@@ -229,6 +229,9 @@ func (m *Manager) QuickStatus(ctx context.Context) QuickStatusView {
 	}
 	out.Queue.Status = m.Sched.Status()
 	out.Queue.Counts, _ = m.Store.CountJobsByTab(ctx)
+	if out.Queue.Counts != nil {
+		out.Queue.Counts["inbox"] = m.Inbox()
+	}
 	m.mu.Lock()
 	for _, w := range m.warnings {
 		out.Warnings = append(out.Warnings, w)

@@ -64,3 +64,44 @@ async function submitUrl(s, url) {
 function jobLink(s, id) {
   return id ? `${s.server}/#/jobs/${id}` : `${s.server}/`;
 }
+
+// subscribeUrl subscribes to the channel or playlist of a URL with the
+// server defaults: manual mode, no backlog, the Videos tab of a channel
+// and the channel of a video page. The preview tells which tab or channel
+// that is.
+// Result: {ok, kind: "created"|"duplicate"|"auth"|"error", message, subscriptionId}
+async function subscribeUrl(s, url) {
+  let res;
+  try {
+    res = await fetch(s.server + "/api/v1/subscriptions/preview", { method: "POST", headers: headers(s), body: JSON.stringify({ url }) });
+  } catch {
+    return { ok: false, kind: "error", message: "Could not reach server. Check the address in settings." };
+  }
+  let p = {};
+  try { p = await res.json(); } catch { /* empty */ }
+  if (res.status === 401) return { ok: false, kind: "auth", message: "Not authorized. Check the API token in settings." };
+  if (res.status === 404 || res.status === 405) return { ok: false, kind: "error", message: "This server does not support subscriptions." };
+  if (!res.ok) return { ok: false, kind: "error", message: p.error || "Server returned " + res.status };
+  const wanted = (p.sources || []).filter((x) => x.selected);
+  const fresh = wanted.filter((x) => !x.subscriptionId);
+  if (!fresh.length) {
+    const ex = wanted.find((x) => x.subscriptionId);
+    return { ok: false, kind: "duplicate", message: ex ? `Already subscribed (${ex.subscriptionName}).` : "Nothing to subscribe to.", subscriptionId: ex && ex.subscriptionId };
+  }
+  try {
+    res = await fetch(s.server + "/api/v1/subscriptions", { method: "POST", headers: headers(s),
+      body: JSON.stringify({ name: p.name, sources: fresh.map((x) => ({ url: x.url, canonical: x.canonical })) }) });
+  } catch {
+    return { ok: false, kind: "error", message: "Could not reach server. Check the address in settings." };
+  }
+  let body = {};
+  try { body = await res.json(); } catch { /* empty */ }
+  if (res.status === 201) return { ok: true, kind: "created", message: `Subscribed to ${body.name}.`, subscriptionId: body.id };
+  if (res.status === 409) return { ok: false, kind: "duplicate", message: `Already subscribed${body.name ? ` (${body.name})` : ""}.`, subscriptionId: body.subscriptionId };
+  if (res.status === 401) return { ok: false, kind: "auth", message: "Not authorized. Check the API token in settings." };
+  return { ok: false, kind: "error", message: body.error || "Server returned " + res.status };
+}
+
+function subscriptionLink(s, id) {
+  return id ? `${s.server}/#/subscriptions/${id}` : `${s.server}/#/subscriptions/list`;
+}

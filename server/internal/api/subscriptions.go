@@ -226,6 +226,38 @@ func (s *Server) handleDownloadEntries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+func (s *Server) handleImportSubs(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Format string `json:"format"`
+		Data   string `json:"data"`
+	}
+	if !decode(w, r, &req, 4<<20) {
+		return
+	}
+	res, err := s.m.ImportSubscriptions(r.Context(), req.Format, req.Data)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleExportSubs(w http.ResponseWriter, r *http.Request) {
+	format := r.URL.Query().Get("format")
+	b, err := s.m.ExportSubscriptions(r.Context(), format)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	name, ctype := "subscriptions.txt", "text/plain; charset=utf-8"
+	if format == manager.FormatOPML {
+		name, ctype = "subscriptions.opml", "text/x-opml; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	_, _ = w.Write(b)
+}
+
 func (s *Server) handleIgnoreEntries(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs     []string `json:"ids"`

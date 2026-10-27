@@ -1,6 +1,6 @@
 # Subscriptions Concept
 
-> Status: **Decided, ready for implementation.** All decisions are recorded in [§14](#14-decisions). · 2026-10-14, revised 2026-10-27
+> Status: **Implemented** (phases S-1 to S-3, [§13](#13-rollout)). All decisions are recorded in [§14](#14-decisions). The manual run against YouTube from the S-1 exit criteria is still open. · 2026-10-14, revised 2026-10-27
 > Scope: server, web UI, browser add-on
 > Builds on [overhaul-concept.md](overhaul-concept.md), which lists subscriptions as "later" in §13.
 

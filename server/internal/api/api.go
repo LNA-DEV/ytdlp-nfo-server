@@ -108,6 +108,8 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/v1/subscriptions/check", a(s.handleCheckAll))
 	mux.HandleFunc("POST /api/v1/subscriptions/entries/download", a(s.handleDownloadEntries))
 	mux.HandleFunc("POST /api/v1/subscriptions/entries/ignore", a(s.handleIgnoreEntries))
+	mux.HandleFunc("POST /api/v1/subscriptions/import", a(s.handleImportSubs))
+	mux.HandleFunc("GET /api/v1/subscriptions/export", a(s.handleExportSubs))
 	mux.HandleFunc("GET /api/v1/subscriptions/{id}", a(s.handleGetSub))
 	mux.HandleFunc("PATCH /api/v1/subscriptions/{id}", a(s.handlePatchSub))
 	mux.HandleFunc("DELETE /api/v1/subscriptions/{id}", a(s.handleDeleteSub))

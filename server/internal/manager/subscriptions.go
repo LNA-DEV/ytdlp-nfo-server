@@ -12,6 +12,7 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/joblog"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/notify"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/subscriptions"
@@ -181,6 +182,17 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 		if err := m.updateCanonicals(ctx, tx, sub, res); err != nil {
 			return err
 		}
+		if sub.Name == "" { // imported without a title: named after its first listing
+			for _, r := range res.Sources {
+				if r.Listing != nil && len(sub.Sources) > 0 && r.SourceID == sub.Sources[0].ID {
+					if sub.Name = subscriptions.DisplayName(r.Listing); sub.Name != "" {
+						if err := tx.UpdateSubscription(ctx, sub); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
 		entries, err := tx.EntriesForSubscription(ctx, sub.ID, m.statusParams())
 		if err != nil {
 			return err
@@ -281,7 +293,42 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 	m.markCounts(sub.ID)
 	m.publishSub(sub.ID)
 	m.Hub.Publish(EventEntries, map[string]any{"subscription": itoa(sub.ID), "changed": len(out.Insert) + len(out.Update)})
+	m.notifyCheck(sub, out)
 	return nil
+}
+
+// notifyCheck sends the notifications of a check (§11): new entries if the
+// subscription has notify set, entering the error state and hitting the
+// cap if onFailed is on. Each is sent once, not on every check.
+func (m *Manager) notifyCheck(sub *store.Subscription, out *subscriptions.Output) {
+	s := m.Settings.Settings().Notifications
+	info := notify.SubscriptionInfo{ID: sub.ID, Name: sub.Name}
+	type msg struct{ event, title, text string }
+	var msgs []msg
+	if sub.Notify && out.NewVisible > 0 {
+		info.Count = out.NewVisible
+		text := fmt.Sprintf("%s: %d new videos", sub.Name, out.NewVisible)
+		if out.NewVisible == 1 {
+			text = sub.Name + ": 1 new video"
+		}
+		msgs = append(msgs, msg{notify.EventSubscriptionNew, "New videos", text})
+	}
+	if s.OnFailed && out.EnteredError {
+		msgs = append(msgs, msg{notify.EventSubscriptionError, "Subscription check failed", sub.Name + ": " + sub.Error})
+	}
+	if s.OnFailed && out.CapHit {
+		msgs = append(msgs, msg{notify.EventSubscriptionCap, "Subscription needs review", sub.Name + ": " + sub.Warning})
+	}
+	if len(msgs) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		for _, x := range msgs {
+			m.Notifier.SendSubscription(ctx, s, x.event, x.title, x.text, info)
+		}
+	}()
 }
 
 func containsEntry(es []*store.Entry, e *store.Entry) bool {
@@ -317,16 +364,26 @@ func (m *Manager) updateCanonicals(ctx context.Context, tx *store.Tx, sub *store
 			return err
 		}
 		if len(others) > 0 && others[0].ID != src.ID {
-			if len(sub.Sources) == 1 {
-				continue // keep the only source; the duplicate stays visible
-			}
 			if err := tx.RemoveSource(ctx, sub.ID, src.ID); err != nil {
 				return err
 			}
 			r.Listing, r.Err = nil, nil
 			r.SourceID = 0
 			sub.Sources = removeSource(sub.Sources, src.ID)
-			sub.Warning = fmt.Sprintf("%s is already subscribed (subscription %d); the source was removed.", src.URL, others[0].SubscriptionID)
+			name := fmt.Sprintf("subscription %d", others[0].SubscriptionID)
+			if o, err := tx.GetSubscription(ctx, others[0].SubscriptionID); err == nil {
+				name = fmt.Sprintf("%q", o.Name)
+			}
+			sub.Warning = fmt.Sprintf("%s is already subscribed in %s; the source was removed.", src.URL, name)
+			if len(sub.Sources) == 0 {
+				// Nothing left to check (an imported duplicate): pause it
+				// until the user adds a source or deletes it.
+				sub.Enabled = false
+				if sub.Name == "" {
+					sub.Name = src.URL
+				}
+				sub.Warning += " Delete this subscription or add another source."
+			}
 			if err := tx.UpdateSubscription(ctx, sub); err != nil {
 				return err
 			}

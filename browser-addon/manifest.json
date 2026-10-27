@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ytdlp-nfo Server",
-  "version": "2.0.0",
-  "description": "Send the current tab or any link to your ytdlp-nfo server with one click.",
+  "version": "2.1.0",
+  "description": "Send the current tab or any link to your ytdlp-nfo server with one click, or subscribe to its channel.",
   "permissions": [
     "activeTab",
     "storage",

@@ -5,6 +5,7 @@ const serverTokenInput = document.getElementById("server-token");
 const saveBtn = document.getElementById("save-btn");
 const tabUrlEl = document.getElementById("tab-url");
 const submitBtn = document.getElementById("submit-btn");
+const subscribeBtn = document.getElementById("subscribe-btn");
 const statusEl = document.getElementById("status");
 const optionsRow = document.getElementById("options-row");
 const presetSel = document.getElementById("preset");
@@ -54,11 +55,11 @@ api.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
     tabUrlEl.textContent = currentUrl;
   } else {
     tabUrlEl.textContent = "Unable to read tab URL";
-    submitBtn.disabled = true;
+    submitBtn.disabled = subscribeBtn.disabled = true;
     return;
   }
   if (isInternalPage(currentUrl)) {
-    submitBtn.disabled = true;
+    submitBtn.disabled = subscribeBtn.disabled = true;
     setStatus("Cannot send internal browser pages.", "error");
   }
 });
@@ -107,6 +108,20 @@ submitBtn.addEventListener("click", async () => {
     jobLinkEl.classList.remove("hidden");
   }
   submitBtn.disabled = false;
+});
+
+subscribeBtn.addEventListener("click", async () => {
+  if (!currentUrl || isInternalPage(currentUrl)) return;
+  subscribeBtn.disabled = true;
+  setStatus("Looking up the channel…");
+  jobLinkEl.classList.add("hidden");
+  const r = await subscribeUrl(settings, currentUrl);
+  setStatus(r.message, r.kind === "created" ? "success" : r.kind === "duplicate" ? "duplicate" : "error");
+  if (r.kind === "created" || r.kind === "duplicate") {
+    jobLinkEl.href = subscriptionLink(settings, r.subscriptionId);
+    jobLinkEl.classList.remove("hidden");
+  }
+  subscribeBtn.disabled = false;
 });
 
 // --- Helpers ---

@@ -77,6 +77,9 @@ type Output struct {
 	// check; CapHit: it hit autoQueueCap (notifications are sent once).
 	EnteredError bool
 	CapHit       bool
+	// NewVisible counts the discovered entries that are not ignored (the
+	// "3 new videos" of a notification).
+	NewVisible int
 }
 
 // EntryKey returns the key of a listing entry: its archive key, or
@@ -387,6 +390,11 @@ func Apply(in Input) *Output {
 		}
 	}
 
+	for _, e := range discovered {
+		if !e.Ignored {
+			out.NewVisible++
+		}
+	}
 	archived := func(e *store.Entry) bool { return e.InArchive || in.Archived[e.Key] }
 	auto := sub.Mode == store.ModeAuto && sub.Enabled
 
