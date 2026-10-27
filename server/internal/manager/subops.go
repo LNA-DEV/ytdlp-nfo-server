@@ -100,6 +100,9 @@ func (m *Manager) subView(sub *store.Subscription, all []*store.Subscription) Su
 		Hint: sub.Hint, Warning: sub.Warning, LastCheckAt: tptr(sub.LastCheckAt), LastOKAt: tptr(sub.LastOKAt),
 		NextCheckAt: tptr(sub.NextCheckAt), CreatedAt: sub.CreatedAt, Sources: []SourceView{}, Counts: m.subCounts(sub.ID),
 	}
+	if m.subs.loop.Running(sub.ID) {
+		v.State = store.SubChecking // until the loop has released it, a Check now would be ignored
+	}
 	for _, src := range sub.Sources {
 		v.Sources = append(v.Sources, SourceView{ID: itoa(src.ID), URL: src.URL, Canonical: src.Canonical, Tab: src.Tab,
 			AddedAt: src.AddedAt, FirstOKAt: tptr(src.FirstOKAt), LastOKAt: tptr(src.LastOKAt), LastFullAt: tptr(src.LastFullAt),

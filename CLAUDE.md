@@ -3,7 +3,7 @@
 ## Project Priorities
 
 - **File integrity is the #1 priority.** Files in the output directory must always be complete and intact. Never move or copy files that are still being written to.
-- The invariants in `docs/overhaul-concept.md` §4.5 are tested by `server/integrity_test.go` (SIGKILL at every pipeline step) and `internal/library` (fault injection). Keep them green when touching finalize, recovery or the pipeline:
+- The invariants in `docs/overhaul-concept.md` §4.5 are tested by `server/integrity_test.go` (SIGKILL at every pipeline step and at both points of a subscription check) and `internal/library` (fault injection). Keep them green when touching finalize, recovery or the pipeline:
   1. nothing appears in the library before it passed verify;
   2. an item appears through one atomic rename (or `renameat2` exchange) of a fully written, fsynced folder;
   3. existing library content is never deleted before its replacement is in place;
@@ -20,6 +20,8 @@
 - Errors are classified (`internal/ytdlp/classify.go`) and the retry policy (`internal/scheduler/policy.go`) decides per item; a single scheduler goroutine owns all slots.
 - yt-dlp versions are managed in `DATA_DIR/ytdlp/<channel>/<tag>/` (SHA-256 verified, smoke-tested); verified stable/nightly builds are bundled in the image under `/opt/ytdlp/bundled`.
 - Every yt-dlp call passes `--ignore-config` and puts the URL after `--`. Never add free-form yt-dlp arguments or `--compat-options allow-unsafe-ext`.
+- Subscriptions (`docs/subscriptions-concept.md`) only create ordinary jobs with pre-planned items; they never touch the library or the archive. `internal/subscriptions` runs the check loop (one check per site, cooldowns, windowed listings) and the pure diff `Apply`; the manager commits a check (entries, jobs, entry links, check state) in one transaction. Entry status is derived in SQL, never stored. Planned jobs (`Job.Planned()`, empty `norm_url`) never probe or expand.
+- The scheduler has three bands (interactive > auto > backlog); background jobs share `backgroundSlots` and yield between two items (`Scheduler.ShouldYield`).
 
 ## Build & Test
 
@@ -44,11 +46,12 @@ Tests never touch the network: `internal/testutil/fakeytdlp` is a fake yt-dlp (a
 - `server/internal/manager/` — wiring, v1 migration, crash recovery, job operations, events
 - `server/internal/pipeline/` — probe, plan, per-item steps, finalize, extras, verify
 - `server/internal/library/` — naming (yt-dlp-compatible sanitizing), atomic finalize, archive file
-- `server/internal/scheduler/` — slots, queue, cooldowns, retry policy
+- `server/internal/scheduler/` — slots, queue bands, cooldowns, retry policy
+- `server/internal/subscriptions/` — subscription check loop, listing, diff (`Apply`), filters, canonical URLs
 - `server/internal/ytdlp/` — command lines, runner, progress parser, error classifier; `versions/` is the version manager
 - `server/internal/store/` — SQLite schema, migrations, jobs.json/archive import
 - `server/internal/nfo/` — NFO writer (golden files from the Python implementation in `testdata/`)
 - `server/internal/api/` — `/api/v1`, legacy `/api` routes for the browser add-on, auth, SSE
 - `server/web/static/` — web UI (plain ES modules, embedded, no build step)
 - `browser-addon/` — browser extension (must keep working with `POST /api/download` → 201/409)
-- `docs/overhaul-concept.md` — design and decisions
+- `docs/overhaul-concept.md` — design and decisions; `docs/subscriptions-concept.md` — subscriptions

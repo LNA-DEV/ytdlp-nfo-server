@@ -145,6 +145,7 @@ func (l *Loop) finished(m doneMsg) {
 	delete(l.siteBusy, m.site)
 	l.siteNext[m.site] = l.d.Now().Add(delay)
 	l.mu.Unlock()
+	l.d.Host.Changed(m.id) // no longer checking
 }
 
 // dispatch starts due checks within the limits and returns when to look
