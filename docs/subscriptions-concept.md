@@ -98,8 +98,8 @@ The status shown in the UI is **derived** at read time (S2), in this order. The 
 
 - **Gone**: if an entry is missing from a full listing, it gets `gone_at` and a "removed from source" badge. Files in the library are not touched. If it reappears, `gone_at` is cleared.
 - Deleting or clearing a job deletes its items, which sets `item_id` to `NULL`. The entry then falls back to *in library* (if it was finalized) or *new/backlog*. Auto mode does not queue it again (S3).
-- **Key changes**: the pipeline can re-key an item after fetching its metadata (`pipeline/item.go`, `keyBefore`). `Store.FinalizeItem` updates the key of the entries with the old key in the same transaction that writes the archive record, so they still match the archive after the job is pruned. If a subscription already has an entry with the new key (for example, one source listed the video as `url …` and another one with its ID), the two are merged instead: the entry with the new key is kept and takes over `item_id`, and the other one is deleted. A plain `UPDATE` would violate `UNIQUE (subscription_id, key)` and fail the finalize transaction, and subscription bookkeeping must never block a finalize (invariant 4).
-- **No key**: if a listing gives no extractor key or ID, the entry uses `url <normalized url>` as its key. It is still listed and can be downloaded, and its status follows the linked item.
+- **Key changes**: the pipeline can re-key an item after fetching its metadata (`pipeline/item.go`, `keyBefore`). `Store.FinalizeItem` updates the key of the entries with the old key in the same transaction that writes the archive record, so they still match the archive after the job is pruned. If a subscription already has an entry with the new key (for example, one source listed the video as `url …` and another one with its ID), the two are merged instead: the entry with the new key is kept and takes over `item_id`, and the other one is deleted. A plain `UPDATE` would violate `UNIQUE (subscription_id, key)` and fail the finalize transaction, and subscription bookkeeping must never block a finalize (invariant 4). The old key stays the entry's `listing_key`, and checks match listing entries by key or listing key: listings keep reporting the video under its old key, so without it the next check would record the video as new again (and queue it in auto mode), and the next full listing would mark the re-keyed entry gone.
+- **No key**: if a listing gives no extractor key or ID, the entry uses `url <normalized url>` as its key. It is still listed and can be downloaded, and its status follows the linked item. Its download re-keys it to the archive key (see above). Whether such an entry is in the library can only be told once its metadata is fetched: an item that turns out to be in the archive already is skipped and re-keys its entries as well, so they show as *in library*.
 - **Not a video**: a listing entry that is itself a listing (`_type: playlist`, or a URL entry whose extractor is a tab or playlist extractor such as `YoutubeTab`) is stored as ignored with the reason `not a video`. This only affects the display. The pipeline has the guard that matters ([§4.3](#43-how-subscriptions-create-jobs)).
 
 ### 4.3 How subscriptions create jobs
@@ -345,7 +345,7 @@ All routes live under `/api/v1` and use the existing auth.
 
 ## 9. Persistence
 
-Schema migration 2:
+Schema migration 2 (later migrations add the columns marked with their number):
 
 ```sql
 CREATE TABLE subscriptions (
@@ -412,6 +412,7 @@ CREATE TABLE subscription_entries (
 	ignored INTEGER NOT NULL DEFAULT 0,
 	ignore_reason TEXT NOT NULL DEFAULT '', -- '' = by the user, else "filter: …" / "needs cookies"
 	item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
+	listing_key TEXT NOT NULL DEFAULT '',   -- migration 3: the key listings report, if it was re-keyed
 	UNIQUE (subscription_id, key)
 );
 CREATE INDEX subscription_entries_key ON subscription_entries(key);
@@ -497,6 +498,7 @@ The fake yt-dlp gets listing support. A playlist scenario can return **different
 | Feed query with 200 000 entries (benchmark) | One page of 50 in under 100 ms |
 | A source is added later (Shorts tab with 40 videos), auto mode | 40 backlog entries, no job |
 | A finalized item is re-keyed to a key that another entry of the subscription already has | Finalize succeeds, the entries are merged, the entry is *in library* |
+| A listing without video IDs, an entry is downloaded, then a full listing | The entry is found by its listing key: no new entry, no job, not gone. An entry already in the archive shows as *in library* after *Download* |
 | A listing entry is a playlist, or an item's metadata turns out to be a playlist | The entry is ignored as "not a video". The item fails, and nothing is expanded |
 | *Retry* on one failed entry of a job with two failed items | A new one-item job. The other item stays failed |
 | Forced re-download of an entry in the library | Status *downloading* until it finishes |

@@ -233,9 +233,13 @@ func Apply(in Input) *Output {
 	if err != nil {
 		filter = nil // validated on save; never block a check on it
 	}
+	// Listings name an entry by its listing key if it was re-keyed (§4.2).
 	byKey := map[string]*store.Entry{}
 	for _, e := range in.Entries {
 		byKey[e.Key] = e
+		if e.ListingKey != "" {
+			byKey[e.ListingKey] = e
+		}
 	}
 	srcByID := map[int64]*store.Source{}
 	for _, src := range sub.Sources {
@@ -243,7 +247,7 @@ func Apply(in Input) *Output {
 	}
 	changed := map[*store.Entry]bool{}
 	inserted := map[*store.Entry]bool{}
-	seen := map[string]bool{}
+	seen := map[*store.Entry]bool{}
 	var discovered, becameAvailable []*store.Entry
 	var worst *ytdlp.Classification
 	listed, ok, complete := 0, 0, 0
@@ -320,17 +324,17 @@ func Apply(in Input) *Output {
 						e.URL = le.URL
 					}
 				}
-				if IsWaitingLiveStatus(e.LiveStatus) && !IsWaitingLiveStatus(le.LiveStatus) && !seen[key] {
+				if IsWaitingLiveStatus(e.LiveStatus) && !IsWaitingLiveStatus(le.LiveStatus) && !seen[e] {
 					becameAvailable = append(becameAvailable, e)
 				}
 				e.LiveStatus = le.LiveStatus
 				e.GoneAt, e.LastSeenAt = time.Time{}, now
 				changed[e] = true
 			}
-			if seen[key] && !inserted[e] {
+			if seen[e] && !inserted[e] {
 				continue
 			}
-			seen[key] = true
+			seen[e] = true
 			// Listing fields come from the newest listing of any source.
 			if le.Title != "" {
 				e.Title = le.Title
@@ -372,7 +376,7 @@ func Apply(in Input) *Output {
 	// Gone: only after complete listings of all sources succeeded (§5.2).
 	if listed == len(sub.Sources) && ok == listed && complete == listed && listed > 0 {
 		for _, e := range in.Entries {
-			if !seen[e.Key] && e.GoneAt.IsZero() {
+			if !seen[e] && e.GoneAt.IsZero() {
 				e.GoneAt = now
 				changed[e] = true
 				out.Summary.Gone++
@@ -405,7 +409,7 @@ func Apply(in Input) *Output {
 		case e.Ignored && e.IgnoreReason == ReasonNeedsCookie && in.HasCookies:
 			e.Ignored, e.IgnoreReason = false, ""
 			changed[e] = true
-		case auto && !in.HasCookies && !e.Ignored && seen[e.Key] && needsAuth(e.Availability) && !archived(e) && !e.ItemActive():
+		case auto && !in.HasCookies && !e.Ignored && seen[e] && needsAuth(e.Availability) && !archived(e) && !e.ItemActive():
 			e.Ignored, e.IgnoreReason = true, ReasonNeedsCookie
 			changed[e] = true
 		}

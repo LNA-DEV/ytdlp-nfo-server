@@ -105,6 +105,11 @@ func (p *Pipeline) skipIfArchived(rc *runCtx, it *store.Item) bool {
 	it.Error, it.ErrorClass, it.Hint = "Already in library", "", ""
 	it.FinishedAt = p.d.Now()
 	p.saveItem(it)
+	// Subscription entries listed without a video id follow the item to
+	// its archive key, so they show as in library.
+	if err := p.d.Store.RekeyEntries(bg, it.ID, it.ArchiveKey); err != nil {
+		rc.log.Printf("WARNING: updating subscription entries: %v", err)
+	}
 	rc.log.Printf("Already in library: %s", displayTitle(it))
 	os.RemoveAll(ItemWorkDir(p.d.Env, rc.job.ID, it.ID))
 	return true

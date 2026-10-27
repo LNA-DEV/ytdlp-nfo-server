@@ -276,6 +276,11 @@ ALTER TABLE jobs ADD COLUMN subscription_id INTEGER REFERENCES subscriptions(id)
 ALTER TABLE jobs ADD COLUMN band INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX jobs_subscription ON jobs(subscription_id);
 `,
+	// 3: the key a listing reports for an entry that was re-keyed by its
+	// download (listings without video ids, subscriptions concept §4.2)
+	`
+ALTER TABLE subscription_entries ADD COLUMN listing_key TEXT NOT NULL DEFAULT '';
+`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

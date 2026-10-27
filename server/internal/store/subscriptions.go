@@ -147,24 +147,29 @@ type Source struct {
 type Entry struct {
 	ID             int64
 	SubscriptionID int64
-	Key            string
-	URL            string
-	Title          string
-	Duration       float64
-	UploadDate     string
-	SortDate       time.Time
-	Thumbnail      string
-	LiveStatus     string
-	Availability   string
-	SourceID       int64
-	Position       int
-	Backlog        bool
-	FirstSeenAt    time.Time
-	LastSeenAt     time.Time
-	GoneAt         time.Time
-	Ignored        bool
-	IgnoreReason   string
-	ItemID         int64
+	Key            string // archive key, or "url <normalized url>"
+	// ListingKey is the key the listings report when it differs from Key:
+	// an entry without a video id in the listing ("url …") is re-keyed to
+	// the archive key by its download, but listings keep reporting it by
+	// URL (§4.2).
+	ListingKey   string
+	URL          string
+	Title        string
+	Duration     float64
+	UploadDate   string
+	SortDate     time.Time
+	Thumbnail    string
+	LiveStatus   string
+	Availability string
+	SourceID     int64
+	Position     int
+	Backlog      bool
+	FirstSeenAt  time.Time
+	LastSeenAt   time.Time
+	GoneAt       time.Time
+	Ignored      bool
+	IgnoreReason string
+	ItemID       int64
 
 	// Derived (read only).
 	ItemState      ItemState
@@ -641,7 +646,7 @@ func statusExpr(p StatusParams) string {
 const entryFrom = ` FROM subscription_entries e LEFT JOIN items i ON i.id = e.item_id LEFT JOIN archive a ON a.key = e.key `
 
 func entrySelect(p StatusParams) string {
-	return `SELECT e.id, e.subscription_id, e.key, e.url, e.title, e.duration, e.upload_date, e.sort_date, e.thumbnail,
+	return `SELECT e.id, e.subscription_id, e.key, e.listing_key, e.url, e.title, e.duration, e.upload_date, e.sort_date, e.thumbnail,
 		e.live_status, e.availability, COALESCE(e.source_id, 0), e.position, e.backlog, e.first_seen_at, e.last_seen_at,
 		e.gone_at, e.ignored, e.ignore_reason, COALESCE(e.item_id, 0), COALESCE(i.state, ''), COALESCE(i.error, ''),
 		COALESCE(i.error_class, ''), COALESCE(i.hint, ''), COALESCE(i.job_id, 0), a.key IS NOT NULL, ` +
@@ -656,7 +661,7 @@ func scanEntry(r scanner) (*Entry, error) {
 		backlog, ignored, inArc int
 		itemState               string
 	)
-	if err := r.Scan(&e.ID, &e.SubscriptionID, &e.Key, &e.URL, &e.Title, &e.Duration, &e.UploadDate, &sortDate,
+	if err := r.Scan(&e.ID, &e.SubscriptionID, &e.Key, &e.ListingKey, &e.URL, &e.Title, &e.Duration, &e.UploadDate, &sortDate,
 		&e.Thumbnail, &e.LiveStatus, &e.Availability, &e.SourceID, &e.Position, &backlog, &first, &last, &gone,
 		&ignored, &e.IgnoreReason, &e.ItemID, &itemState, &e.ItemError, &e.ItemErrorClass, &e.ItemHint, &e.JobID,
 		&inArc, &e.Status); err != nil {
@@ -685,11 +690,12 @@ func queryEntries(ctx context.Context, q querier, p StatusParams, where string, 
 	return out, rows.Err()
 }
 
-// EntryKeys returns the keys of all entries of a subscription (including
-// ignored and gone ones): a windowed listing that contains none of them
-// has a gap (§5.2).
+// EntryKeys returns the keys and listing keys of all entries of a
+// subscription (including ignored and gone ones): a windowed listing that
+// contains none of them has a gap (§5.2).
 func (s *Store) EntryKeys(ctx context.Context, subID int64) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT key FROM subscription_entries WHERE subscription_id = ?`, subID)
+	rows, err := s.db.QueryContext(ctx, `SELECT key FROM subscription_entries WHERE subscription_id = ?
+		UNION SELECT listing_key FROM subscription_entries WHERE subscription_id = ? AND listing_key != ''`, subID, subID)
 	if err != nil {
 		return nil, err
 	}
@@ -740,10 +746,10 @@ func entriesByID(ctx context.Context, q querier, ids []int64, p StatusParams) ([
 
 // InsertEntry adds an entry and sets its ID.
 func (t *Tx) InsertEntry(ctx context.Context, e *Entry) error {
-	res, err := t.tx.ExecContext(ctx, `INSERT INTO subscription_entries (subscription_id, key, url, title, duration,
-		upload_date, sort_date, thumbnail, live_status, availability, source_id, position, backlog, first_seen_at,
-		last_seen_at, gone_at, ignored, ignore_reason, item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.SubscriptionID, e.Key, e.URL, e.Title, e.Duration, e.UploadDate, e.SortDate.UnixMilli(), e.Thumbnail,
+	res, err := t.tx.ExecContext(ctx, `INSERT INTO subscription_entries (subscription_id, key, listing_key, url, title,
+		duration, upload_date, sort_date, thumbnail, live_status, availability, source_id, position, backlog, first_seen_at,
+		last_seen_at, gone_at, ignored, ignore_reason, item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.SubscriptionID, e.Key, e.ListingKey, e.URL, e.Title, e.Duration, e.UploadDate, e.SortDate.UnixMilli(), e.Thumbnail,
 		e.LiveStatus, e.Availability, nullID(e.SourceID), e.Position, b2i(e.Backlog), e.FirstSeenAt.UnixMilli(),
 		e.LastSeenAt.UnixMilli(), ms(e.GoneAt), b2i(e.Ignored), e.IgnoreReason, nullID(e.ItemID))
 	if err != nil {
@@ -1008,10 +1014,25 @@ func (s *Store) SubscriptionForItem(ctx context.Context, itemID int64) (int64, e
 	return sub.Int64, err
 }
 
+// RekeyEntries moves the entries of an item to its archive key; the
+// pipeline calls it when an item turns out to be in the library already.
+func (s *Store) RekeyEntries(ctx context.Context, itemID int64, key string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := rekeyEntries(ctx, tx, itemID, key); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // rekeyEntries moves the entries of a re-keyed item to its new archive key
 // (§4.2): every entry with an old key of the item gets the new key, and an
 // entry that would collide with an existing entry of the same subscription
-// is merged into it (the existing one is kept and takes over item_id).
+// is merged into it (the existing one is kept and takes over item_id). The
+// old key stays the listing key, so the next listing still finds the entry.
 func rekeyEntries(ctx context.Context, q querier, itemID int64, newKey string) error {
 	rows, err := q.QueryContext(ctx, `SELECT DISTINCT key FROM subscription_entries WHERE item_id = ? AND key != ?`, itemID, newKey)
 	if err != nil {
@@ -1032,7 +1053,8 @@ func rekeyEntries(ctx context.Context, q querier, itemID int64, newKey string) e
 	}
 	for _, old := range oldKeys {
 		// Merge where the subscription already has the new key.
-		if _, err := q.ExecContext(ctx, `UPDATE subscription_entries AS n SET item_id = COALESCE(o.item_id, n.item_id)
+		if _, err := q.ExecContext(ctx, `UPDATE subscription_entries AS n SET item_id = COALESCE(o.item_id, n.item_id),
+			listing_key = CASE WHEN n.listing_key = '' THEN COALESCE(NULLIF(o.listing_key, ''), o.key) ELSE n.listing_key END
 			FROM subscription_entries AS o
 			WHERE o.key = ? AND n.key = ? AND n.subscription_id = o.subscription_id`, old, newKey); err != nil {
 			return err
@@ -1041,7 +1063,8 @@ func rekeyEntries(ctx context.Context, q querier, itemID int64, newKey string) e
 			(SELECT subscription_id FROM subscription_entries WHERE key = ?)`, old, newKey); err != nil {
 			return err
 		}
-		if _, err := q.ExecContext(ctx, `UPDATE subscription_entries SET key = ? WHERE key = ?`, newKey, old); err != nil {
+		if _, err := q.ExecContext(ctx, `UPDATE subscription_entries SET key = ?,
+			listing_key = CASE WHEN listing_key = '' THEN key ELSE listing_key END WHERE key = ?`, newKey, old); err != nil {
 			return err
 		}
 	}

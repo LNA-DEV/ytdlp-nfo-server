@@ -200,6 +200,9 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 		have := map[string]bool{}
 		for _, e := range entries {
 			have[e.Key] = true
+			if e.ListingKey != "" {
+				have[e.ListingKey] = true
+			}
 		}
 		var keys []string
 		for _, r := range res.Sources {

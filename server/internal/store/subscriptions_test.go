@@ -263,8 +263,37 @@ func TestFinalizeRekeysAndMergesEntries(t *testing.T) {
 	if got[1].ID != other.ID || got[1].Key != "fake x" || got[1].Status != EntryLibrary {
 		t.Fatalf("other subscription: %+v", got[1])
 	}
+	// Listings keep reporting the old key: both entries remember it.
+	if got[0].ListingKey != "url https://fake.test/v/x" || got[1].ListingKey != "url https://fake.test/v/x" {
+		t.Fatalf("listing keys: %q %q", got[0].ListingKey, got[1].ListingKey)
+	}
+	keys, _ := s.EntryKeys(ctx, b.ID)
+	if !keys["fake x"] || !keys["url https://fake.test/v/x"] {
+		t.Fatalf("entry keys: %v", keys)
+	}
 	if ok, _ := s.HasArchive(ctx, "fake x"); !ok {
 		t.Fatal("archive entry missing")
+	}
+}
+
+// An item that turns out to be in the library already re-keys its entries
+// too, so they show as in library.
+func TestRekeyEntriesOfSkippedItem(t *testing.T) {
+	s := openTest(t, true)
+	ctx := context.Background()
+	a := newSub(t, s, "A", "https://fake.test/pl/a")
+	job := &Job{URL: "https://fake.test/pl/a", State: JobRunning, SubscriptionID: a.ID}
+	s.CreateJob(ctx, job)
+	it := &Item{JobID: job.ID, State: ItemSkipped, ArchiveKey: "fake y"}
+	s.CreateItems(ctx, []*Item{it})
+	e := addEntry(t, s, &Entry{SubscriptionID: a.ID, Key: "url https://fake.test/v/y", ItemID: it.ID})
+	s.ImportArchiveKeys(ctx, []string{"fake y"}, "test")
+	if err := s.RekeyEntries(ctx, it.ID, "fake y"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.EntriesByID(ctx, []int64{e.ID}, StatusParams{})
+	if got[0].Key != "fake y" || got[0].ListingKey != "url https://fake.test/v/y" || got[0].Status != EntryLibrary {
+		t.Fatalf("entry: %+v", got[0])
 	}
 }
 

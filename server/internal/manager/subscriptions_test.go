@@ -870,3 +870,64 @@ func TestSubscriptionImport200NoBurst(t *testing.T) {
 		t.Fatalf("%d subscriptions due within the first minute", len(due))
 	}
 }
+
+// A listing without video ids keys its entries by URL. A download re-keys
+// the entry to the archive key; later listings still find it, so it is
+// neither new again nor gone. An entry that turns out to be in the library
+// already shows as in library.
+func TestSubscriptionListingWithoutIDs(t *testing.T) {
+	sc := &scenario.Scenario{Videos: map[string]scenario.Video{}, Playlists: map[string]scenario.Playlist{}}
+	for _, id := range []string{"v1", "v2", "v3"} {
+		sc.Videos[id] = vid(id, "Video "+id)
+	}
+	sc.Playlists["pl"] = scenario.Playlist{ID: "pl", Title: "List", Listings: [][]string{
+		{"v1|id=", "v2|id="}, {"v1|id=", "v2|id=", "v3|id="}}}
+	w := newWorld(t, sc)
+	m := w.startSubs()
+	ctx := context.Background()
+	m.Store.ImportArchiveKeys(ctx, []string{"fake v1"}, "test")
+	start := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("List"), Mode: strp(store.ModeAuto),
+		Sources: []SourceInput{{URL: scenario.PlaylistPrefix + "pl"}}}))
+	w.waitChecked(id, start)
+	backlog := w.entries(id, store.EntryBacklog)
+	if len(backlog) != 2 || !strings.HasPrefix(backlog[0].Key, "url ") {
+		t.Fatalf("backlog: %+v", backlog)
+	}
+
+	w.checkNow(id) // v3 is new: one auto job
+	jobs := w.subJobs(id)
+	if len(jobs) != 1 {
+		t.Fatalf("jobs: %+v", jobs)
+	}
+	w.wait(jobs[0].ID, store.JobCompleted)
+	w.checkNow(id) // a full listing: v3 is known by its URL
+	if jobs := w.subJobs(id); len(jobs) != 1 {
+		t.Fatalf("v3 was queued again: %d jobs", len(jobs))
+	}
+	lib := w.entries(id, store.EntryLibrary)
+	if len(lib) != 1 || lib[0].Key != "fake v3" || lib[0].GoneAt != nil {
+		t.Fatalf("in library: %+v", lib)
+	}
+	if all := w.entries(id, ""); len(all) != 3 {
+		t.Fatalf("entries: %d, want 3", len(all))
+	}
+
+	// v1 is in the archive, which the URL key can't tell: Download finds
+	// out and the entry follows the item to its archive key.
+	var v1 string
+	for _, e := range w.entries(id, store.EntryBacklog) {
+		if strings.HasSuffix(e.Key, "/v1") {
+			v1 = e.ID
+		}
+	}
+	res, err := m.DownloadEntries(ctx, DownloadEntriesRequest{IDs: []string{v1}})
+	if err != nil || len(res.Jobs) != 1 {
+		t.Fatalf("download: %+v %v", res, err)
+	}
+	w.wait(mustID(res.Jobs[0].ID), store.JobCompleted)
+	w.checkNow(id)
+	if got := entryIDs(w.entries(id, store.EntryLibrary)); got != "v3,v1" || len(w.entries(id, "")) != 3 {
+		t.Fatalf("in library: %s, %d entries", got, len(w.entries(id, "")))
+	}
+}
