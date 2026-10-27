@@ -37,6 +37,7 @@ type Result struct {
 	Sources    []SourceResult
 	Cooldown   time.Time // rate-limited: no check before this
 	Ytdlp      string    // version id used
+	Full       bool      // a requested full rescan
 }
 
 // Input is everything Apply needs; Sub and Entries are read in the commit

@@ -287,6 +287,10 @@ ALTER TABLE subscription_sources ADD COLUMN newest_first INTEGER NOT NULL DEFAUL
 ALTER TABLE subscription_sources ADD COLUMN order_known INTEGER NOT NULL DEFAULT 0;
 UPDATE subscription_sources SET newest_first = 1, order_known = 1 WHERE tab != '';
 `,
+	// 5: a requested full rescan survives a restart (subscriptions concept §5.4)
+	`
+ALTER TABLE subscriptions ADD COLUMN full_requested INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

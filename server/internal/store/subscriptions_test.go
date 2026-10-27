@@ -92,6 +92,28 @@ func TestSubscriptionCRUDAndConflicts(t *testing.T) {
 		t.Fatalf("reset: %d", n)
 	}
 
+	// A full rescan request is only cleared by the check that did it.
+	if err := s.RequestFullCheck(ctx, a.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetSubscription(ctx, a.ID)
+	got.Failures = 1
+	if err := s.UpdateSubscription(ctx, got); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InTx(ctx, func(tx *Tx) error { return tx.SaveCheckState(ctx, got) }); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetSubscription(ctx, a.ID); !got.FullRequested {
+		t.Fatal("full rescan request lost by an update")
+	}
+	if err := s.InTx(ctx, func(tx *Tx) error { return tx.ClearFullRequest(ctx, a.ID) }); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetSubscription(ctx, a.ID); got.FullRequested {
+		t.Fatal("full rescan request not cleared")
+	}
+
 	// Deleting a subscription keeps its jobs (subscription_id → NULL) and
 	// a later UpdateJob does not restore the stale reference.
 	j := &Job{URL: "https://fake.test/pl/a", State: JobRunning, SubscriptionID: a.ID, Band: BandAuto}

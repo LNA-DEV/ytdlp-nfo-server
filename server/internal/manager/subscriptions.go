@@ -210,6 +210,11 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 		if err := m.updateCanonicals(ctx, tx, sub, res); err != nil {
 			return err
 		}
+		if res.Full && res.OptionsErr == nil {
+			if err := tx.ClearFullRequest(ctx, sub.ID); err != nil {
+				return err
+			}
+		}
 		if sub.Name == "" { // imported without a title: named after its first listing
 			for _, r := range res.Sources {
 				if r.Listing != nil && len(sub.Sources) > 0 && r.SourceID == sub.Sources[0].ID {

@@ -114,6 +114,9 @@ type Subscription struct {
 	NextCheckAt     time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	// FullRequested: the next check lists every source completely (Full
+	// rescan). Only RequestFullCheck and ClearFullRequest write it.
+	FullRequested bool
 
 	Sources []*Source
 }
@@ -237,22 +240,22 @@ func (s *Store) InTx(ctx context.Context, fn func(tx *Tx) error) error {
 
 const subCols = `id, name, folder, kind, uploader, thumbnail, mode, enabled, backlog, filters, requested,
 	interval_minutes, listing, notify, state, failures, error, error_class, hint, warning,
-	last_check_at, last_ok_at, next_check_at, created_at, updated_at`
+	last_check_at, last_ok_at, next_check_at, created_at, updated_at, full_requested`
 
 func scanSub(r scanner) (*Subscription, error) {
 	var (
 		s                           Subscription
-		enabled, notify             int
+		enabled, notify, full       int
 		backlog, filters, requested string
 		lastCheck, lastOK, next     sql.NullInt64
 		created, updated            int64
 	)
 	if err := r.Scan(&s.ID, &s.Name, &s.Folder, &s.Kind, &s.Uploader, &s.Thumbnail, &s.Mode, &enabled, &backlog,
 		&filters, &requested, &s.IntervalMinutes, &s.Listing, &notify, &s.State, &s.Failures, &s.Error,
-		&s.ErrorClass, &s.Hint, &s.Warning, &lastCheck, &lastOK, &next, &created, &updated); err != nil {
+		&s.ErrorClass, &s.Hint, &s.Warning, &lastCheck, &lastOK, &next, &created, &updated, &full); err != nil {
 		return nil, err
 	}
-	s.Enabled, s.Notify = enabled != 0, notify != 0
+	s.Enabled, s.Notify, s.FullRequested = enabled != 0, notify != 0, full != 0
 	_ = json.Unmarshal([]byte(backlog), &s.Backlog)
 	_ = json.Unmarshal([]byte(filters), &s.Filters)
 	_ = json.Unmarshal([]byte(requested), &s.Requested)
@@ -503,6 +506,26 @@ func (t *Tx) SaveCheckState(ctx context.Context, sub *Subscription) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// RequestFullCheck makes the next check of a subscription a full rescan
+// that is due now.
+func (s *Store) RequestFullCheck(ctx context.Context, id int64, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET full_requested = 1, next_check_at = ? WHERE id = ?`,
+		now.UnixMilli(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ClearFullRequest records that a full rescan was done.
+func (t *Tx) ClearFullRequest(ctx context.Context, id int64) error {
+	_, err := t.tx.ExecContext(ctx, `UPDATE subscriptions SET full_requested = 0 WHERE id = ?`, id)
+	return err
 }
 
 // SaveSource writes the check state of a source.

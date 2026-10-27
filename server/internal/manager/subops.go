@@ -619,9 +619,13 @@ func (m *Manager) CheckSubscription(ctx context.Context, id int64, full bool) er
 		return fmt.Errorf("%w: the subscription is paused", ErrConflict)
 	}
 	if full {
-		m.subs.loop.RequestFull(id)
+		// Stored, so it survives a restart. A check that is running now
+		// leaves it for the next one.
+		err = m.Store.RequestFullCheck(ctx, id, time.Now())
+	} else {
+		_, err = m.Store.SetNextCheck(ctx, []int64{id}, time.Now())
 	}
-	if _, err := m.Store.SetNextCheck(ctx, []int64{id}, time.Now()); err != nil {
+	if err != nil {
 		return err
 	}
 	m.publishSub(id)

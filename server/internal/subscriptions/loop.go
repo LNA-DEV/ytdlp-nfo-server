@@ -76,7 +76,6 @@ type Loop struct {
 
 	mu           sync.Mutex
 	running      map[int64]bool
-	full         map[int64]bool // full rescan requested
 	nightlyTried map[int64]bool // by source id
 	siteBusy     map[string]bool
 	siteNext     map[string]time.Time
@@ -91,7 +90,7 @@ func NewLoop(d Deps) *Loop {
 		d.Logf = func(string, ...any) {}
 	}
 	return &Loop{d: d, wake: make(chan struct{}, 1), done: make(chan doneMsg, 16),
-		running: map[int64]bool{}, full: map[int64]bool{}, nightlyTried: map[int64]bool{},
+		running: map[int64]bool{}, nightlyTried: map[int64]bool{},
 		siteBusy: map[string]bool{}, siteNext: map[string]time.Time{}}
 }
 
@@ -101,14 +100,6 @@ func (l *Loop) Wake() {
 	case l.wake <- struct{}{}:
 	default:
 	}
-}
-
-// RequestFull makes the next check of a subscription list every source
-// completely (Full rescan).
-func (l *Loop) RequestFull(id int64) {
-	l.mu.Lock()
-	l.full[id] = true
-	l.mu.Unlock()
 }
 
 // Running reports whether a subscription is being checked.
@@ -198,8 +189,7 @@ func (l *Loop) dispatch(ctx context.Context, wg *sync.WaitGroup) time.Time {
 			}
 			continue
 		}
-		full := l.full[sub.ID]
-		delete(l.full, sub.ID)
+		full := sub.FullRequested
 		l.running[sub.ID] = true
 		l.siteBusy[site] = true
 		wg.Add(1)
@@ -234,7 +224,7 @@ func (l *Loop) check(ctx context.Context, sub *store.Subscription, opts config.O
 	log := l.d.Logs.Get(sub.ID)
 	defer l.d.Logs.Release(sub.ID)
 	now := l.d.Now()
-	res := &Result{SubscriptionID: sub.ID, Started: now, Options: opts}
+	res := &Result{SubscriptionID: sub.ID, Started: now, Options: opts, Full: full}
 	log.Printf("=== Check %s ===", now.Format("2006-01-02 15:04:05"))
 	if optErr != nil {
 		log.Printf("--- Download options: %v. Nothing is listed or recorded ---", optErr)

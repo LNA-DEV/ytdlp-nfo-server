@@ -283,6 +283,42 @@ func TestSubscriptionWindowGap(t *testing.T) {
 	}
 }
 
+// A full rescan request survives a restart and is done by the next check.
+func TestSubscriptionFullRescanSurvivesRestart(t *testing.T) {
+	sc := &scenario.Scenario{}
+	channel(sc, 3, newest(1, 2))
+	w := newWorld(t, sc)
+	m := w.startSubs()
+	ctx := context.Background()
+	start := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("Chan"), Sources: []SourceInput{{URL: chanVideos}}}))
+	w.waitChecked(id, start)
+	// The site is rate-limited, so the requested check waits.
+	m.Sched.SetCooldown("youtube.com", time.Now().Add(time.Hour))
+	if err := m.CheckSubscription(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		sub, err := m.Store.GetSubscription(ctx, id)
+		if err == nil && sub.NextCheckAt.After(time.Now().Add(30*time.Minute)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("check not postponed: %+v", sub)
+		}
+	}
+	w.stop()
+	m = w.startSubs()
+	if sub := w.checkNow(id); sub.FullRequested {
+		t.Fatalf("full rescan request not cleared: %+v", sub)
+	}
+	w.checkNow(id)
+	log, _ := m.subs.logs.Read(id)
+	if strings.Count(string(log), "(full listing)") != 2 || strings.Count(string(log), "(newest ") != 1 {
+		t.Fatalf("check log:\n%s", log)
+	}
+}
+
 // §12: permanent failures are never queued again (S3); "not available yet"
 // is queued again by every check as a new one-item job.
 func TestSubscriptionFailuresAndPremieres(t *testing.T) {
