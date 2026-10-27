@@ -548,7 +548,7 @@ Error classification, retries and network flags are covered in [§4.7](#47-failu
 
 **Later / optional**
 
-- **Subscriptions**: periodically check channels/playlists and download new items. The archive and job model already support this, because a subscription just creates jobs.
+- **Subscriptions**: periodically check channels/playlists and download new items. The archive and job model already support this, because a subscription just creates jobs. See [subscriptions-concept.md](subscriptions-concept.md).
 - **TV-show NFO mode**: channel as `tvshow.nfo`, upload year as season, episodes with `episodedetails`. This suits channels better than "movie" in Jellyfin.
 - **YouTube PO-token provider plugin** support (plugin dir in `DATA_DIR/ytdlp/plugins`, passed via `--plugin-dirs`), if bot checks become common.
 - **Audio-only / music mode** with matching tags and library layout.
