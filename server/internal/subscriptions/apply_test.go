@@ -369,6 +369,33 @@ func TestApplySourceOrder(t *testing.T) {
 	}
 }
 
+func TestApplyApproximateDatesDoNotDrift(t *testing.T) {
+	tab := func(at time.Time) *ytdlp.Listing {
+		l := listing("v1")
+		l.Entries[0].UploadDate, l.Entries[0].Timestamp = "", at.Unix()
+		return l
+	}
+	w := newApplyWorld(store.ModeManual, "videos")
+	w.check(nil, ok(1, true, tab(t0.Add(-5*time.Hour))))
+	e := w.entry("fake v1")
+	date, sort := e.UploadDate, e.SortDate
+	if date != "20261027" {
+		t.Fatalf("first date: %q", date)
+	}
+	// Two weeks later the tab says "2 weeks ago", a day off.
+	w.check(nil, ok(1, true, tab(t0.Add(-15*24*time.Hour+14*24*time.Hour))))
+	if e.UploadDate != date || !e.SortDate.Equal(sort) {
+		t.Fatalf("approximate date drifted: %q %v", e.UploadDate, e.SortDate)
+	}
+	// A source that reports exact dates still updates it.
+	w.sub.Sources = append(w.sub.Sources, &store.Source{ID: 2, SubscriptionID: 1,
+		URL: "https://fake.test/pl/x", Canonical: "https://fake.test/pl/x"})
+	w.check(nil, ok(2, true, listing("v1@20261026")))
+	if e.UploadDate != "20261026" {
+		t.Fatalf("exact date: %q", e.UploadDate)
+	}
+}
+
 func TestOrderFromNew(t *testing.T) {
 	for _, c := range []struct {
 		pos            []int

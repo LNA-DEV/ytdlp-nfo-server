@@ -80,7 +80,7 @@ Subscriptions never download anything themselves. They **create ordinary jobs wi
 
 ### 4.2 Entries and their status
 
-An entry stores what the listing showed: key, URL, title, duration, upload date (approximate for YouTube listings, see [Appendix A](#appendix-a-yt-dlp-calls)), thumbnail URL, `live_status` and `availability` if reported, the source that listed it first and its position there, `first_seen_at`, `last_seen_at`, `gone_at`, whether the first listing of its source found it (`backlog`), and a `sort_date` that all lists sort by (the upload time if known, else `first_seen_at`). It also stores the user decision `ignored` (with `ignore_reason`) and a link `item_id` to the item that last downloaded it.
+An entry stores what the listing showed: key, URL, title, duration, upload date (approximate for YouTube listings, see [Appendix A](#appendix-a-yt-dlp-calls); an approximate date is kept from the first listing, because it drifts between checks), thumbnail URL, `live_status` and `availability` if reported, the source that listed it first and its position there, `first_seen_at`, `last_seen_at`, `gone_at`, whether the first listing of its source found it (`backlog`), and a `sort_date` that all lists sort by (the upload time if known, else `first_seen_at`). It also stores the user decision `ignored` (with `ignore_reason`) and a link `item_id` to the item that last downloaded it.
 
 The status shown in the UI is **derived** at read time (S2), in this order. The first match wins:
 

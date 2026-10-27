@@ -351,7 +351,10 @@ func Apply(in Input) *Output {
 			if le.Duration > 0 {
 				e.Duration = le.Duration
 			}
-			if date != "" {
+			// A YouTube tab only shows an approximate date ("3 weeks ago")
+			// that drifts between checks. The first one is the most
+			// precise, so it is kept.
+			if date != "" && (src.Tab == "" || e.UploadDate == "") {
 				e.UploadDate, e.SortDate = date, sortTime
 			}
 			if le.Thumbnail != "" {
