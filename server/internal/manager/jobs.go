@@ -284,7 +284,7 @@ func (m *Manager) Retry(ctx context.Context, id int64, rr RetryRequest) (*store.
 		desc = "probe"
 	}
 	m.Logs.Note(id, "=== Retry requested: %s (%d reset) ===", desc, reset)
-	m.Sched.Enqueue(scheduler.Job{ID: job.ID, Pos: job.QueuePos, Site: job.Site})
+	m.Sched.Enqueue(scheduler.Job{ID: job.ID, Pos: job.QueuePos, Site: job.Site, Band: job.Band})
 	m.publishJob(job.ID)
 	return m.Store.GetJob(ctx, id)
 }

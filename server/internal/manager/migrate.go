@@ -273,7 +273,7 @@ func (m *Manager) enqueueOpen(ctx context.Context) error {
 		return err
 	}
 	for _, j := range jobs {
-		sj := scheduler.Job{ID: j.ID, Pos: j.QueuePos, Site: j.Site}
+		sj := scheduler.Job{ID: j.ID, Pos: j.QueuePos, Site: j.Site, Band: j.Band}
 		if j.State == store.JobRetrying {
 			sj.NotBefore = j.RetryAt
 		}

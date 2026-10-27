@@ -1,6 +1,12 @@
 // Package scheduler owns the download slots. A single goroutine decides
 // which queued jobs start, so the slot count can never drift (F8): a slot is
 // released only when the job's goroutine has actually returned.
+//
+// The queue has three bands (subscriptions concept §4.3): interactive jobs
+// start before auto jobs, and those before backlog jobs. Auto and backlog
+// jobs (background jobs) together use at most backgroundSlots slots, and
+// give their slot back between two items when they block a startable job
+// of a higher band (ShouldYield).
 package scheduler
 
 import (
@@ -9,6 +15,8 @@ import (
 	"maps"
 	"sort"
 	"time"
+
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 )
 
 // Cancellation causes passed to running jobs.
@@ -45,6 +53,7 @@ type Job struct {
 	Pos       int64
 	Site      string
 	NotBefore time.Time
+	Band      store.Band
 }
 
 type running struct {
@@ -61,6 +70,8 @@ type Status struct {
 	Queued      int                  `json:"queued"`
 	Waiting     int                  `json:"waiting"`
 	Max         int                  `json:"max"`
+	Background  int                  `json:"background"`    // running background jobs
+	BackgroundN int                  `json:"backgroundMax"` // backgroundSlots
 	Paused      bool                 `json:"paused"`
 	PauseReason string               `json:"pauseReason,omitempty"`
 	PauseUntil  time.Time            `json:"pauseUntil,omitzero"`
@@ -78,6 +89,7 @@ type Scheduler struct {
 
 	// Owned by the loop goroutine.
 	max         int
+	bgSlots     int
 	queue       []Job
 	runs        map[int64]*running
 	siteRunning map[string]int
@@ -112,6 +124,7 @@ func New(run RunFunc, max int, siteLimit func(string) int, onChange func()) *Sch
 		onChange:    onChange,
 		siteLimit:   siteLimit,
 		max:         max,
+		bgSlots:     1,
 		runs:        map[int64]*running{},
 		siteRunning: map[string]int{},
 		cooldown:    map[string]time.Time{},
@@ -187,6 +200,30 @@ func (s *Scheduler) unforcedRunning() int {
 	return n
 }
 
+// backgroundRunning counts the unforced running background jobs.
+func (s *Scheduler) backgroundRunning() int {
+	n := 0
+	for _, r := range s.runs {
+		if !r.forced && r.job.Band.Background() {
+			n++
+		}
+	}
+	return n
+}
+
+// startable reports whether nothing but the slot limits keeps a queued job
+// from starting: its NotBefore, a cooldown and its site limit (after
+// freeing siteFreed slots of its site).
+func (s *Scheduler) startable(j Job, now time.Time, siteFreed int) bool {
+	if j.NotBefore.After(now) || s.cooldownActive(j.Site, now) {
+		return false
+	}
+	if lim := s.siteLimit(j.Site); lim > 0 && s.siteRunning[j.Site]-siteFreed >= lim {
+		return false
+	}
+	return true
+}
+
 func (s *Scheduler) dispatch() {
 	if s.stopping {
 		return
@@ -204,10 +241,12 @@ func (s *Scheduler) dispatch() {
 		}
 	}
 	if !s.paused {
+		// The queue is sorted by band, so every startable job of a higher
+		// band has been started before a background job is considered.
 		for i := 0; i < len(s.queue) && s.unforcedRunning() < s.max; {
 			j := s.queue[i]
-			blocked := j.NotBefore.After(now) || s.cooldownActive(j.Site, now)
-			if lim := s.siteLimit(j.Site); lim > 0 && s.siteRunning[j.Site] >= lim {
+			blocked := !s.startable(j, now, 0)
+			if j.Band.Background() && s.backgroundRunning() >= s.bgSlots {
 				blocked = true
 			}
 			if blocked {
@@ -278,7 +317,17 @@ func (s *Scheduler) insert(j Job) {
 		}
 	}
 	s.queue = append(s.queue, j)
-	sort.SliceStable(s.queue, func(a, b int) bool { return s.queue[a].Pos < s.queue[b].Pos })
+	s.sortQueue()
+}
+
+// sortQueue orders the queue by band, then by queue position.
+func (s *Scheduler) sortQueue() {
+	sort.SliceStable(s.queue, func(a, b int) bool {
+		if s.queue[a].Band != s.queue[b].Band {
+			return s.queue[a].Band < s.queue[b].Band
+		}
+		return s.queue[a].Pos < s.queue[b].Pos
+	})
 }
 
 // --- public API ---
@@ -346,7 +395,7 @@ func (s *Scheduler) SetPositions(pos map[int64]int64) {
 				s.queue[i].Pos = p
 			}
 		}
-		sort.SliceStable(s.queue, func(a, b int) bool { return s.queue[a].Pos < s.queue[b].Pos })
+		s.sortQueue()
 		s.onChange()
 	})
 }
@@ -354,6 +403,50 @@ func (s *Scheduler) SetPositions(pos map[int64]int64) {
 // SetMax changes the global limit.
 func (s *Scheduler) SetMax(n int) {
 	s.do(func() { s.max = max(n, 1) })
+}
+
+// SetBackgroundSlots changes how many background jobs may run at once.
+func (s *Scheduler) SetBackgroundSlots(n int) {
+	s.do(func() { s.bgSlots = max(n, 1) })
+}
+
+// ShouldYield reports whether a running background job blocks a startable
+// queued job of a higher band, through the global limit, backgroundSlots
+// or its site limit. The job's run then returns Requeue between two items
+// and the other job gets the slot. Jobs started with StartNow never yield.
+func (s *Scheduler) ShouldYield(id int64) bool {
+	yield := false
+	s.do(func() {
+		r, ok := s.runs[id]
+		if !ok || r.forced || !r.job.Band.Background() || s.paused || s.stopping {
+			return
+		}
+		now := time.Now()
+		for _, q := range s.queue {
+			if q.Band >= r.job.Band {
+				break // sorted by band
+			}
+			freed := 0
+			if q.Site == r.job.Site {
+				freed = 1
+			}
+			if !s.startable(q, now, freed) || s.unforcedRunning()-1 >= s.max {
+				continue
+			}
+			if q.Band.Background() && s.backgroundRunning()-1 >= s.bgSlots {
+				continue
+			}
+			// q can start once r is gone; it is blocked by r if it cannot
+			// start while r runs.
+			blockedNow := !s.startable(q, now, 0) || s.unforcedRunning() >= s.max ||
+				q.Band.Background() && s.backgroundRunning() >= s.bgSlots
+			if blockedNow {
+				yield = true
+				return
+			}
+		}
+	})
+	return yield
 }
 
 // SetCooldown pauses a site until the given time (rate limiting).
@@ -417,6 +510,7 @@ func (s *Scheduler) Status() Status {
 			}
 		}
 		st.Max = s.max
+		st.Background, st.BackgroundN = s.backgroundRunning(), s.bgSlots
 		st.Paused, st.PauseReason, st.PauseUntil = s.paused, s.pauseReason, s.pauseUntil
 		if len(s.cooldown) > 0 {
 			st.Cooldowns = maps.Clone(s.cooldown)
