@@ -161,6 +161,12 @@ type Job struct {
 	Counts Counts // computed when listing
 }
 
+// Planned reports whether the job was created with pre-planned items (by
+// a subscription). Its URL is a whole channel or playlist, so it must never
+// be probed or expanded (subscriptions concept §4.3). Only planned jobs
+// have no normalized URL: they are not part of the URL duplicate check.
+func (j *Job) Planned() bool { return j.NormURL == "" }
+
 // Counts summarizes the items of a job.
 type Counts struct {
 	Total    int `json:"total"`

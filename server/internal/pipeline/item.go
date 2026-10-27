@@ -197,6 +197,11 @@ func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refe
 		return err
 	}
 	if meta.IsPlaylist {
+		if job.Planned() {
+			// A subscription item must stay one video: expanding it could
+			// bypass the auto-queue cap (subscriptions concept §4.3).
+			return failure(ytdlp.ClassPermanent, "not a single video: the URL is a playlist or channel")
+		}
 		return p.expandItem(ctx, rc, it, raw)
 	}
 	keyBefore := it.ArchiveKey
