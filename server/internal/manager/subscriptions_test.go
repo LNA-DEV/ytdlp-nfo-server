@@ -931,3 +931,38 @@ func TestSubscriptionListingWithoutIDs(t *testing.T) {
 		t.Fatalf("in library: %s, %d entries", got, len(w.entries(id, "")))
 	}
 }
+
+// A channel outside YouTube without dates lists newest first: "latest N"
+// takes its newest entries, checks list it completely until a new entry
+// at the top confirms the order, then with a window.
+func TestSubscriptionNewestFirstOutsideYouTube(t *testing.T) {
+	sc := &scenario.Scenario{Videos: map[string]scenario.Video{}, Playlists: map[string]scenario.Playlist{}}
+	for _, id := range []string{"v1", "v2", "v3", "v4"} {
+		sc.Videos[id] = vid(id, "Video "+id)
+	}
+	sc.Playlists["user"] = scenario.Playlist{ID: "user", Title: "User", ExtractorKey: "ExampleUser",
+		Listings: [][]string{newest(1, 2), newest(1, 3), newest(1, 4)}}
+	w := newWorld(t, sc)
+	m := w.startSubs()
+	start := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("User"), Backlog: &store.BacklogChoice{Mode: store.BacklogLatest, N: 1},
+		Sources: []SourceInput{{URL: scenario.PlaylistPrefix + "user"}}}))
+	sub := w.waitChecked(id, start)
+	jobs := w.subJobs(id)
+	if len(jobs) != 1 || itemKeys(w.items(jobs[0].ID)) != "v2" || sub.Kind != "channel" {
+		t.Fatalf("latest 1 must take the newest entry: %+v, kind %q", jobs, sub.Kind)
+	}
+	sub = w.checkNow(id)
+	if src := sub.Sources[0]; !src.NewestFirst || !src.OrderKnown {
+		t.Fatalf("order not confirmed: %+v", src)
+	}
+	w.checkNow(id)
+	log, _ := m.subs.logs.Read(id)
+	if strings.Count(string(log), "(full listing)") != 2 || !strings.Contains(string(log), "(newest 50)") ||
+		!strings.Contains(string(log), "lists newest first") {
+		t.Fatalf("check log:\n%s", log)
+	}
+	if got := entryIDs(w.entries(id, "inbox")); got != "v4,v3" {
+		t.Fatalf("inbox: %s", got)
+	}
+}

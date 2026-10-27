@@ -286,6 +286,13 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 	if res.OptionsErr == nil {
 		log.Line(subscriptions.SummaryLine(out.Summary, queued, ids))
 	}
+	for _, src := range out.Ordered {
+		if src.NewestFirst {
+			log.Printf("%s lists newest first: later checks list only its newest %d entries", src.Canonical, settings.Subscriptions.Window)
+		} else {
+			log.Printf("%s lists oldest first: checks keep listing it completely", src.Canonical)
+		}
+	}
 	if sub.Warning != "" && out.CapHit {
 		log.Printf("WARNING: %s", sub.Warning)
 	}

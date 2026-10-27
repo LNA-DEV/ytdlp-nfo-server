@@ -305,3 +305,84 @@ func TestApplyErrors(t *testing.T) {
 		t.Fatalf("options error: %+v", w.sub)
 	}
 }
+
+// A source outside YouTube without dates: the order is guessed from the
+// extractor, confirmed by where new entries appear in a complete listing,
+// and entries without a date are sorted again if the guess was wrong.
+func TestApplySourceOrder(t *testing.T) {
+	channel := func(ids ...string) *ytdlp.Listing {
+		l := listing(ids...)
+		l.ExtractorKey = "ExampleUser"
+		for i := range l.Entries {
+			l.Entries[i].UploadDate = ""
+		}
+		return l
+	}
+	w := newApplyWorld(store.ModeManual, "")
+	src := w.sub.Sources[0]
+	w.check(nil, ok(1, true, channel("v3", "v2", "v1")))
+	if !src.NewestFirst || src.OrderKnown || Windowed(src) {
+		t.Fatalf("a user page is guessed newest first, not confirmed: %+v", src)
+	}
+	es := append([]*store.Entry(nil), w.entries...)
+	SortNewestFirst(es, map[int64]*store.Source{1: src})
+	if ids(es) != "v3,v2,v1" {
+		t.Fatalf("newest first: %s", ids(es))
+	}
+	out := w.check(nil, ok(1, true, channel("v5", "v4", "v3", "v2", "v1")))
+	if !src.NewestFirst || !src.OrderKnown || !Windowed(src) || len(out.Ordered) != 1 {
+		t.Fatalf("new entries at the top confirm newest first: %+v", src)
+	}
+
+	// A playlist-like extractor is guessed oldest first; new entries at
+	// the end confirm it.
+	w = newApplyWorld(store.ModeManual, "")
+	src = w.sub.Sources[0]
+	pl := func(ids ...string) *ytdlp.Listing { l := channel(ids...); l.ExtractorKey = "ExamplePlaylist"; return l }
+	w.check(nil, ok(1, true, pl("v1", "v2")))
+	w.check(nil, ok(1, true, pl("v1", "v2", "v3")))
+	if src.NewestFirst || !src.OrderKnown || Windowed(src) {
+		t.Fatalf("playlist: %+v", src)
+	}
+
+	// A wrong guess: a user page that lists oldest first. The entries of
+	// the first listing are sorted again.
+	w = newApplyWorld(store.ModeManual, "")
+	src = w.sub.Sources[0]
+	w.check(nil, ok(1, true, channel("v1", "v2", "v3")))
+	out = w.check(nil, ok(1, true, channel("v1", "v2", "v3", "v4")))
+	if src.NewestFirst || !src.OrderKnown || len(out.Update) != 3 {
+		t.Fatalf("new entries at the end: %+v, %d updated", src, len(out.Update))
+	}
+	es = append([]*store.Entry(nil), w.entries...)
+	SortNewestFirst(es, map[int64]*store.Source{1: src})
+	if ids(es) != "v4,v3,v2,v1" {
+		t.Fatalf("sorted again: %s", ids(es))
+	}
+
+	// Dates in the listing tell the order at once.
+	w = newApplyWorld(store.ModeManual, "")
+	src = w.sub.Sources[0]
+	w.check(nil, ok(1, true, listing("a@20240301", "b@20240201", "c@20240101")))
+	if !src.NewestFirst || !src.OrderKnown {
+		t.Fatalf("dated listing: %+v", src)
+	}
+}
+
+func TestOrderFromNew(t *testing.T) {
+	for _, c := range []struct {
+		pos            []int
+		n              int
+		newest, wantOK bool
+	}{
+		{[]int{0, 1}, 5, true, true},
+		{[]int{3, 4}, 5, false, true},
+		{[]int{0, 4}, 5, false, false},
+		{nil, 5, false, false},
+		{[]int{0, 1}, 2, false, false}, // everything is new
+	} {
+		if newest, ok := orderFromNew(c.pos, c.n); newest != c.newest || ok != c.wantOK {
+			t.Errorf("%v of %d: %v %v", c.pos, c.n, newest, ok)
+		}
+	}
+}

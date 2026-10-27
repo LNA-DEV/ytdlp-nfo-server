@@ -281,6 +281,12 @@ CREATE INDEX jobs_subscription ON jobs(subscription_id);
 	`
 ALTER TABLE subscription_entries ADD COLUMN listing_key TEXT NOT NULL DEFAULT '';
 `,
+	// 4: the order a source lists in (subscriptions concept §5.2)
+	`
+ALTER TABLE subscription_sources ADD COLUMN newest_first INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE subscription_sources ADD COLUMN order_known INTEGER NOT NULL DEFAULT 0;
+UPDATE subscription_sources SET newest_first = 1, order_known = 1 WHERE tab != '';
+`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

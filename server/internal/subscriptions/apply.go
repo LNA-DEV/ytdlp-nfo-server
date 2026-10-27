@@ -72,6 +72,9 @@ type Output struct {
 	Requeue []*store.Entry // one one-item auto job each (§5.3)
 	Backlog []*store.Entry // one backlog job (the backlog choice)
 	Sources []*store.Source
+	// Ordered lists the sources whose order this check confirmed or
+	// changed (for the check log).
+	Ordered []*store.Source
 	Summary Summary
 	// EnteredError: the subscription went into the error state with this
 	// check; CapHit: it hit autoQueueCap (notifications are sent once).
@@ -276,16 +279,25 @@ func Apply(in Input) *Output {
 		}
 		first := src.FirstOKAt.IsZero()
 		entries := r.Listing.Entries
+		wasNewest, wasKnown := src.NewestFirst, src.OrderKnown
+		newest, dated := listingOrder(src, r.Listing)
+		switch {
+		case dated:
+			src.NewestFirst, src.OrderKnown = newest, true
+		case !src.OrderKnown:
+			src.NewestFirst = guessNewestFirst(src, r.Listing)
+		}
 		order := make([]int, len(entries))
 		for j := range order {
 			order[j] = j
 		}
-		if src.Tab != "" { // newest first: insert oldest first
+		if src.NewestFirst { // insert oldest first
 			for a, b := 0, len(order)-1; a < b; a, b = a+1, b-1 {
 				order[a], order[b] = order[b], order[a]
 			}
 		}
 		out.Summary.Listed += len(entries)
+		var newPos []int // positions of the new entries of this source
 		for _, pos := range order {
 			le := entries[pos]
 			key := EntryKey(le)
@@ -298,12 +310,8 @@ func Apply(in Input) *Output {
 				e = &store.Entry{SubscriptionID: sub.ID, Key: key, URL: le.URL, SourceID: src.ID, Position: pos,
 					Backlog: first, FirstSeenAt: now, LastSeenAt: now, SortDate: now}
 				if sortTime.IsZero() {
-					// Unknown dates keep the listing order (positions are
-					// newest first in a tab, oldest first in a playlist).
-					e.SortDate = now.Add(-time.Duration(pos) * time.Millisecond)
-					if src.Tab == "" {
-						e.SortDate = now.Add(-time.Duration(len(entries)-pos) * time.Millisecond)
-					}
+					// Unknown dates keep the listing order.
+					e.SortDate = undatedSort(now, pos, len(entries), src.NewestFirst)
 				}
 				if le.Nested {
 					e.Ignored, e.IgnoreReason = true, ReasonNotAVideo
@@ -316,6 +324,7 @@ func Apply(in Input) *Output {
 				} else {
 					out.Summary.New++
 					discovered = append(discovered, e)
+					newPos = append(newPos, pos)
 				}
 			} else if !inserted[e] {
 				if e.SourceID == src.ID || e.SourceID == 0 || srcByID[e.SourceID] == nil {
@@ -349,6 +358,25 @@ func Apply(in Input) *Output {
 				e.Thumbnail = le.Thumbnail
 			}
 			e.LiveStatus, e.Availability = le.LiveStatus, le.Availability
+		}
+		// Where new entries appeared in a complete listing confirms the
+		// order of a source whose listing has no dates.
+		if !dated && r.Complete && !first {
+			if newest, ok := orderFromNew(newPos, len(entries)); ok {
+				src.NewestFirst, src.OrderKnown = newest, true
+			}
+		}
+		if src.NewestFirst != wasNewest && !first {
+			// Entries without a date were sorted by the other order.
+			for _, e := range append(append([]*store.Entry(nil), in.Entries...), out.Insert...) {
+				if e.SourceID == src.ID && e.UploadDate == "" {
+					e.SortDate = undatedSort(e.FirstSeenAt, e.Position, len(entries), src.NewestFirst)
+					changed[e] = true
+				}
+			}
+		}
+		if src.Tab == "" && src.OrderKnown && (!wasKnown || src.NewestFirst != wasNewest) {
+			out.Ordered = append(out.Ordered, src)
 		}
 		if first {
 			src.FirstOKAt = now
@@ -528,9 +556,10 @@ func firstNonEmpty(v ...string) string {
 }
 
 // newerInSource compares two entries of the same source by position:
-// lower positions are newer in a channel tab, higher ones in a playlist.
+// lower positions are newer in a source that lists newest first, higher
+// ones in a playlist.
 func newerInSource(a, b *store.Entry, srcByID map[int64]*store.Source) bool {
-	if src := srcByID[a.SourceID]; src != nil && src.Tab != "" {
+	if src := srcByID[a.SourceID]; src != nil && src.NewestFirst {
 		return a.Position < b.Position
 	}
 	return a.Position > b.Position

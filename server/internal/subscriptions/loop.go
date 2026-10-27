@@ -20,10 +20,12 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp/versions"
 )
 
-// Listing timeouts (Appendix A); a timeout is transient.
+// Listing timeouts (Appendix A); a timeout is transient. A full listing of
+// a source with many thousand entries on a site with small pages takes a
+// while, and without it the source never gets its first listing.
 const (
 	WindowTimeout  = 5 * time.Minute
-	FullTimeout    = 30 * time.Minute
+	FullTimeout    = 2 * time.Hour
 	PreviewTimeout = 60 * time.Second
 	// maxWindow: a gap larger than this is resolved by a full listing.
 	maxWindow = 3200
@@ -322,7 +324,7 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 	window := 0
 	switch {
 	case full, src.FirstOKAt.IsZero(), sub.Listing == store.ListingFull:
-	case sub.Listing == store.ListingAuto && src.Tab == "":
+	case sub.Listing == store.ListingAuto && !Windowed(src):
 	case src.LastFullAt.IsZero() || now.Sub(src.LastFullAt) > time.Duration(s.FullRescanDays)*24*time.Hour:
 	default:
 		window = s.Window

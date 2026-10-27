@@ -138,8 +138,15 @@ type Source struct {
 	LastOKAt       time.Time
 	LastFullAt     time.Time
 	Impersonate    bool
-	Error          string
-	ErrorClass     string
+	// NewestFirst: the source lists its newest entry first (a channel
+	// tab), else oldest first (a playlist). OrderKnown: the order was
+	// confirmed (a YouTube tab, dates in the listing, or where new entries
+	// appeared); until then NewestFirst is a guess and checks list the
+	// source completely (§5.2).
+	NewestFirst bool
+	OrderKnown  bool
+	Error       string
+	ErrorClass  string
 }
 
 // Entry is one video seen in a source. Status and the Item* fields are
@@ -255,19 +262,20 @@ func scanSub(r scanner) (*Subscription, error) {
 }
 
 const sourceCols = `id, subscription_id, url, canonical, tab, added_at, first_ok_at, last_ok_at, last_full_at,
-	impersonate, error, error_class`
+	impersonate, newest_first, order_known, error, error_class`
 
 func scanSource(r scanner) (*Source, error) {
 	var (
 		src                    Source
 		added                  int64
 		firstOK, lastOK, lastF sql.NullInt64
-		imp                    int
+		imp, newest, known     int
 	)
 	if err := r.Scan(&src.ID, &src.SubscriptionID, &src.URL, &src.Canonical, &src.Tab, &added, &firstOK, &lastOK,
-		&lastF, &imp, &src.Error, &src.ErrorClass); err != nil {
+		&lastF, &imp, &newest, &known, &src.Error, &src.ErrorClass); err != nil {
 		return nil, err
 	}
+	src.NewestFirst, src.OrderKnown = newest != 0, known != 0
 	src.AddedAt = time.UnixMilli(added)
 	src.FirstOKAt, src.LastOKAt, src.LastFullAt = fromMs(firstOK), fromMs(lastOK), fromMs(lastF)
 	src.Impersonate = imp != 0
@@ -371,9 +379,10 @@ func insertSources(ctx context.Context, q querier, subID int64, srcs []*Source) 
 			src.AddedAt = now
 		}
 		res, err := q.ExecContext(ctx, `INSERT INTO subscription_sources (subscription_id, url, canonical, tab, added_at,
-			first_ok_at, last_ok_at, last_full_at, impersonate, error, error_class) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			first_ok_at, last_ok_at, last_full_at, impersonate, newest_first, order_known, error, error_class)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			subID, src.URL, src.Canonical, src.Tab, src.AddedAt.UnixMilli(), ms(src.FirstOKAt), ms(src.LastOKAt),
-			ms(src.LastFullAt), b2i(src.Impersonate), src.Error, src.ErrorClass)
+			ms(src.LastFullAt), b2i(src.Impersonate), b2i(src.NewestFirst), b2i(src.OrderKnown), src.Error, src.ErrorClass)
 		if err != nil {
 			return err
 		}
@@ -499,9 +508,10 @@ func (t *Tx) SaveCheckState(ctx context.Context, sub *Subscription) error {
 // SaveSource writes the check state of a source.
 func (t *Tx) SaveSource(ctx context.Context, src *Source) error {
 	_, err := t.tx.ExecContext(ctx, `UPDATE subscription_sources SET canonical = ?, tab = ?, first_ok_at = ?,
-		last_ok_at = ?, last_full_at = ?, impersonate = ?, error = ?, error_class = ? WHERE id = ?`,
+		last_ok_at = ?, last_full_at = ?, impersonate = ?, newest_first = ?, order_known = ?, error = ?, error_class = ?
+		WHERE id = ?`,
 		src.Canonical, src.Tab, ms(src.FirstOKAt), ms(src.LastOKAt), ms(src.LastFullAt), b2i(src.Impersonate),
-		src.Error, src.ErrorClass, src.ID)
+		b2i(src.NewestFirst), b2i(src.OrderKnown), src.Error, src.ErrorClass, src.ID)
 	return err
 }
 

@@ -50,6 +50,8 @@ type SourceView struct {
 	LastOKAt    *time.Time `json:"lastOkAt,omitempty"`
 	LastFullAt  *time.Time `json:"lastFullAt,omitempty"`
 	Impersonate bool       `json:"impersonate,omitempty"`
+	NewestFirst bool       `json:"newestFirst"`
+	OrderKnown  bool       `json:"orderKnown"`
 	Error       string     `json:"error,omitempty"`
 	ErrorClass  string     `json:"errorClass,omitempty"`
 }
@@ -109,7 +111,8 @@ func (m *Manager) subView(sub *store.Subscription, all []*store.Subscription) Su
 	for _, src := range sub.Sources {
 		v.Sources = append(v.Sources, SourceView{ID: itoa(src.ID), URL: src.URL, Canonical: src.Canonical, Tab: src.Tab,
 			AddedAt: src.AddedAt, FirstOKAt: tptr(src.FirstOKAt), LastOKAt: tptr(src.LastOKAt), LastFullAt: tptr(src.LastFullAt),
-			Impersonate: src.Impersonate, Error: src.Error, ErrorClass: src.ErrorClass})
+			Impersonate: src.Impersonate, NewestFirst: src.NewestFirst, OrderKnown: src.OrderKnown, Error: src.Error,
+			ErrorClass: src.ErrorClass})
 	}
 	if all == nil {
 		all, _ = m.Store.ListSubscriptions(context.Background())

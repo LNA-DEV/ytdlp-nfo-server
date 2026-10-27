@@ -105,9 +105,14 @@ func Canonical(raw string, l *ytdlp.Listing) (canonical, tab string) {
 }
 
 // Kind returns "channel" if the listing is a channel (its id is the
-// channel or uploader id), else "playlist".
+// channel or uploader id, or, outside YouTube, its extractor is not a
+// playlist-like one), else "playlist".
 func Kind(l *ytdlp.Listing) string {
 	if l.ID != "" && (l.ID == l.ChannelID || l.ID == l.UploaderID) {
+		return "channel"
+	}
+	if l.IsPlaylist && l.ExtractorKey != "" && !strings.HasPrefix(strings.ToLower(l.ExtractorKey), "youtube") &&
+		!playlistLike(l.ExtractorKey) {
 		return "channel"
 	}
 	return "playlist"
