@@ -433,6 +433,33 @@ func TestMultiAudioSubtitlesAndNFO(t *testing.T) {
 	}
 }
 
+// A single-file format is remuxed into mkv; mp4 and audio-only sources
+// keep the downloaded file.
+func TestSingleFileFormatContainer(t *testing.T) {
+	single := func(id string) scenario.Video { v := vid(id, "Single "+id); v.Single = "mp4"; return v }
+	audio := vid("au", "Audio")
+	audio.AudioOnly, audio.Single = true, "m4a"
+	sc := &scenario.Scenario{Videos: map[string]scenario.Video{"s1": single("s1"), "s2": single("s2"), "au": audio}}
+	w := newWorld(t, sc)
+	w.start()
+	mp4 := "mp4"
+	for _, c := range []struct {
+		id  string
+		req config.OptionsRequest
+	}{{"s1", config.OptionsRequest{}}, {"s2", config.OptionsRequest{Container: &mp4}}, {"au", config.OptionsRequest{}}} {
+		j := w.submit(scenario.VideoPrefix+c.id, c.req)
+		if j = w.wait(j.ID, store.JobCompleted, store.JobFailed); j.State != store.JobCompleted {
+			t.Fatalf("%s: %s\n%s", c.id, j.State, w.log(j.ID))
+		}
+	}
+	files := strings.Join(w.libFiles(), "\n")
+	for _, f := range []string{"Single s1 [s1]/Single s1 [s1].mkv", "Single s2 [s2]/Single s2 [s2].mp4", "Audio [au]/Audio [au].m4a"} {
+		if !strings.Contains(files, f) {
+			t.Fatalf("missing %s:\n%s", f, files)
+		}
+	}
+}
+
 func TestVerifyFailureRetried(t *testing.T) {
 	v := vid("vf", "Verify")
 	v.Download = []scenario.Behavior{{BadMedia: true}, {}}

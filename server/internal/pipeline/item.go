@@ -105,6 +105,11 @@ func (p *Pipeline) skipIfArchived(rc *runCtx, it *store.Item) bool {
 	it.Error, it.ErrorClass, it.Hint = "Already in library", "", ""
 	it.FinishedAt = p.d.Now()
 	p.saveItem(it)
+	// Subscription entries listed without a video id follow the item to
+	// its archive key, so they show as in library.
+	if err := p.d.Store.RekeyEntries(bg, it.ID, it.ArchiveKey); err != nil {
+		rc.log.Printf("WARNING: updating subscription entries: %v", err)
+	}
 	rc.log.Printf("Already in library: %s", displayTitle(it))
 	os.RemoveAll(ItemWorkDir(p.d.Env, rc.job.ID, it.ID))
 	return true
@@ -197,6 +202,11 @@ func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refe
 		return err
 	}
 	if meta.IsPlaylist {
+		if job.Planned() {
+			// A subscription item must stay one video: expanding it could
+			// bypass the auto-queue cap (subscriptions concept §4.3).
+			return failure(ytdlp.ClassPermanent, "not a single video: the URL is a playlist or channel")
+		}
 		return p.expandItem(ctx, rc, it, raw)
 	}
 	keyBefore := it.ArchiveKey
@@ -248,7 +258,7 @@ func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refe
 	it.State = store.ItemDownloading
 	it.YtdlpVersion = rc.bin.ID
 	p.saveItem(it)
-	mediaPath, formatID, err := p.download(ctx, rc, it, dir, sel)
+	mediaPath, formatID, err := p.download(ctx, rc, it, dir, sel, formats.AudioOnlySource(meta.Formats))
 	if err != nil {
 		return err
 	}
@@ -405,12 +415,12 @@ func (p *Pipeline) checkDisk(rc *runCtx, estimate int64) error {
 
 // download runs the media-only download and returns the media path and the
 // chosen format id.
-func (p *Pipeline) download(ctx context.Context, rc *runCtx, it *store.Item, dir string, sel formats.Selection) (string, string, error) {
+func (p *Pipeline) download(ctx context.Context, rc *runCtx, it *store.Item, dir string, sel formats.Selection, audioOnly bool) (string, string, error) {
 	resultPath := filepath.Join(dir, ytdlp.ResultFile)
 	os.Remove(resultPath)
 	spec := ytdlp.DownloadSpec{
 		WorkDir: dir, Format: sel.Format, AudioMultistream: sel.AudioMultistream, Sort: sel.Sort,
-		Container: rc.job.Options.Container, EmbedChapters: rc.settings.Extras.EmbedChapters,
+		Container: rc.job.Options.Container, AudioOnly: audioOnly, EmbedChapters: rc.settings.Extras.EmbedChapters,
 		SponsorBlockMark: rc.settings.Extras.SponsorBlockMark,
 	}
 	parts := strings.Count(strings.SplitN(sel.Format, "/", 2)[0], "+") + 1

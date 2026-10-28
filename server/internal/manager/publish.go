@@ -41,6 +41,7 @@ func (m *Manager) publishJob(id int64) {
 
 func (m *Manager) publishCounts() {
 	if c, err := m.Store.CountJobsByTab(context.Background()); err == nil {
+		c["inbox"] = m.Inbox()
 		m.Hub.Publish(EventCounts, c)
 	}
 }
@@ -58,6 +59,9 @@ func (m *Manager) view(j *store.Job) JobView {
 // ItemChanged implements pipeline.Publisher.
 func (m *Manager) ItemChanged(it *store.Item) {
 	m.Hub.Publish(EventItem, itemView(it))
+	if it.State.Terminal() {
+		m.itemFinished(it)
+	}
 }
 
 // Progress implements pipeline.Publisher (already throttled to ≤ 2/s).

@@ -33,6 +33,7 @@ func (m *Manager) RemoveArchive(ctx context.Context, key string) error {
 	if err := m.Archive.Remove(key); err != nil {
 		m.logf("archive: could not update %s: %v", m.Archive.Path, err)
 	}
+	m.markCounts(0)
 	return nil
 }
 
@@ -47,6 +48,7 @@ func (m *Manager) ImportArchive(ctx context.Context, data []byte) (int, error) {
 		return 0, err
 	}
 	if n > 0 { // keep the shared legacy file in sync
+		m.markCounts(0)
 
 		all, err := m.Store.AllArchiveKeys(ctx)
 		if err == nil {
@@ -100,7 +102,11 @@ func (m *Manager) SaveSiteRule(ctx context.Context, r config.SiteRule) (config.S
 	if err := m.Store.SaveSiteRule(ctx, &r); err != nil {
 		return r, err
 	}
-	return r, m.reloadRules(ctx)
+	if err := m.reloadRules(ctx); err != nil {
+		return r, err
+	}
+	m.recheckOptionErrors(ctx)
+	return r, nil
 }
 
 // DeleteSiteRule removes a rule.
@@ -108,7 +114,11 @@ func (m *Manager) DeleteSiteRule(ctx context.Context, id int64) error {
 	if err := m.Store.DeleteSiteRule(ctx, id); err != nil {
 		return err
 	}
-	return m.reloadRules(ctx)
+	if err := m.reloadRules(ctx); err != nil {
+		return err
+	}
+	m.recheckOptionErrors(ctx)
+	return nil
 }
 
 // --- cookies ---
@@ -144,6 +154,7 @@ func (m *Manager) SaveCookieProfile(ctx context.Context, name string, data []byt
 	if old != nil && old.Filename != file {
 		os.Remove(filepath.Join(m.cookieDir, filepath.Base(old.Filename)))
 	}
+	m.recheckOptionErrors(ctx)
 	return m.Store.GetCookieProfile(ctx, name)
 }
 
@@ -227,6 +238,9 @@ func (m *Manager) QuickStatus(ctx context.Context) QuickStatusView {
 	}
 	out.Queue.Status = m.Sched.Status()
 	out.Queue.Counts, _ = m.Store.CountJobsByTab(ctx)
+	if out.Queue.Counts != nil {
+		out.Queue.Counts["inbox"] = m.Inbox()
+	}
 	m.mu.Lock()
 	for _, w := range m.warnings {
 		out.Warnings = append(out.Warnings, w)

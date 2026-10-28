@@ -334,9 +334,11 @@ export class JobsView {
       h('div', { class: 'job-main' },
         h('div', { class: 'job-title', title }, title),
         h('div', { class: 'job-sub' }, [j.uploader, j.title ? j.url : null].filter(Boolean).join(' · ')),
-        this.metaLine(j)),
+        this.metaLine(j),
+        j.subscriptionId ? h('a', { class: 'sub-link', href: '#/subscriptions/' + j.subscriptionId, onclick: (e) => e.stopPropagation() }, 'Subscription') : null),
       h('div', { class: 'job-side' },
         h('span', { class: 'badge b-' + j.state }, stateLabel(j.state)),
+        j.band && j.band !== 'interactive' && j.state === 'queued' ? h('span', { class: 'band-tag', title: 'Background download of a subscription' }, j.band) : null,
         h('span', { class: 'muted', style: 'font-size:.75rem' }, time(j.finishedAt || j.createdAt))));
     el.append(head);
     const bar = h('div', { class: 'progress' }, h('div', {}));
@@ -555,4 +557,4 @@ export class JobsView {
   }
 }
 
-export { loadOptions };
+export { loadOptions, select };

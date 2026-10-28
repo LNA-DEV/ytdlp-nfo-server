@@ -34,6 +34,7 @@ type Resolver interface {
 type Coordinator interface {
 	SetCooldown(site string, until time.Time)
 	Pause(reason string, until time.Time)
+	ShouldYield(jobID int64) bool
 }
 
 // Live is the in-memory progress of a running job.
@@ -235,6 +236,10 @@ func (p *Pipeline) Run(ctx context.Context, jobID int64) scheduler.Outcome {
 	items, err := p.d.Store.ItemsForJob(bg, jobID)
 	if err != nil {
 		return p.failJob(rc, ytdlp.Classification{Class: ytdlp.ClassTransient, Reason: err.Error()})
+	}
+	if len(items) == 0 && job.Planned() {
+		return p.failJob(rc, ytdlp.Classification{Class: ytdlp.ClassPermanent, Reason: "the job has no items",
+			Hint: "Download the videos again from the subscription."})
 	}
 	if len(items) == 0 {
 		job.State = store.JobProbing
@@ -602,9 +607,13 @@ func (p *Pipeline) expandNested(ctx context.Context, rc *runCtx, entries []ytdlp
 	return out, nil
 }
 
-// processItems runs the items of a job sequentially.
+// processItems runs the items of a job sequentially. A background job
+// gives its slot back between two items when it blocks a waiting job of a
+// higher band (subscriptions concept §4.3); items are resumable, so this
+// costs nothing.
 func (p *Pipeline) processItems(ctx context.Context, rc *runCtx) scheduler.Outcome {
 	job := rc.job
+	processed := false
 	for {
 		if ctx.Err() != nil {
 			return p.stop(ctx, rc)
@@ -642,6 +651,13 @@ func (p *Pipeline) processItems(ctx context.Context, rc *runCtx) scheduler.Outco
 			}
 			return p.finishJob(rc, items)
 		}
+		if processed && job.Band.Background() && p.d.Sched.ShouldYield(job.ID) {
+			rc.log.Line("--- Giving the slot to a waiting download; continuing later ---")
+			job.State = store.JobQueued
+			p.saveJob(job)
+			return scheduler.Outcome{Kind: scheduler.Requeue}
+		}
+		processed = true
 		if job.State != store.JobRunning || job.Error != "" {
 			job.State = store.JobRunning
 			job.Error, job.ErrorClass, job.Hint, job.RetryAt = "", "", "", time.Time{}

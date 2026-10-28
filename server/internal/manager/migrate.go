@@ -83,6 +83,13 @@ func (m *Manager) settingsChanged(old, cur config.Settings) {
 	if old.MaxConcurrent != cur.MaxConcurrent && m.Sched != nil {
 		m.Sched.SetMax(cur.MaxConcurrent)
 	}
+	if old.Subscriptions.BackgroundSlots != cur.Subscriptions.BackgroundSlots && m.Sched != nil {
+		m.Sched.SetBackgroundSlots(cur.Subscriptions.BackgroundSlots)
+	}
+	if old.Subscriptions != cur.Subscriptions && m.subs.loop != nil {
+		m.subs.loop.Wake() // e.g. resumed after "Pause all"
+	}
+	m.recheckOptionErrors(context.Background())
 	m.systemChanged()
 }
 
@@ -273,7 +280,7 @@ func (m *Manager) enqueueOpen(ctx context.Context) error {
 		return err
 	}
 	for _, j := range jobs {
-		sj := scheduler.Job{ID: j.ID, Pos: j.QueuePos, Site: j.Site}
+		sj := scheduler.Job{ID: j.ID, Pos: j.QueuePos, Site: j.Site, Band: j.Band}
 		if j.State == store.JobRetrying {
 			sj.NotBefore = j.RetryAt
 		}

@@ -56,6 +56,13 @@ func (s *Store) CreateItems(ctx context.Context, items []*Item) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := createItemsTx(ctx, tx, items); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func createItemsTx(ctx context.Context, tx *sql.Tx, items []*Item) error {
 	now := time.Now()
 	for _, it := range items {
 		it.UpdatedAt = now
@@ -74,7 +81,7 @@ func (s *Store) CreateItems(ctx context.Context, items []*Item) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func updateItemTx(ctx context.Context, ex interface {
@@ -168,7 +175,8 @@ func (s *Store) DeleteItemsForJob(ctx context.Context, jobID int64) error {
 }
 
 // FinalizeItem records the archive entry and marks the item done in one
-// transaction (§4.5 step 4, invariant 4).
+// transaction (§4.5 step 4, invariant 4). Subscription entries linked to a
+// re-keyed item follow its new key in the same transaction.
 func (s *Store) FinalizeItem(ctx context.Context, it *Item, e ArchiveEntry) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -185,6 +193,21 @@ func (s *Store) FinalizeItem(ctx context.Context, it *Item, e ArchiveEntry) erro
 	}
 	if err := updateItemTx(ctx, tx, it); err != nil {
 		return err
+	}
+	if e.Key != "" {
+		// Subscription bookkeeping must never block a finalize: if it
+		// fails, only its own changes are rolled back.
+		if _, err := tx.ExecContext(ctx, `SAVEPOINT rekey`); err != nil {
+			return err
+		}
+		if err := rekeyEntries(ctx, tx, it.ID, e.Key); err != nil {
+			if _, err := tx.ExecContext(ctx, `ROLLBACK TO rekey`); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `RELEASE rekey`); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

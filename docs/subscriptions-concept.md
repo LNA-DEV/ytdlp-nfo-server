@@ -1,6 +1,6 @@
 # Subscriptions Concept
 
-> Status: **Decided, ready for implementation.** All decisions are recorded in [§14](#14-decisions). · 2026-10-14, revised 2026-10-27
+> Status: **Implemented** (phases S-1 to S-3, [§13](#13-rollout)). All decisions are recorded in [§14](#14-decisions). The manual run against YouTube from the S-1 exit criteria was done on 2026-10-27; its results are in [Appendix A](#appendix-a-yt-dlp-calls). · 2026-10-14, revised 2026-10-27
 > Scope: server, web UI, browser add-on
 > Builds on [overhaul-concept.md](overhaul-concept.md), which lists subscriptions as "later" in §13.
 
@@ -64,7 +64,7 @@ Subscriptions never download anything themselves. They **create ordinary jobs wi
 
 | Field | Notes |
 |---|---|
-| `name` | Display name. Defaults to the channel or playlist title from the preview. |
+| `name` | Display name. Defaults to the channel or playlist title from the preview; a listing without names is named after the last path segment of its URL that is not generic (`/users/<name>/videos` → `<name>`), else its id. |
 | `folder` | Folder in the library (S9). Empty means the name, so the folder follows the name until it is set. It is a single folder level, sanitized like any `playlist_title` (`library/sanitize.go`). Folders don't have to be unique: subscriptions with the same folder in the same library share it, for example a *Videos* and a separate *Shorts* subscription of one channel. The UI shows when a folder is shared ([§14](#14-decisions)). |
 | `sources` | One or more listing URLs in their own table (`subscription_sources`, [§9](#9-persistence)). Each source keeps the URL as entered and a **canonical URL**, which is unique across all subscriptions (a database constraint). For a YouTube channel tab, the canonical URL is built from the channel ID (`…/channel/<id>/<tab>`), so `…/@name/videos` and `…/channel/UC…/videos` count as the same source, and a renamed handle doesn't break the subscription. Other URLs are normalized like job URLs (`config.NormalizeURL`). Checks list the canonical URL. Each source has its own check state: first successful listing, last full listing, error. Sources can be added and removed later ([§5.2](#52-check-algorithm)). |
 | `mode` | `auto` or `manual`. New subscriptions default to `manual`. It can be switched at any time. Switching to `auto` does **not** queue the current inbox; the UI offers *Download inbox* separately. Switching to `manual` does not cancel jobs that were already queued. |
@@ -80,7 +80,7 @@ Subscriptions never download anything themselves. They **create ordinary jobs wi
 
 ### 4.2 Entries and their status
 
-An entry stores what the listing showed: key, URL, title, duration, upload date (approximate for YouTube listings, see [Appendix A](#appendix-a-yt-dlp-calls)), thumbnail URL, `live_status` and `availability` if reported, the source that listed it first and its position there, `first_seen_at`, `last_seen_at`, `gone_at`, whether the first listing of its source found it (`backlog`), and a `sort_date` that all lists sort by (the upload time if known, else `first_seen_at`). It also stores the user decision `ignored` (with `ignore_reason`) and a link `item_id` to the item that last downloaded it.
+An entry stores what the listing showed: key, URL, title, duration, upload date (approximate for YouTube listings, see [Appendix A](#appendix-a-yt-dlp-calls); an approximate date is kept from the first listing, because it drifts between checks), thumbnail URL, `live_status` and `availability` if reported, the source that listed it first and its position there, `first_seen_at`, `last_seen_at`, `gone_at`, whether the first listing of its source found it (`backlog`), and a `sort_date` that all lists sort by (the upload time if known, else `first_seen_at`). It also stores the user decision `ignored` (with `ignore_reason`) and a link `item_id` to the item that last downloaded it.
 
 The status shown in the UI is **derived** at read time (S2), in this order. The first match wins:
 
@@ -98,8 +98,8 @@ The status shown in the UI is **derived** at read time (S2), in this order. The 
 
 - **Gone**: if an entry is missing from a full listing, it gets `gone_at` and a "removed from source" badge. Files in the library are not touched. If it reappears, `gone_at` is cleared.
 - Deleting or clearing a job deletes its items, which sets `item_id` to `NULL`. The entry then falls back to *in library* (if it was finalized) or *new/backlog*. Auto mode does not queue it again (S3).
-- **Key changes**: the pipeline can re-key an item after fetching its metadata (`pipeline/item.go`, `keyBefore`). `Store.FinalizeItem` updates the key of the entries with the old key in the same transaction that writes the archive record, so they still match the archive after the job is pruned. If a subscription already has an entry with the new key (for example, one source listed the video as `url …` and another one with its ID), the two are merged instead: the entry with the new key is kept and takes over `item_id`, and the other one is deleted. A plain `UPDATE` would violate `UNIQUE (subscription_id, key)` and fail the finalize transaction, and subscription bookkeeping must never block a finalize (invariant 4).
-- **No key**: if a listing gives no extractor key or ID, the entry uses `url <normalized url>` as its key. It is still listed and can be downloaded, and its status follows the linked item.
+- **Key changes**: the pipeline can re-key an item after fetching its metadata (`pipeline/item.go`, `keyBefore`). `Store.FinalizeItem` updates the key of the entries with the old key in the same transaction that writes the archive record, so they still match the archive after the job is pruned. If a subscription already has an entry with the new key (for example, one source listed the video as `url …` and another one with its ID), the two are merged instead: the entry with the new key is kept and takes over `item_id`, and the other one is deleted. A plain `UPDATE` would violate `UNIQUE (subscription_id, key)` and fail the finalize transaction, and subscription bookkeeping must never block a finalize (invariant 4). The old key stays the entry's `listing_key`, and checks match listing entries by key or listing key: listings keep reporting the video under its old key, so without it the next check would record the video as new again (and queue it in auto mode), and the next full listing would mark the re-keyed entry gone.
+- **No key**: if a listing gives no extractor key or ID, the entry uses `url <normalized url>` as its key. It is still listed and can be downloaded, and its status follows the linked item. Its download re-keys it to the archive key (see above). Whether such an entry is in the library can only be told once its metadata is fetched: an item that turns out to be in the archive already is skipped and re-keys its entries as well, so they show as *in library*.
 - **Not a video**: a listing entry that is itself a listing (`_type: playlist`, or a URL entry whose extractor is a tab or playlist extractor such as `YoutubeTab`) is stored as ignored with the reason `not a video`. This only affects the display. The pipeline has the guard that matters ([§4.3](#43-how-subscriptions-create-jobs)).
 
 ### 4.3 How subscriptions create jobs
@@ -151,13 +151,14 @@ flowchart TD
   TX --> EVT[events, notification]
 ```
 
-- **Options first.** A check resolves the subscription's download options (library, preset, cookie profile, yt-dlp version) before it lists anything. If that fails, for example because a library was removed, the check fails as `permanent` with an error such as *"unknown library 'Kinder'"* and records nothing. New videos are therefore not used up (S3): the first check after the fix finds and queues them. Before a library, preset or cookie profile is removed, *Settings* lists the subscriptions that use it ([§14](#14-decisions)).
-- **Window vs full listing.** `listing = auto` uses a window for sources that are newest-first, which today means YouTube channel tabs. They are detected from the URL path (`/videos`, `/shorts` or `/streams`) and stored as `tab`, so this also works for imported sources without a preview. All other sources get a full listing every check, because new videos in a playlist can appear at the end. Full listings also run on the first listing of a source, every `fullRescanDays` (default 7, per source) and on *Full rescan*.
+- **Options first.** A check resolves the subscription's download options (library, preset, cookie profile, yt-dlp version) before it lists anything. If that fails, for example because a library was removed, the check fails as `permanent` with an error such as *"unknown library 'Kinder'"* and records nothing. New videos are therefore not used up (S3): the first check after the fix finds and queues them. The next check is in 24 h, but restoring a library, site rule or cookie profile makes every subscription whose options now resolve due at once. Before a library, preset or cookie profile is removed, *Settings* lists the subscriptions that use it ([§14](#14-decisions)).
+- **Window vs full listing.** `listing = auto` uses a window for sources that are known to list newest first. YouTube channel tabs are known up front: they are detected from the URL path (`/videos`, `/shorts` or `/streams`) and stored as `tab`, so this also works for imported sources without a preview. All other sources get a full listing until their order is confirmed, because new videos in a playlist can appear at the end. Full listings also run on the first listing of a source, every `fullRescanDays` (default 7, per source) and on *Full rescan*. The request is stored (`full_requested`), so it survives a restart, and only the commit of the check that listed everything clears it.
+- **Order of a source.** Each source stores whether it lists newest first (`newest_first`) and whether that is confirmed (`order_known`). The order decides the `sort_date` of entries without a date (the listing order within one listing) and which entries *latest N* takes. A YouTube tab lists newest first. Otherwise a listing with dates tells the order from its first and last dated entries, and a listing without dates confirms it once a complete listing shows new entries as a block at the start (newest first) or at the end (oldest first). Until then the order is a guess: YouTube playlists and listings whose extractor names a playlist, album, set, collection, series, season or course keep playlist order, other channel and user pages list newest first. A guess only affects sorting, never the window, so a wrong guess can't hide new videos. If a confirmed order differs from the guess, the undated entries of the source are sorted again. The check log notes when an order is confirmed.
 - **Gap detection.** If a windowed listing contains no known entry (an entry of the subscription with the same key, including ignored and gone ones), the channel published more than W videos since the last check (or its order changed). The window doubles until a known entry appears or the listing is complete.
 - **Gone detection** happens only after full listings of *all* sources succeeded. A windowed or partly failed check never marks anything gone.
 - **Merge.** Entries from several sources are merged by key. An entry belongs to the source that listed it first (`source_id`). Its URL and position come only from that source, and every listing of that source updates the position. The other fields are updated from the newest listing of any source.
 - **First listing of a source.** Everything the first successful listing of a source finds is backlog (`backlog = 1`), unless the subscription already has an entry with that key. This holds for the first check of a new subscription and for a source added later, so adding the *Shorts* tab to an auto subscription never queues the whole tab. `first_ok_at` stays empty until that listing succeeds, and the next check tries again.
-- **Backlog choice.** Once the first listings of all initial sources have succeeded, the backlog choice is applied: *none* (default), *latest N* or *all*. *Latest N* takes the N entries with the newest `sort_date` across all sources. For equal dates it uses the position within one source: the lowest positions in a channel tab, the highest in a playlist. Positions from different sources are never compared. The choice is stored, applied once, and then cleared. A source added later has no backlog choice. Its backlog can be downloaded with *Download backlog…*.
+- **Backlog choice.** Once the first listings of all initial sources have succeeded, the backlog choice is applied: *none* (default), *latest N* or *all*. *Latest N* takes the N entries with the newest `sort_date` across all sources. For equal dates it uses the position within one source: the lowest positions in a source that lists newest first, the highest in a playlist. Positions from different sources are never compared. The choice is stored, applied once, and then cleared. A source added later has no backlog choice. Its backlog can be downloaded with *Download backlog…*.
 - **Removing a source** keeps its entries with `source_id = NULL`. A later listing of another source that contains them takes them over. If no source does, the next full rescan marks them gone.
 - **Check log.** Every check writes to `DATA_DIR/logs/subscriptions/<id>.log` (a second `joblog.Manager`, capped at 512 KB, tail kept): a header with the yt-dlp version, the sources and the window, the yt-dlp output on errors, and a summary line such as `Checked 2 sources: 50 listed, 2 new, 2 queued (job #123), 1 ignored by filter`. The log is deleted together with the subscription.
 
@@ -212,7 +213,7 @@ Each of these queues is a new one-item job in the auto band ([§4.3](#43-how-sub
 
 1. The user pastes a URL into *Add subscription* (or uses the add-on, [§11](#11-notifications-and-integrations)).
 2. **Preview**: `POST /api/v1/subscriptions/preview` runs a listing with `-I :10` (timeout 60 s) and returns the title, uploader, kind (`channel` or `playlist`), thumbnail, the total count if the site reports it, the first entries, how many of them are already in the library, the canonical URL of each tab, and whether a subscription with one of these sources already exists (compared by canonical URL).
-3. For a YouTube channel root URL (`/@name`, `/channel/…`, `/c/…`, `/user/…`), the preview lists the *Videos* tab, and the dialog offers the tabs **Videos** (preselected), **Shorts** and **Live**. Each selected tab becomes a source. If the URL is a single video, the preview switches to the video's channel (`channel_url` from its metadata) and says so, which makes *Subscribe* work on a video page. A single video without a channel returns `422` ([§14](#14-decisions)).
+3. For a YouTube channel root URL (`/@name`, `/channel/…`, `/c/…`, `/user/…`), the preview lists the *Videos* tab, and the dialog offers the tabs **Videos** (preselected), **Shorts** and **Live**. Each selected tab becomes a source. If the URL is a single video, the preview switches to the video's channel (`channel_url` from its metadata) and says so, which makes *Subscribe* work on a video page. A single video without a channel returns `422` with the hint to subscribe to the channel or user page instead ([§14](#14-decisions)). A listing that fails because the URL does not exist says *"the channel or playlist does not exist or was removed"* (also in check errors), not the classifier's video wording.
 4. The user sets the name, the library and folder ([§7.4](#74-add-dialog)), the mode (default **manual**, [§14](#14-decisions)), the backlog choice (default **none**, S4), the interval, and optionally filters and download options (the same option fields as *Retry with options…*).
 5. *Subscribe* stores the subscription with `next_check_at = now`. The first check runs right away and fills the backlog.
 
@@ -322,7 +323,7 @@ All routes live under `/api/v1` and use the existing auth.
 |---|---|---|
 | `POST` | `/subscriptions/preview` | `{url}` → title, kind, tabs, canonical URLs, count, sample entries, existing subscription. A video URL is resolved to its channel; `422` if it has none |
 | `GET` | `/subscriptions?q=` | List with counts (inbox, backlog, in library, failed) and check state |
-| `POST` | `/subscriptions` | Create `{name, folder, sources, mode, backlog, filters, options, intervalMinutes, notify}`. Returns `409` if a source is already subscribed |
+| `POST` | `/subscriptions` | Create `{name, folder, sources, mode, backlog, filters, options, intervalMinutes, notify}`. A YouTube channel root URL stands for its *Videos* tab, as in the add dialog and the import. Returns `409` if a source is already subscribed |
 | `GET` | `/subscriptions/{id}` | Subscription with counts |
 | `PATCH` | `/subscriptions/{id}` | Change mode, enabled, name, folder, filters, options, interval, listing, notify, sources. `{dismissWarning: true}` clears the cap warning. A new source starts with a first listing that records its backlog ([§5.2](#52-check-algorithm)). Returns `409` if a new source is already subscribed |
 | `DELETE` | `/subscriptions/{id}?cancelQueued=` | Remove the subscription and its entries. The library, the archive and finished jobs stay |
@@ -345,7 +346,7 @@ All routes live under `/api/v1` and use the existing auth.
 
 ## 9. Persistence
 
-Schema migration 2:
+Schema migration 2 (later migrations add the columns marked with their number):
 
 ```sql
 CREATE TABLE subscriptions (
@@ -373,7 +374,8 @@ CREATE TABLE subscriptions (
 	last_ok_at INTEGER,
 	next_check_at INTEGER,
 	created_at INTEGER NOT NULL,
-	updated_at INTEGER NOT NULL
+	updated_at INTEGER NOT NULL,
+	full_requested INTEGER NOT NULL DEFAULT 0 -- migration 5: Full rescan requested (§5.2)
 );
 CREATE INDEX subscriptions_due ON subscriptions(enabled, next_check_at);
 CREATE TABLE subscription_sources (
@@ -388,7 +390,9 @@ CREATE TABLE subscription_sources (
 	last_full_at INTEGER,
 	impersonate INTEGER NOT NULL DEFAULT 0, -- 1 after a blocked listing succeeded with impersonation
 	error TEXT NOT NULL DEFAULT '',
-	error_class TEXT NOT NULL DEFAULT ''
+	error_class TEXT NOT NULL DEFAULT '',
+	newest_first INTEGER NOT NULL DEFAULT 0, -- migration 4: lists newest first (guessed until order_known)
+	order_known INTEGER NOT NULL DEFAULT 0   -- migration 4: the order was confirmed (§5.2)
 );
 CREATE INDEX subscription_sources_sub ON subscription_sources(subscription_id);
 CREATE TABLE subscription_entries (
@@ -412,6 +416,7 @@ CREATE TABLE subscription_entries (
 	ignored INTEGER NOT NULL DEFAULT 0,
 	ignore_reason TEXT NOT NULL DEFAULT '', -- '' = by the user, else "filter: …" / "needs cookies"
 	item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
+	listing_key TEXT NOT NULL DEFAULT '',   -- migration 3: the key listings report, if it was re-keyed
 	UNIQUE (subscription_id, key)
 );
 CREATE INDEX subscription_entries_key ON subscription_entries(key);
@@ -457,7 +462,7 @@ ALTER TABLE jobs ADD COLUMN band INTEGER NOT NULL DEFAULT 0; -- 0 interactive, 1
   - The webhook gets `{"event": "subscription.new" | "subscription.error" | "subscription.cap", "title", "message", "subscription": {"id", "name", "count"}}`, in the same shape as the job events (`"job.<state>"`).
 - **Browser add-on**: a context menu entry and popup button *"Subscribe"*. It calls `/subscriptions/preview` and creates the subscription with the defaults: manual, no backlog, the *Videos* tab of a channel, and the channel of a video page. On `409` it shows "Already subscribed". The existing `POST /api/download` stays unchanged.
 - **Import / export** ([§14](#14-decisions)):
-  - Import formats: a list of URLs (one per line, `#` starts a comment), OPML (each `outline` with an `xmlUrl` or `htmlUrl`; a YouTube feed URL with `channel_id=` counts as that channel), and the CSV of a YouTube subscriptions export (a header row, then channel ID, URL, title).
+  - Import formats: a list of URLs (one per line, `#` starts a comment), OPML (each `outline` with an `xmlUrl` or `htmlUrl`; a YouTube feed URL with `channel_id=` counts as that channel's *Videos* tab, unless `htmlUrl` names another tab of a channel, as the export does for *Shorts* and *Live* sources), and the CSV of a YouTube subscriptions export (a header row, then channel ID, URL, title).
   - Each imported channel becomes a subscription with its *Videos* tab. It is named after the title in the file, or after its first listing if the file has none. Imported subscriptions are manual with no backlog and use the default library and options. Their first checks are spread over one hour to avoid a burst.
   - The canonical URL comes from the file where possible, because the YouTube CSV and OPML contain channel IDs. For a handle URL in a plain list, the normalized URL serves until the first listing sets the canonical one. If the source then turns out to be subscribed already, it is removed again and the subscription gets a warning. Sources that are already subscribed at import time are skipped and reported.
   - Export writes the canonical URL of every source, either as a URL list or as OPML with one `outline` per source (`text` = subscription name, `htmlUrl` = canonical URL, and for YouTube channels `xmlUrl` = the channel's feed URL).
@@ -496,7 +501,10 @@ The fake yt-dlp gets listing support. A playlist scenario can return **different
 | A subscription is edited or deleted during a check | Removed sources and a deleted subscription leave nothing behind. The new mode applies |
 | Feed query with 200 000 entries (benchmark) | One page of 50 in under 100 ms |
 | A source is added later (Shorts tab with 40 videos), auto mode | 40 backlog entries, no job |
+| A channel outside YouTube without dates lists newest first | *Latest N* takes its newest entries. Checks list it completely until a new entry at the top confirms the order, then with a window |
+| A source guessed newest first shows new entries at the end | Confirmed oldest first, undated entries sorted again, no window |
 | A finalized item is re-keyed to a key that another entry of the subscription already has | Finalize succeeds, the entries are merged, the entry is *in library* |
+| A listing without video IDs, an entry is downloaded, then a full listing | The entry is found by its listing key: no new entry, no job, not gone. An entry already in the archive shows as *in library* after *Download* |
 | A listing entry is a playlist, or an item's metadata turns out to be a playlist | The entry is ignored as "not a video". The item fails, and nothing is expanded |
 | *Retry* on one failed entry of a job with two failed items | A new one-item job. The other item stays failed |
 | Forced re-download of an entry in the library | Status *downloading* until it finishes |
@@ -535,7 +543,7 @@ Decisions 1–6 were made on 2026-10-14, and 7–24 on 2026-10-27 after a review
 | 14 | Same channel, different URLs | Sources are unique by a **canonical URL**, built from the channel ID for YouTube. A warning alone was rejected because it still allows duplicate checks. | [§4.1](#41-subscription), [§6](#6-adding-a-subscription) |
 | 15 | Removed library, preset or cookie profile | **The check resolves the options first** and fails without recording anything, so new videos are not used up. *Settings* lists the subscriptions that use the item. Blocking the removal was rejected because it makes cleaning up the settings awkward. | [§5.2](#52-check-algorithm) |
 | 16 | Item order | **Oldest first**, so videos reach the library in the order they were published. | [§4.3](#43-how-subscriptions-create-jobs) |
-| 17 | Listing arguments | Windowed listings pass **`--lazy-playlist -I :W`**, so yt-dlp stops paging once it has W entries. Full listings pass neither. The arguments in Appendix A are binding. Timeouts: 5 min for a windowed listing, 30 min for a full one. | [§5.2](#52-check-algorithm), [Appendix A](#appendix-a-yt-dlp-calls) |
+| 17 | Listing arguments | Windowed listings pass **`--lazy-playlist -I :W`**, so yt-dlp stops paging once it has W entries. Full listings pass neither. The arguments in Appendix A are binding. Timeouts: 5 min for a windowed listing, 2 h for a full one (the first listing of a source with many thousand entries on a site with small pages takes long). | [§5.2](#52-check-algorithm), [Appendix A](#appendix-a-yt-dlp-calls) |
 | 18 | Upcoming from the listing | Queued by the **first check that no longer reports it** as upcoming, live or post-live, however long it waited. `upcomingDays` only limits the classifier path (decision 9). | [§5.3](#53-auto-queue-rules) |
 | 19 | Filters and missing data | Filters use **listing data only**. An unknown duration or upload date **passes**, and title patterns are case-insensitive. Rejecting unknown values would ignore everything on sites whose listings have no durations. | [§4.1](#41-subscription) |
 | 20 | Video URL as a subscription | The preview **switches to the video's channel**, so *Subscribe* works on a video page. A video without a channel returns `422`. | [§6](#6-adding-a-subscription), [§11](#11-notifications-and-integrations) |
@@ -560,12 +568,13 @@ yt-dlp <common> --flat-playlist -J --lazy-playlist -I :50 \
 ```
 
 - `--extractor-args youtubetab:approximate_date` makes YouTube tab listings include an approximate `upload_date`/`timestamp`, which is needed for sorting, the *published after* filter and display. It is a **fixed, server-controlled** argument added only for YouTube tab sources. It is not user input, so it is consistent with "no free-form yt-dlp arguments" ([overhaul §11](overhaul-concept.md#11-security)).
-- `--lazy-playlist` makes yt-dlp process entries as they arrive, so `-I :50` stops after the pages that hold 50 entries. Correctness doesn't depend on it: if a yt-dlp version pages further, a check only costs more requests. The manual run in phase S-1 confirms it for the bundled versions.
-- Timeouts: 60 s for a preview, 5 min for a windowed listing and 30 min for a full one. A timeout is classified as `transient`.
-- Fields used from flat listings, and what happens when one is missing. The manual run in phase S-1 records which of them the bundled versions report, but no decision depends on the result:
-  - `live_status` per entry. Without it, the classifier path in [§5.3](#53-auto-queue-rules) handles premieres.
-  - `availability` per entry. Without it, members-only videos fail as `auth_required` and stay *failed* (S3).
-  - `channel_id` at the top level. Without it, the canonical URL uses the top-level `id` if it is a YouTube channel ID, and the normalized URL otherwise.
-  - `timestamp` / `upload_date` per entry. Without them, `sort_date` is `first_seen_at`.
+- `--lazy-playlist` makes yt-dlp process entries as they arrive, so `-I :50` stops after the pages that hold 50 entries. Correctness doesn't depend on it: if a yt-dlp version pages further, a check only costs more requests. In the manual run, a channel tab needed 2 page requests for `-I :50` and 4 for `-I :100`, with or without `--lazy-playlist`.
+- Timeouts: 60 s for a preview, 5 min for a windowed listing and 2 h for a full one. A timeout is classified as `transient`.
+- Fields used from flat listings, what happens when one is missing, and what the manual run found (no decision depends on it):
+  - `live_status` per entry. Without it, the classifier path in [§5.3](#53-auto-queue-rules) handles premieres. Not in the samples of the manual run.
+  - `availability` per entry. Without it, members-only videos fail as `auth_required` and stay *failed* (S3). Not in the samples of the manual run.
+  - `channel_id` at the top level. Without it, the canonical URL uses the top-level `id` if it is a YouTube channel ID, and the normalized URL otherwise. Always present for YouTube tabs.
+  - `timestamp` / `upload_date` per entry. Without them, `sort_date` is `first_seen_at`. The *Videos* tab reports an approximate `timestamp` (day precision) and `duration`, but no `upload_date`. The *Shorts* tab reports neither a date nor a duration. Playlists report `duration` and `playlist_count`, but no dates.
+- Many listings in a row from one address got HTTP 429 and then *"Sign in to confirm you're not a bot"*. After a 429, that check is classified as `rate_limited`, so it waits for the cooldown instead of failing as `auth_required`.
 - Cookie profiles are copied per check, as they are per job ([overhaul §7.3](overhaul-concept.md#73-cookies)), because yt-dlp writes the cookie jar back to the file.
 - Downloads use the existing calls unchanged: fetch meta, download, subtitles ([overhaul Appendix A](overhaul-concept.md#appendix-a-yt-dlp-invocation-sketch)).

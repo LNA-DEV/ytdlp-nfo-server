@@ -12,7 +12,8 @@ import (
 
 const jobCols = `j.id, j.url, j.norm_url, j.site, j.title, j.uploader, j.thumbnail, j.is_playlist,
 	j.state, j.requested, j.options, j.error, j.error_class, j.hint, j.attempts, j.retry, j.retry_at,
-	j.queue_pos, j.ytdlp_version, j.created_at, j.started_at, j.finished_at, j.updated_at, j.legacy`
+	j.queue_pos, j.ytdlp_version, j.created_at, j.started_at, j.finished_at, j.updated_at, j.legacy,
+	COALESCE(j.subscription_id, 0), j.band`
 
 type scanner interface{ Scan(dest ...any) error }
 
@@ -26,7 +27,7 @@ func scanJob(r scanner, extra ...any) (*Job, error) {
 	)
 	dest := []any{&j.ID, &j.URL, &j.NormURL, &j.Site, &j.Title, &j.Uploader, &j.Thumbnail, &isPl,
 		&state, &requested, &options, &j.Error, &j.ErrorClass, &j.Hint, &j.Attempts, &retry, &retryAt,
-		&j.QueuePos, &j.YtdlpVersion, &created, &started, &finished, &updated, &legacy}
+		&j.QueuePos, &j.YtdlpVersion, &created, &started, &finished, &updated, &legacy, &j.SubscriptionID, &j.Band}
 	if err := r.Scan(append(dest, extra...)...); err != nil {
 		return nil, err
 	}
@@ -89,12 +90,13 @@ func createJobTx(ctx context.Context, tx *sql.Tx, j *Job) error {
 	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO jobs (id, url, norm_url, site, title, uploader, thumbnail, is_playlist,
 		state, requested, options, error, error_class, hint, attempts, retry, retry_at, queue_pos, ytdlp_version,
-		created_at, started_at, finished_at, updated_at, legacy)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		created_at, started_at, finished_at, updated_at, legacy, subscription_id, band)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, j.URL, j.NormURL, j.Site, j.Title, j.Uploader, j.Thumbnail, b2i(j.IsPlaylist),
 		string(j.State), mustJSON(j.Requested), mustJSON(j.Options), j.Error, j.ErrorClass, j.Hint, j.Attempts,
 		mustJSON(j.Retry), ms(j.RetryAt), j.QueuePos, j.YtdlpVersion,
-		j.CreatedAt.UnixMilli(), ms(j.StartedAt), ms(j.FinishedAt), j.UpdatedAt.UnixMilli(), b2i(j.Legacy))
+		j.CreatedAt.UnixMilli(), ms(j.StartedAt), ms(j.FinishedAt), j.UpdatedAt.UnixMilli(), b2i(j.Legacy),
+		nullID(j.SubscriptionID), int(j.Band))
 	if err != nil {
 		return err
 	}
@@ -102,7 +104,9 @@ func createJobTx(ctx context.Context, tx *sql.Tx, j *Job) error {
 	return err
 }
 
-// UpdateJob writes all mutable fields of a job.
+// UpdateJob writes all mutable fields of a job. subscription_id and band
+// are fixed at creation and never written here, so a job running while its
+// subscription is deleted cannot restore the stale reference.
 func (s *Store) UpdateJob(ctx context.Context, j *Job) error {
 	j.UpdatedAt = time.Now()
 	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET url = ?, norm_url = ?, site = ?, title = ?, uploader = ?, thumbnail = ?,

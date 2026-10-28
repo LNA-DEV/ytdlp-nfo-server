@@ -107,9 +107,35 @@ func (n *Notifier) Send(ctx context.Context, s config.Notifications, j JobInfo) 
 	if j.Link != "" {
 		text += "\n" + j.Link
 	}
+	webhook, _ := json.Marshal(map[string]any{"event": "job." + j.State, "title": title, "message": text, "job": j})
+	n.deliver(ctx, s, title, text, failed, webhook)
+}
+
+// SubscriptionInfo identifies the subscription of a notification.
+type SubscriptionInfo struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// Subscription events (subscriptions concept §11).
+const (
+	EventSubscriptionNew   = "subscription.new"
+	EventSubscriptionError = "subscription.error"
+	EventSubscriptionCap   = "subscription.cap"
+)
+
+// SendSubscription delivers a subscription notification to all configured
+// targets. The caller decides whether it is wanted (notify, onFailed).
+func (n *Notifier) SendSubscription(ctx context.Context, s config.Notifications, event, title, text string, sub SubscriptionInfo) {
+	webhook, _ := json.Marshal(map[string]any{"event": event, "title": title, "message": text, "subscription": sub})
+	n.deliver(ctx, s, title, text, event != EventSubscriptionNew, webhook)
+}
+
+// deliver sends one message to every configured target.
+func (n *Notifier) deliver(ctx context.Context, s config.Notifications, title, text string, failed bool, webhook []byte) {
 	if s.WebhookURL != "" {
-		body, _ := json.Marshal(map[string]any{"event": "job." + j.State, "title": title, "message": text, "job": j})
-		if err := n.post(ctx, s.WebhookURL, "application/json", body, nil); err != nil {
+		if err := n.post(ctx, s.WebhookURL, "application/json", webhook, nil); err != nil {
 			n.logf("notify: webhook: %v", err)
 		}
 	}

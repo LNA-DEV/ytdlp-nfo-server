@@ -25,6 +25,9 @@ const (
 type Manager struct {
 	Dir     string
 	MaxSize int64
+	// TailOnly drops the head when a log is capped (subscription check
+	// logs: only the latest checks matter).
+	TailOnly bool
 
 	mu   sync.Mutex
 	logs map[int64]*Log
@@ -49,7 +52,7 @@ func (m *Manager) Get(jobID int64) *Log {
 	defer m.mu.Unlock()
 	l, ok := m.logs[jobID]
 	if !ok {
-		l = &Log{path: m.Path(jobID), max: m.MaxSize, subs: map[chan string]struct{}{}}
+		l = &Log{path: m.Path(jobID), max: m.MaxSize, tailOnly: m.TailOnly, subs: map[chan string]struct{}{}}
 		m.logs[jobID] = l
 	}
 	return l
@@ -133,12 +136,13 @@ func (m *Manager) Subscribe(jobID int64) ([]byte, chan string, func()) {
 
 // Log is one job's log.
 type Log struct {
-	mu   sync.Mutex
-	path string
-	max  int64
-	f    *os.File
-	size int64
-	subs map[chan string]struct{}
+	mu       sync.Mutex
+	path     string
+	max      int64
+	tailOnly bool
+	f        *os.File
+	size     int64
+	subs     map[chan string]struct{}
 }
 
 // Line appends one line (timestamped).
@@ -214,13 +218,16 @@ func (l *Log) compact() {
 		return
 	}
 	headSize := min(headKeep, int(l.max)/4)
+	if l.tailOnly {
+		headSize = 0
+	}
 	tailKeep := int(l.max) - headSize - 1024
 	if tailKeep <= 0 || len(data) <= headSize+tailKeep {
 		_ = l.open()
 		return
 	}
 	head := data[:headSize]
-	if i := bytes.LastIndexByte(head, '\n'); i > 0 {
+	if i := bytes.LastIndexByte(head, '\n'); i > 0 && headSize > 0 {
 		head = head[:i+1]
 	}
 	tail := data[len(data)-tailKeep:]

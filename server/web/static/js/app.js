@@ -5,6 +5,7 @@ import { JobsView } from './views/jobs.js';
 import { SettingsView } from './views/settings.js';
 import { DiagnosticsView } from './views/diagnostics.js';
 import { ArchiveView } from './views/archive.js';
+import { SubscriptionsView } from './views/subscriptions.js';
 
 const state = { system: null, view: null, authRequired: false };
 export const app = state;
@@ -42,8 +43,17 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 
 // --- header and banners ---
 
+// The navigation badge shows the inbox: new videos of all subscriptions.
+function renderInbox(counts) {
+  const n = counts && counts.inbox;
+  const el = document.getElementById('inbox-badge');
+  el.textContent = n ? String(n) : '';
+  el.title = n ? `${n} new video${n === 1 ? '' : 's'}` : '';
+}
+
 function renderSystem(sys) {
   state.system = sys;
+  renderInbox((sys.queue || {}).counts);
   const badge = document.getElementById('ytdlp-badge');
   const y = sys.ytdlp || {};
   badge.textContent = y.active ? `yt-dlp ${y.active.version || y.active.tag} (${y.active.channel})` : 'yt-dlp: none active';
@@ -77,6 +87,7 @@ document.getElementById('update-badge').addEventListener('click', () => { locati
 document.getElementById('imp-badge').addEventListener('click', () => { location.hash = '#/diagnostics'; });
 
 events.on('system', renderSystem);
+events.on('counts', renderInbox);
 events.on('connection', (ok) => {
   document.body.classList.toggle('offline', !ok);
 });
@@ -87,6 +98,8 @@ const routes = [
   { re: /^#\/settings(?:\/(\w+))?$/, nav: 'settings', make: (m) => new SettingsView(m[1]) },
   { re: /^#\/diagnostics$/, nav: 'diagnostics', make: () => new DiagnosticsView() },
   { re: /^#\/archive$/, nav: 'archive', make: () => new ArchiveView() },
+  { re: /^#\/subscriptions\/(\d+)$/, nav: 'subscriptions', make: (m) => new SubscriptionsView({ id: m[1] }) },
+  { re: /^#\/subscriptions(?:\/(feed|list))?$/, nav: 'subscriptions', make: (m) => new SubscriptionsView({ tab: m[1] }) },
   { re: /^#\/jobs\/(\d+)$/, nav: 'jobs', make: (m) => new JobsView({ focus: m[1] }) },
   { re: /^#\/(active|queued|completed|failed)?$/, nav: 'jobs', make: (m) => new JobsView({ tab: m[1] }) },
 ];

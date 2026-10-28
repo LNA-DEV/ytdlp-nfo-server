@@ -73,6 +73,29 @@ func ProbeArgs(url string, o CallOptions) []string {
 	return append(args, "--", url)
 }
 
+// ListSpec describes a subscription listing (subscriptions concept,
+// Appendix A).
+type ListSpec struct {
+	// Window > 0 lists only the newest Window entries of a newest-first
+	// source (--lazy-playlist -I :W); 0 is a full listing.
+	Window int
+	// YouTubeTab adds the fixed, server-controlled extractor argument that
+	// makes YouTube tab listings report an approximate upload date.
+	YouTubeTab bool
+}
+
+// ListArgs lists the entries of a channel tab or playlist.
+func ListArgs(url string, l ListSpec, o CallOptions) []string {
+	args := append(o.common(), "--flat-playlist", "-J")
+	if l.Window > 0 {
+		args = append(args, "--lazy-playlist", "-I", ":"+strconv.Itoa(l.Window))
+	}
+	if l.YouTubeTab {
+		args = append(args, "--extractor-args", "youtubetab:approximate_date")
+	}
+	return append(args, "--", url)
+}
+
 // MetaArgs fetches full metadata for one entry, just in time. If the entry
 // turns out to be a playlist, --flat-playlist keeps the listing cheap.
 func MetaArgs(url string, o CallOptions) []string {
@@ -87,6 +110,7 @@ type DownloadSpec struct {
 	AudioMultistream bool
 	Sort             string
 	Container        string // mkv | mp4
+	AudioOnly        bool   // the source has no video (nothing is remuxed)
 	EmbedChapters    bool
 	SponsorBlockMark bool
 }
@@ -104,8 +128,14 @@ func DownloadArgs(s DownloadSpec, o CallOptions) []string {
 	if s.Sort != "" {
 		args = append(args, "-S", s.Sort)
 	}
+	args = append(args, "--merge-output-format", s.Container)
+	if s.Container == "mkv" && !s.AudioOnly {
+		// A single-file format is not merged: remux it, so every video
+		// ends up in the requested container. Only mkv, which takes any
+		// codec; remuxing into mp4 can fail.
+		args = append(args, "--remux-video", "mkv")
+	}
 	args = append(args,
-		"--merge-output-format", s.Container,
 		"-P", "home:"+s.WorkDir,
 		"-P", "temp:"+filepath.Join(s.WorkDir, TmpDir),
 		"-o", MediaBase+".%(ext)s",

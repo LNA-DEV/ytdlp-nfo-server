@@ -190,6 +190,7 @@ func (m *Manager) FixArchive(ctx context.Context, keys []string, redownload bool
 		return nil, err
 	}
 	res.Removed = n
+	m.markCounts(0)
 	if err := m.Archive.RemoveMany(keys); err != nil {
 		res.Errors = append(res.Errors, "updating "+m.Archive.Path+": "+err.Error())
 	}

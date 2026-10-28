@@ -79,6 +79,17 @@ func TestClassifyResult(t *testing.T) {
 	if c := Classify(res); c.Class != ClassRateLimited {
 		t.Fatalf("got %+v", c)
 	}
+	// A bot check after HTTP 429 is the rate limit; without the 429 it
+	// needs cookies.
+	bot := "ERROR: [example] abc123: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication."
+	res = &Result{ExitCode: 1, Errors: []string{bot},
+		Warnings: []string{"WARNING: [example] abc123: Unable to download webpage: HTTP Error 429: Too Many Requests"}}
+	if c := Classify(res); c.Class != ClassRateLimited {
+		t.Fatalf("bot check after 429: %+v", c)
+	}
+	if c := Classify(&Result{ExitCode: 1, Errors: []string{bot}}); c.Class != ClassAuthRequired {
+		t.Fatalf("bot check: %+v", c)
+	}
 	// The most specific line wins.
 	res = &Result{ExitCode: 1, Errors: []string{"ERROR: Private video", "ERROR: [Errno 104] Connection reset by peer"}}
 	if c := Classify(res); c.Class != ClassPermanent {
@@ -146,8 +157,14 @@ func TestArgsSafety(t *testing.T) {
 			t.Fatalf("download must not contain %s: %v", bad, d)
 		}
 	}
-	if !slices.Contains(d, "--abort-on-unavailable-fragments") || !slices.Contains(d, "--load-info-json") {
+	if !slices.Contains(d, "--abort-on-unavailable-fragments") || !slices.Contains(d, "--load-info-json") ||
+		!strings.Contains(strings.Join(d, " "), "--remux-video mkv") {
 		t.Fatalf("missing flags: %v", d)
+	}
+	for _, spec := range []DownloadSpec{{Container: "mp4"}, {Container: "mkv", AudioOnly: true}} {
+		if d := DownloadArgs(spec, CallOptions{}); slices.Contains(d, "--remux-video") {
+			t.Fatalf("remux for %+v: %v", spec, d)
+		}
 	}
 	s := SubtitleArgs("/w", false, CallOptions{})
 	if !slices.Contains(s, "all,-live_chat") || !slices.Contains(s, "--skip-download") {

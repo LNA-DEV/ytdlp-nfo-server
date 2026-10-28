@@ -223,7 +223,7 @@ There are two levels of retries:
 | `extractor_broken` | "Unable to extract …", parser errors, yt-dlp asking to update or report a bug | No retry with the same yt-dlp version. **One** automatic retry with the newest nightly (installed on demand). On by default, can be disabled in settings | "Site support may be broken in this yt-dlp version". Action: *Retry with latest nightly* |
 | `auth_required` | Login or age verification required, members-only, "confirm you're not a bot" | Fail, no retries | "Needs cookies". Action: *Retry with cookie profile…* |
 | `blocked` | HTTP 403 on page or API requests, bot challenge pages | **One** retry with impersonation (`--impersonate=""`) if a target is available and impersonation wasn't already used; otherwise fail | "Access denied by the site: try impersonation, cookies or a different network". Shows a separate warning if impersonation is unavailable |
-| `rate_limited` | HTTP 429, "rate-limited" messages | Per-site cooldown (default 30 min) that also pauses other queued jobs for that site, then retry | "Rate-limited by the site, resuming at 14:35" |
+| `rate_limited` | HTTP 429, "rate-limited" messages, a "confirm you're not a bot" check after a 429 | Per-site cooldown (default 30 min) that also pauses other queued jobs for that site, then retry | "Rate-limited by the site, resuming at 14:35" |
 | `crash` | Python traceback, killed by a signal, unexpected exit without an `ERROR:` line | At most one retry, then fail | "yt-dlp crashed". Action: *Retry with another yt-dlp version* |
 | `transient` | Network errors, timeouts, HTTP 5xx, fragment errors that survived yt-dlp's own retries, failed verify | Backoff retry | The last error line |
 | `unknown` | Anything not matched | Retried like `transient`, but with a budget of 2 | The raw last `ERROR:` line, so new patterns can be added to the classifier |
@@ -286,7 +286,7 @@ Completed items with warnings get the action *Re-run extras*. It fetches the thu
   - *Best* (default): no sort override.
   - *Compatible*: `-S "res:1080,vcodec:h264,acodec:aac"`, so Jellyfin clients without AV1/VP9 can direct-play.
   - *Max 1080p* / *Max 720p*: `-S "res:1080"` / `-S "res:720"`.
-- Container: `mkv` (default) or `mp4`.
+- Container: `mkv` (default) or `mp4`. Merged downloads use `--merge-output-format`. A single-file format is not merged, so for `mkv` it is also remuxed (`--remux-video mkv`), unless the source is audio-only. `mp4` does not remux, because not every codec fits into mp4.
 
 ### 5.3 NFO
 
@@ -641,7 +641,7 @@ yt-dlp --ignore-config --no-playlist -J [...] -- "$ENTRY_URL" > "$WORK/info.json
 yt-dlp --ignore-config --no-playlist \
   --load-info-json "$WORK/info.json" \
   -f "bv+251-0+251-1/bv*+ba/best" --audio-multistreams \
-  --merge-output-format mkv \
+  --merge-output-format mkv [--remux-video mkv] \
   -P "home:$WORK" -P "temp:$WORK/.tmp" -o "media.%(ext)s" \
   --retries 10 --fragment-retries 10 --extractor-retries 5 --socket-timeout 30 \
   --retry-sleep http:exp=1:30 --retry-sleep fragment:exp=1:30 \

@@ -70,6 +70,7 @@ type Manager struct {
 	opts       Options
 
 	mu        sync.Mutex
+	subs      subState
 	rules     []config.SiteRule
 	live      map[int64]pipeline.Live
 	warnings  map[string]Warning
@@ -180,6 +181,9 @@ func New(o Options) (*Manager, error) {
 		CookieDir: m.cookieDir, CacheDir: filepath.Join(m.dataDir, "ytdlp", "cache"),
 		ServerInfo: buildinfo.String(), TweakPolicy: o.TweakPolicy,
 	})
+	if err := m.initSubscriptions(); err != nil {
+		return nil, err
+	}
 	return m, nil
 }
 
@@ -193,11 +197,15 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("recovery: %w", err)
 	}
 	m.Sched.Start(m.ctx)
+	m.Sched.SetBackgroundSlots(m.Settings.Settings().Subscriptions.BackgroundSlots)
 	if err := m.enqueueOpen(m.ctx); err != nil {
 		return err
 	}
 	m.bgWG.Add(1)
 	go m.systemLoop()
+	if err := m.startSubscriptions(); err != nil {
+		return err
+	}
 	if !m.opts.DisableBackground {
 		m.bgWG.Add(2)
 		go func() { defer m.bgWG.Done(); m.Versions.RunUpdater(m.ctx) }()
@@ -291,12 +299,26 @@ func (m *Manager) maintenanceLoop() {
 	defer t.Stop()
 	for {
 		m.prune(m.ctx)
+		m.pruneGone(m.ctx)
 		_ = m.Store.PruneSessions(m.ctx)
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-t.C:
 		}
+	}
+}
+
+// pruneGone deletes subscription entries that are gone from their source
+// and were never downloaded, after pruneGoneDays (off by default).
+func (m *Manager) pruneGone(ctx context.Context) {
+	days := m.Settings.Settings().Subscriptions.PruneGoneDays
+	if days <= 0 {
+		return
+	}
+	if n, err := m.Store.PruneGoneEntries(ctx, time.Now().AddDate(0, 0, -days)); err == nil && n > 0 {
+		m.logf("subscriptions: pruned %d gone entries older than %d days", n, days)
+		m.markCounts(0)
 	}
 }
 

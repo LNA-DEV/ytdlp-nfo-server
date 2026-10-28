@@ -42,17 +42,7 @@ func TestIntegrityKillAtEveryStep(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integrity test builds and runs the server binary")
 	}
-	fake, err := testutil.FakeBin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(t.TempDir(), "ytdlp-nfo-server")
-	build := exec.Command("go", "build", "-o", bin, ".")
-	build.Stderr = os.Stderr
-	if err := build.Run(); err != nil {
-		t.Fatal(err)
-	}
-
+	bin, fake := buildServer(t)
 	points := []string{
 		"pipeline:probed", "pipeline:downloading", "pipeline:downloaded", "pipeline:verified", "pipeline:extras-done",
 		"finalize:before-marker", "finalize:staged", "finalize:swapped", "pipeline:recorded",
@@ -65,6 +55,33 @@ func TestIntegrityKillAtEveryStep(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) { runCrashCase(t, bin, fake, fp, replace) })
 		}
+	}
+}
+
+// buildServer builds the server binary and the fake yt-dlp.
+func buildServer(t *testing.T) (bin, fake string) {
+	t.Helper()
+	fake, err := testutil.FakeBin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin = filepath.Join(t.TempDir(), "ytdlp-nfo-server")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		t.Fatal(err)
+	}
+	return bin, fake
+}
+
+// serverEnv is the environment of a test server in dir.
+func serverEnv(dir, fake, scPath, state string) []string {
+	return []string{
+		"DATA_DIR=" + filepath.Join(dir, "data"), "DOWNLOAD_DIR=" + filepath.Join(dir, "downloads"), "OUTPUT_DIR=" + filepath.Join(dir, "media"),
+		"YTDLP_PATH=" + filepath.Join(fake, "yt-dlp"), "FFPROBE_PATH=" + filepath.Join(fake, "ffprobe"),
+		"FFMPEG_PATH=" + filepath.Join(fake, "ffmpeg"), "DENO_PATH=deno-not-installed", "YTDLP_BUNDLED_DIR=" + filepath.Join(dir, "none"),
+		scenario.EnvScenario + "=" + scPath, scenario.EnvState + "=" + state,
+		"PASSWORD=", "MAX_CONCURRENT=", "MAX_RETRIES=", "YTDLP_CHANNEL=", "PUID=", "PGID=",
 	}
 }
 
@@ -200,13 +217,7 @@ func runCrashCase(t *testing.T, bin, fake, fp string, replace bool) {
 	sc.Write(scPath)
 	state := filepath.Join(dir, "state")
 	os.MkdirAll(state, 0o755)
-	env := []string{
-		"DATA_DIR=" + data, "DOWNLOAD_DIR=" + dl, "OUTPUT_DIR=" + media,
-		"YTDLP_PATH=" + filepath.Join(fake, "yt-dlp"), "FFPROBE_PATH=" + filepath.Join(fake, "ffprobe"),
-		"FFMPEG_PATH=" + filepath.Join(fake, "ffmpeg"), "DENO_PATH=deno-not-installed", "YTDLP_BUNDLED_DIR=" + filepath.Join(dir, "none"),
-		scenario.EnvScenario + "=" + scPath, scenario.EnvState + "=" + state,
-		"PASSWORD=", "MAX_CONCURRENT=", "MAX_RETRIES=", "YTDLP_CHANNEL=", "PUID=", "PGID=",
-	}
+	env := serverEnv(dir, fake, scPath, state)
 	if replace {
 		old := filepath.Join(media, folderName)
 		os.MkdirAll(old, 0o755)
@@ -298,5 +309,126 @@ func runCrashCase(t *testing.T, bin, fake, fp string, replace bool) {
 			}
 			t.Fatalf("leftovers in %s: %v", leftover, names)
 		}
+	}
+}
+
+// TestIntegrityKillDuringCheck kills the server at both points of a
+// subscription check (after the listing, after the commit) and checks that
+// each new video is queued exactly once after the restart and that the
+// library invariants hold (subscriptions concept §5.5, §12).
+func TestIntegrityKillDuringCheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integrity test builds and runs the server binary")
+	}
+	bin, fake := buildServer(t)
+	for _, fp := range []string{"subscription:listed", "subscription:committed"} {
+		t.Run(fp, func(t *testing.T) { runCheckCrash(t, bin, fake, fp) })
+	}
+}
+
+func runCheckCrash(t *testing.T, bin, fake, fp string) {
+	dir := t.TempDir()
+	data, dl, media := filepath.Join(dir, "data"), filepath.Join(dir, "downloads"), filepath.Join(dir, "media")
+	sc := &scenario.Scenario{Version: "2026.01.01", Targets: []string{"Chrome-131 Windows-10"},
+		Videos: map[string]scenario.Video{
+			"a": {ID: "a", Title: "A", Duration: 60},
+			"b": {ID: "b", Title: "B", Duration: 60, Download: []scenario.Behavior{{SleepMs: 100}}},
+		},
+		Playlists: map[string]scenario.Playlist{"chan": {ID: "chan", Title: "Chan", Listings: [][]string{{"a"}, {"b", "a"}}}},
+	}
+	scPath := filepath.Join(dir, "scenario.json")
+	sc.Write(scPath)
+	state := filepath.Join(dir, "state")
+	os.MkdirAll(state, 0o755)
+	env := serverEnv(dir, fake, scPath, state)
+
+	waitSub := func(p *serverProc, id string, cond func(map[string]any) bool) {
+		t.Helper()
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			s := p.call(t, "GET", "/api/v1/subscriptions/"+id, nil)
+			if s != nil && cond(s) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("subscription %s: %v\n%s", id, s, p.out)
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+
+	// Run 0: subscribe; the first check records "a" as backlog.
+	p := startServer(t, bin, env, "")
+	st := p.call(t, "GET", "/api/v1/settings", nil)["settings"].(map[string]any)
+	st["minFreeSpaceMB"] = 0
+	p.call(t, "PUT", "/api/v1/settings", st)
+	sub := p.call(t, "POST", "/api/v1/subscriptions", map[string]any{"name": "Chan", "mode": "auto",
+		"sources": []map[string]string{{"url": scenario.PlaylistPrefix + "chan"}}})
+	if sub == nil || sub["id"] == nil {
+		t.Fatalf("subscribe failed: %v\n%s", sub, p.out)
+	}
+	id := sub["id"].(string)
+	waitSub(p, id, func(s map[string]any) bool { return s["lastCheckAt"] != nil && s["state"] == "idle" })
+	p.stop(t)
+
+	// Run 1: the next check finds "b" and is killed at the failpoint.
+	p = startServer(t, bin, env, fp)
+	p.call(t, "POST", "/api/v1/subscriptions/"+id+"/check", map[string]any{})
+	select {
+	case <-p.done:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("failpoint %s not reached\n%s", fp, p.out)
+	}
+	if ws, ok := p.cmd.ProcessState.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+		t.Fatalf("server was not killed at %s: %v\n%s", fp, p.cmd.ProcessState, p.out)
+	}
+
+	// Run 2: the check runs again (killed before the commit) or its job
+	// resumes (killed after it).
+	p = startServer(t, bin, env, "")
+	waitSub(p, id, func(s map[string]any) bool {
+		c, _ := s["counts"].(map[string]any)
+		return s["state"] == "idle" && c != nil && c["library"] == 1.0 && c["queued"] == 0.0
+	})
+	p.stop(t)
+
+	db, err := store.Open(filepath.Join(data, "ytdlp-nfo-server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	jobs, _ := db.ListJobs(ctx, store.JobFilter{})
+	queued := 0
+	for _, j := range jobs {
+		its, _ := db.ItemsForJob(ctx, j.ID)
+		for _, it := range its {
+			if it.ArchiveKey == "fake b" {
+				queued++
+			}
+			if it.ArchiveKey == "fake a" {
+				t.Fatal("the backlog was queued")
+			}
+		}
+	}
+	if queued != 1 {
+		t.Fatalf("b was queued %d times, want exactly once", queued)
+	}
+	keys, _ := db.AllArchiveKeys(ctx)
+	if len(keys) != 1 || keys[0] != "fake b" {
+		t.Fatalf("archive: %v", keys)
+	}
+	folder := filepath.Join(media, "Chan", "B [b]")
+	data2, err := os.ReadFile(filepath.Join(folder, "B [b].mkv"))
+	var info scenario.MediaInfo
+	if err != nil || json.Unmarshal(data2, &info) != nil || !info.FakeMedia {
+		t.Fatalf("media of b: %v", err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(media, "Chan")); len(entries) != 1 {
+		t.Fatalf("library folder holds %d entries", len(entries))
+	}
+	arch, _ := os.ReadFile(filepath.Join(dl, ".ytdlp-archive.txt"))
+	if strings.Count(string(arch), "fake b\n") != 1 {
+		t.Fatalf("legacy archive file: %q", arch)
 	}
 }

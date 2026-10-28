@@ -8,6 +8,7 @@ const SECTIONS = [
   ['cookies', 'Cookies'],
   ['naming', 'Naming'],
   ['libraries', 'Libraries'],
+  ['subscriptions', 'Subscriptions'],
   ['notifications', 'Notifications'],
   ['extras', 'Extras'],
   ['security', 'Security'],
@@ -54,6 +55,19 @@ export class SettingsView {
 
   locked(name) { return (this.s.locked || []).includes(name); }
 
+  // usedBy returns a note listing the subscriptions whose own options use
+  // a library, preset or cookie profile (shown before it is removed).
+  usedBy(kind, name) {
+    const subs = ((this.resp.usedBySubscriptions || {})[kind] || {})[name];
+    return subs && subs.length ? h('div', { class: 'warn-text small' }, `Used by subscriptions: ${subs.join(', ')}`) : null;
+  }
+
+  async confirmRemove(kind, name, what) {
+    const subs = ((this.resp.usedBySubscriptions || {})[kind] || {})[name];
+    if (!subs || !subs.length) return true;
+    return confirmDialog(`${what} is used by these subscriptions: ${subs.join(', ')}. Their checks fail until it is restored or their options are changed. Remove it anyway?`, 'Remove', true);
+  }
+
   async save(msg = 'Saved') {
     try {
       this.resp = await put('/settings', this.s);
@@ -69,7 +83,7 @@ export class SettingsView {
     const b = clear(this.body);
     const fn = {
       general: this.general, ytdlp: this.ytdlp, sites: this.sites, cookies: this.cookies, naming: this.naming,
-      libraries: this.libraries, notifications: this.notifications, extras: this.extras, security: this.security,
+      libraries: this.libraries, subscriptions: this.subscriptions, notifications: this.notifications, extras: this.extras, security: this.security,
     }[this.section] || this.general;
     b.append(fn.call(this));
   }
@@ -228,7 +242,10 @@ export class SettingsView {
       if (!list.length) { table.append(h('div', { class: 'muted' }, 'No cookie profiles.')); return; }
       table.append(h('table', { class: 'tbl' }, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Size'), h('th', {}, 'Uploaded'), h('th', {})),
         list.map((c) => h('tr', {}, h('td', {}, c.name), h('td', {}, bytes(c.size)), h('td', {}, time(c.createdAt)),
-          h('td', { class: 'actions' }, h('button', { class: 'btn small danger', onclick: async () => { if (await confirmDialog(`Delete cookie profile ${c.name}?`, 'Delete', true)) { await del('/cookies/' + encodeURIComponent(c.name)); this.show(); } } }, 'Delete'))))));
+          h('td', { class: 'actions' }, this.usedBy('cookieProfile', c.name), h('button', { class: 'btn small danger', onclick: async () => {
+            if (!(await this.confirmRemove('cookieProfile', c.name, `Cookie profile ${c.name}`))) return;
+            if (await confirmDialog(`Delete cookie profile ${c.name}?`, 'Delete', true)) { await del('/cookies/' + encodeURIComponent(c.name)); this.show(); }
+          } }, 'Delete'))))));
     });
     return box;
   }
@@ -257,13 +274,35 @@ export class SettingsView {
     const draw = () => {
       clear(list).append(h('table', { class: 'tbl' }, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Path'), h('th', {})),
         h('tr', {}, h('td', {}, 'default'), h('td', { class: 'mono' }, this.resp.defaultLibraryPath), h('td', { class: 'muted' }, 'OUTPUT_DIR')),
-        s.libraries.map((l, i) => h('tr', {}, h('td', {}, bindText(l, 'name')), h('td', {}, bindText(l, 'path', { style: 'width:100%' })),
-          h('td', { class: 'actions' }, h('button', { class: 'btn small danger', onclick: () => { s.libraries.splice(i, 1); draw(); } }, 'Remove'))))));
+        s.libraries.map((l, i) => h('tr', {}, h('td', {}, bindText(l, 'name'), this.usedBy('library', l.name)), h('td', {}, bindText(l, 'path', { style: 'width:100%' })),
+          h('td', { class: 'actions' }, h('button', { class: 'btn small danger', onclick: async () => { if (await this.confirmRemove('library', l.name, `Library ${l.name}`)) { s.libraries.splice(i, 1); draw(); } } }, 'Remove'))))));
     };
     draw();
     return h('div', { class: 'section' }, h('h2', {}, 'Libraries'),
       h('p', { class: 'muted' }, 'Named output targets, selectable per job and per site rule. Paths must be absolute and writable (mount them into the container). Libraries from the LIBRARIES environment variable are always present.'),
       list, h('div', { class: 'btn-row', style: 'margin-top:.8rem' }, h('button', { class: 'btn', onclick: () => { s.libraries.push({ name: '', path: '' }); draw(); } }, 'Add library')),
+      this.saveBtn());
+  }
+
+  // --- subscriptions (subscriptions concept §10) ---
+  subscriptions() {
+    const s = this.s.subscriptions;
+    const num = (key, min, max) => bindText(s, key, { type: 'number', min, max });
+    return h('div', {},
+      h('div', { class: 'section' }, h('h2', {}, 'Checks'),
+        h('div', { class: 'btn-row', style: 'margin-bottom:.8rem' }, bindCheck(s, 'paused', 'Pause all checks (subscriptions keep their own setting)')),
+        h('div', { class: 'grid' },
+          field('Default check interval (minutes)', num('intervalMinutes', 15, 10080), '15 minutes to 7 days, ±10 % jitter. Exact times: POST /api/v1/subscriptions/check from a cron job.'),
+          field('Parallel checks', num('checkConcurrency', 1, 10), 'Never more than one per site'),
+          field('Pause between checks of a site (s)', num('siteDelaySeconds', 0, 300), '±20 % jitter'),
+          field('Window (newest videos per check)', num('window', 10, 500), 'Channel tabs are listed newest first; the window doubles when it holds no known video'),
+          field('Full listing every (days)', num('fullRescanDays', 1, 90), 'Finds removed videos and gaps'))),
+      h('div', { class: 'section' }, h('h2', {}, 'Automatic downloads'),
+        h('div', { class: 'grid' },
+          field('Safety cap per check', num('autoQueueCap', 1, 1000), 'More new videos than this are not downloaded automatically but listed for review'),
+          field('Background slots', num('backgroundSlots', 1, 50), 'Downloads of new videos and backlogs together; they give way to downloads started by hand'),
+          field('Retry "not available yet" for (days)', num('upcomingDays', 1, 30), 'Premieres without a live status are tried again by every check'),
+          field('Forget removed videos after (days)', num('pruneGoneDays', 0, 3650), '0 = never. Only videos that were never downloaded'))),
       this.saveBtn());
   }
 
@@ -305,8 +344,8 @@ export class SettingsView {
     const presets = h('div', {});
     const drawPresets = () => {
       clear(presets).append(h('table', { class: 'tbl' }, h('tr', {}, h('th', {}, 'Preset'), h('th', {}, 'yt-dlp sort (-S)'), h('th', {})),
-        Object.keys(this.s.presets).sort().map((k) => h('tr', {}, h('td', {}, k), h('td', {}, bindText(this.s.presets, k, { placeholder: '(no override)', style: 'width:100%' })),
-          h('td', { class: 'actions' }, ['best', 'compatible', 'max1080', 'max720'].includes(k) ? null : h('button', { class: 'btn small danger', onclick: () => { delete this.s.presets[k]; drawPresets(); } }, 'Remove'))))));
+        Object.keys(this.s.presets).sort().map((k) => h('tr', {}, h('td', {}, k, this.usedBy('preset', k)), h('td', {}, bindText(this.s.presets, k, { placeholder: '(no override)', style: 'width:100%' })),
+          h('td', { class: 'actions' }, ['best', 'compatible', 'max1080', 'max720'].includes(k) ? null : h('button', { class: 'btn small danger', onclick: async () => { if (await this.confirmRemove('preset', k, `Preset ${k}`)) { delete this.s.presets[k]; drawPresets(); } } }, 'Remove'))))));
     };
     drawPresets();
     const newName = h('input', { type: 'text', placeholder: 'new preset name' });

@@ -192,6 +192,105 @@ CREATE TABLE sessions (
 	expires_at INTEGER NOT NULL
 );
 `,
+	// 2: subscriptions (subscriptions concept §9)
+	`
+CREATE TABLE subscriptions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	folder TEXT NOT NULL DEFAULT '',
+	kind TEXT NOT NULL DEFAULT '',
+	uploader TEXT NOT NULL DEFAULT '',
+	thumbnail TEXT NOT NULL DEFAULT '',
+	mode TEXT NOT NULL,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	backlog TEXT NOT NULL DEFAULT '{}',
+	filters TEXT NOT NULL DEFAULT '{}',
+	requested TEXT NOT NULL DEFAULT '{}',
+	interval_minutes INTEGER NOT NULL DEFAULT 0,
+	listing TEXT NOT NULL DEFAULT 'auto',
+	notify INTEGER NOT NULL DEFAULT 0,
+	state TEXT NOT NULL DEFAULT 'idle',
+	failures INTEGER NOT NULL DEFAULT 0,
+	error TEXT NOT NULL DEFAULT '',
+	error_class TEXT NOT NULL DEFAULT '',
+	hint TEXT NOT NULL DEFAULT '',
+	warning TEXT NOT NULL DEFAULT '',
+	last_check_at INTEGER,
+	last_ok_at INTEGER,
+	next_check_at INTEGER,
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+);
+CREATE INDEX subscriptions_due ON subscriptions(enabled, next_check_at);
+CREATE TABLE subscription_sources (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+	url TEXT NOT NULL,
+	canonical TEXT NOT NULL UNIQUE,
+	tab TEXT NOT NULL DEFAULT '',
+	added_at INTEGER NOT NULL,
+	first_ok_at INTEGER,
+	last_ok_at INTEGER,
+	last_full_at INTEGER,
+	impersonate INTEGER NOT NULL DEFAULT 0,
+	error TEXT NOT NULL DEFAULT '',
+	error_class TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX subscription_sources_sub ON subscription_sources(subscription_id);
+CREATE TABLE subscription_entries (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	url TEXT NOT NULL,
+	title TEXT NOT NULL DEFAULT '',
+	duration REAL NOT NULL DEFAULT 0,
+	upload_date TEXT NOT NULL DEFAULT '',
+	sort_date INTEGER NOT NULL,
+	thumbnail TEXT NOT NULL DEFAULT '',
+	live_status TEXT NOT NULL DEFAULT '',
+	availability TEXT NOT NULL DEFAULT '',
+	source_id INTEGER REFERENCES subscription_sources(id) ON DELETE SET NULL,
+	position INTEGER NOT NULL DEFAULT 0,
+	backlog INTEGER NOT NULL DEFAULT 0,
+	first_seen_at INTEGER NOT NULL,
+	last_seen_at INTEGER NOT NULL,
+	gone_at INTEGER,
+	ignored INTEGER NOT NULL DEFAULT 0,
+	ignore_reason TEXT NOT NULL DEFAULT '',
+	item_id INTEGER REFERENCES items(id) ON DELETE SET NULL,
+	UNIQUE (subscription_id, key)
+);
+CREATE INDEX subscription_entries_key ON subscription_entries(key);
+CREATE INDEX subscription_entries_item ON subscription_entries(item_id);
+CREATE INDEX subscription_entries_source ON subscription_entries(source_id);
+CREATE INDEX subscription_entries_sub_sort ON subscription_entries(subscription_id, sort_date);
+CREATE INDEX subscription_entries_sort ON subscription_entries(sort_date);
+CREATE INDEX subscription_entries_backlog_sort ON subscription_entries(backlog, sort_date);
+CREATE INDEX subscription_entries_sub_backlog_sort ON subscription_entries(subscription_id, backlog, sort_date);
+CREATE INDEX subscription_entries_ignored_sort ON subscription_entries(sort_date) WHERE ignored = 1;
+CREATE INDEX subscription_entries_linked_sort ON subscription_entries(sort_date)
+	WHERE item_id IS NOT NULL OR live_status IN ('is_upcoming', 'is_live', 'post_live');
+CREATE INDEX subscription_entries_sub_linked_sort ON subscription_entries(subscription_id, sort_date)
+	WHERE item_id IS NOT NULL OR live_status IN ('is_upcoming', 'is_live', 'post_live');
+ALTER TABLE jobs ADD COLUMN subscription_id INTEGER REFERENCES subscriptions(id) ON DELETE SET NULL;
+ALTER TABLE jobs ADD COLUMN band INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX jobs_subscription ON jobs(subscription_id);
+`,
+	// 3: the key a listing reports for an entry that was re-keyed by its
+	// download (listings without video ids, subscriptions concept §4.2)
+	`
+ALTER TABLE subscription_entries ADD COLUMN listing_key TEXT NOT NULL DEFAULT '';
+`,
+	// 4: the order a source lists in (subscriptions concept §5.2)
+	`
+ALTER TABLE subscription_sources ADD COLUMN newest_first INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE subscription_sources ADD COLUMN order_known INTEGER NOT NULL DEFAULT 0;
+UPDATE subscription_sources SET newest_first = 1, order_known = 1 WHERE tab != '';
+`,
+	// 5: a requested full rescan survives a restart (subscriptions concept §5.4)
+	`
+ALTER TABLE subscriptions ADD COLUMN full_requested INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -252,6 +351,14 @@ func mustJSON(v any) string {
 		panic(err)
 	}
 	return string(b)
+}
+
+// nullID stores 0 as NULL (optional foreign keys).
+func nullID(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
 }
 
 func b2i(b bool) int {

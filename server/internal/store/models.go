@@ -103,6 +103,30 @@ type RetryState struct {
 	Refetched403   bool      `json:"refetched403,omitempty"`
 }
 
+// Band is a scheduler queue band (subscriptions concept §4.3): jobs of a
+// higher band start first, background bands share backgroundSlots.
+type Band int
+
+const (
+	BandInteractive Band = iota // started by hand, and all jobs outside subscriptions
+	BandAuto                    // new videos of subscriptions in auto mode
+	BandBacklog                 // backlog downloads of subscriptions
+)
+
+// Background reports whether the band is a background band.
+func (b Band) Background() bool { return b != BandInteractive }
+
+// String returns the API name of the band.
+func (b Band) String() string {
+	switch b {
+	case BandAuto:
+		return "auto"
+	case BandBacklog:
+		return "backlog"
+	}
+	return "interactive"
+}
+
 // Job is one user submission.
 type Job struct {
 	ID           int64
@@ -129,9 +153,19 @@ type Job struct {
 	FinishedAt   time.Time
 	UpdatedAt    time.Time
 	Legacy       bool
+	// SubscriptionID links a job created by a subscription (0 = none). It
+	// is set on creation only: deleting the subscription sets it to NULL.
+	SubscriptionID int64
+	Band           Band
 
 	Counts Counts // computed when listing
 }
+
+// Planned reports whether the job was created with pre-planned items (by
+// a subscription). Its URL is a whole channel or playlist, so it must never
+// be probed or expanded (subscriptions concept §4.3). Only planned jobs
+// have no normalized URL: they are not part of the URL duplicate check.
+func (j *Job) Planned() bool { return j.NormURL == "" }
 
 // Counts summarizes the items of a job.
 type Counts struct {
