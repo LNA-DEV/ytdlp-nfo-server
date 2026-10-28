@@ -494,7 +494,7 @@ func TestRedditLinks(t *testing.T) {
 	if rg := w.items(sites["redgifs.com"].ID); rg[0].ArchiveKey != "redgifs happyloudfox" {
 		t.Fatalf("Redgifs item: %+v", rg[0])
 	}
-	if got := w.lib("mixed/A picture [im]"); !slices.Equal(got, []string{library.MarkerName, "A picture [im].png"}) {
+	if got := w.lib("mixed/A picture [im]"); !slices.Equal(got, []string{library.MarkerName, "A picture [im].jpg"}) {
 		t.Fatalf("Imgur image: %v", got)
 	}
 	// yt-dlp-compatible tools learn the linked videos and the Imgur key.
@@ -531,5 +531,37 @@ func TestRedditPastedLinkPost(t *testing.T) {
 	j = w.download(postURL("music", "lv"), config.OptionsRequest{})
 	if j.State != store.JobFailed || !strings.Contains(j.Error, "not on the list of followed sites") {
 		t.Fatalf("vimeo: %s %s", j.State, j.Error)
+	}
+}
+
+// i.redd.it serves an upload only under its own extension: .jpeg images
+// and galleries load through both providers, and a JPEG whose extension
+// only its MIME type named is found under the other spelling.
+func TestRedditJPEGExtensions(t *testing.T) {
+	w, site := redditMediaWorld(t)
+	now := time.Now().Truncate(time.Second)
+	site.Add(
+		&fakereddit.Post{ID: "ij", Subreddit: "example", Title: "Jpeg", Kind: "image", Media: []string{"jp1"}, Ext: "jpeg", Created: now},
+		&fakereddit.Post{ID: "gj", Subreddit: "example", Title: "Jpeg gallery", Kind: "gallery", Media: []string{"jg1", "jg2"}, Ext: "jpeg", Created: now},
+		&fakereddit.Post{ID: "gn", Subreddit: "example", Title: "No preview", Kind: "gallery", Media: []string{"jn1", "jn2"}, Ext: "jpeg",
+			NoPreview: true, Created: now},
+	)
+	check := func(id, folder string, want ...string) {
+		t.Helper()
+		j := w.download(postURL("example", id), config.OptionsRequest{})
+		if got := w.lib(folder); j.State != store.JobCompleted || !slices.Equal(got, append([]string{library.MarkerName}, want...)) {
+			t.Fatalf("%s: %s %v\n%s", id, j.State, got, w.log(j.ID))
+		}
+	}
+	check("ij", "Jpeg [ij]", "Jpeg [ij].jpg")
+	check("gj", "Jpeg gallery [gj]", "Jpeg gallery [gj] - 01.jpg", "Jpeg gallery [gj] - 02.jpg")
+	// Native knows the uploaded extension: no detour through a 404.
+	if n := site.Count("i.redd.it", "/jp1.jpg") + site.Count("i.redd.it", "/jg1.jpg"); n != 0 {
+		t.Fatalf("%d requests with the wrong extension", n)
+	}
+	site.SetNativeBlocked(true) // Arctic Shift: the extension comes from the preview URL or the MIME type
+	check("gn", "No preview [gn]", "No preview [gn] - 01.jpg", "No preview [gn] - 02.jpg")
+	if n := site.Count("i.redd.it", "/jn1.jpg"); n != 1 {
+		t.Fatalf("%d requests for the MIME spelling", n)
 	}
 }

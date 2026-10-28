@@ -34,6 +34,12 @@ type Post struct {
 	Link                         string
 	Original                     *Post // a crosspost's original
 	Removed                      bool  // the media is gone from i.redd.it
+	// Ext is the extension the images were uploaded with (default png, gif
+	// for a GIF); i.redd.it serves them only under it.
+	Ext string
+	// NoPreview leaves the preview URLs out of a gallery's Arctic Shift
+	// metadata, so only the MIME type hints at the extension.
+	NoPreview bool
 }
 
 // Site serves the same posts through native pages, the Arctic Shift API
@@ -115,9 +121,22 @@ func picture(seed int, tag string) *image.RGBA {
 // its own picture (random color blocks), so different ids are neither
 // identical nor similar.
 func MediaBytes(id string, gifImage bool) []byte {
+	if gifImage {
+		return MediaBytesExt(id, "gif")
+	}
+	return MediaBytesExt(id, "png")
+}
+
+// MediaBytesExt returns the picture of a media id encoded for an
+// extension: GIF, JPEG or PNG.
+func MediaBytesExt(id, ext string) []byte {
 	var b bytes.Buffer
 	img := mediaPicture(id)
-	if gifImage {
+	if ext == "jpg" || ext == "jpeg" {
+		jpeg.Encode(&b, img, &jpeg.Options{Quality: 90})
+		return b.Bytes()
+	}
+	if ext == "gif" {
 		pal := image.NewPaletted(img.Bounds(), palette.Plan9)
 		draw.Draw(pal, pal.Bounds(), img, image.Point{}, draw.Src)
 		gif.EncodeAll(&b, &gif.GIF{Image: []*image.Paletted{pal, pal}, Delay: []int{10, 10}})
@@ -170,7 +189,10 @@ func (s *Site) posts(sub string) []*Post {
 func cursor(id string) string { return base64.StdEncoding.EncodeToString([]byte("t3_" + id)) }
 
 func ext(p *Post) string {
-	if p.Kind == "gif" {
+	switch {
+	case p.Ext != "":
+		return p.Ext
+	case p.Kind == "gif":
 		return "gif"
 	}
 	return "png"
@@ -212,7 +234,7 @@ func postHTML(p *Post, full bool) string {
 	if full && p.Kind == "gallery" {
 		b.WriteString("<gallery-carousel><ul>")
 		for _, m := range p.Media {
-			fmt.Fprintf(&b, `<li><img src="https://preview.redd.it/%s.png?width=1080&amp;s=x">`, m)
+			fmt.Fprintf(&b, `<li><img src="https://preview.redd.it/%s.%s?width=1080&amp;s=x">`, m, ext(p))
 		}
 		b.WriteString("</ul></gallery-carousel>")
 	}
@@ -301,7 +323,12 @@ func apiPost(p *Post) map[string]any {
 		meta := map[string]any{}
 		for _, id := range p.Media {
 			items = append(items, map[string]any{"media_id": id})
-			meta[id] = map[string]any{"status": "valid", "e": "Image", "m": "image/png", "s": map[string]any{"x": 80, "y": 60}}
+			mime := map[string]string{"png": "image/png", "gif": "image/gif", "jpg": "image/jpg", "jpeg": "image/jpg"}[ext(p)]
+			s := map[string]any{"x": 120, "y": 90}
+			if !p.NoPreview {
+				s["u"] = "https://preview.redd.it/" + id + "." + ext(p) + "?width=120&amp;s=x"
+			}
+			meta[id] = map[string]any{"status": "valid", "e": "Image", "m": mime, "s": s}
 		}
 		m["gallery_data"] = map[string]any{"items": items}
 		m["media_metadata"] = meta
@@ -360,24 +387,27 @@ func (s *Site) arctic(w http.ResponseWriter, r *http.Request) {
 
 func (s *Site) media(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/")
-	id := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(name, ".png"), ".gif"), ".jpg")
+	id, fileExt, _ := strings.Cut(name, ".")
 	s.mu.Lock()
 	b, ok := s.images[id]
-	removed := s.gone[id]
+	removed, want := s.gone[id], ""
 	for _, p := range s.byID {
 		for _, m := range p.Media {
-			if m == id && p.Removed {
-				removed = true
+			if m == id {
+				removed, want = removed || p.Removed, ext(p)
 			}
 		}
 	}
 	s.mu.Unlock()
-	if removed {
-		http.NotFound(w, r)
+	// Like i.redd.it: a removed file, or one asked for under another
+	// extension, is a 404 with a placeholder image.
+	if removed || want != "" && fileExt != want {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write(PNG(0))
 		return
 	}
 	if !ok {
-		b = MediaBytes(id, strings.HasSuffix(name, ".gif"))
+		b = MediaBytesExt(id, fileExt)
 	}
 	w.Write(b)
 }

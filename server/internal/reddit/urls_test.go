@@ -56,7 +56,7 @@ func TestRSSListing(t *testing.T) {
 func TestMediaKeys(t *testing.T) {
 	img := Post{ID: "p1"}
 	img.Classify("https://i.redd.it/q8x2v0f3k1.jpeg", "image")
-	if img.Kind != KindImage || img.MediaKey() != "redditmedia q8x2v0f3k1" || img.Media[0].URL != "https://i.redd.it/q8x2v0f3k1.jpg" {
+	if img.Kind != KindImage || img.MediaKey() != "redditmedia q8x2v0f3k1" || img.Media[0].URL != "https://i.redd.it/q8x2v0f3k1.jpeg" {
 		t.Fatalf("image: %+v %s", img, img.MediaKey())
 	}
 	gif := Post{ID: "p2"}
@@ -92,5 +92,30 @@ func TestMediaKeys(t *testing.T) {
 	xp.Classify("https://www.reddit.com/r/other/comments/orig1/title/", "crosspost")
 	if xp.Kind != "" || xp.CrosspostParent != "orig1" {
 		t.Fatalf("crosspost: %+v", xp)
+	}
+}
+
+// i.redd.it serves a file only under its own extension (.jpeg is not .jpg).
+func TestImageExtensionsAreKept(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://i.redd.it/abc.jpeg":           "https://i.redd.it/abc.jpeg",
+		"https://i.redd.it/abc.JPG":            "https://i.redd.it/abc.jpg",
+		"https://preview.redd.it/abc.jpeg?w=1": "https://i.redd.it/abc.jpeg",
+		"https://i.redd.it/abc.png":            "https://i.redd.it/abc.png",
+	} {
+		id, ext := ImageFromURL(in)
+		if got := OriginalImageURL(id, ext); got != want {
+			t.Errorf("%s: %s, want %s", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{
+		"https://i.redd.it/abc.jpg":   "https://i.redd.it/abc.jpeg",
+		"https://i.redd.it/abc.jpeg":  "https://i.redd.it/abc.jpg",
+		"https://i.redd.it/abc.png":   "",
+		"https://i.imgur.com/abc.jpg": "",
+	} {
+		if got := OtherJPEGSpelling(in); got != want {
+			t.Errorf("other spelling of %s: %q, want %q", in, got, want)
+		}
 	}
 }

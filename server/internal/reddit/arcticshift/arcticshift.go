@@ -261,8 +261,10 @@ func (f *flexNumber) UnmarshalJSON(b []byte) error {
 
 func extFromMime(m string) string {
 	switch strings.ToLower(m) {
-	case "image/jpg", "image/jpeg":
+	case "image/jpg":
 		return "jpg"
+	case "image/jpeg":
+		return "jpeg"
 	case "image/png":
 		return "png"
 	case "image/gif":
@@ -317,7 +319,12 @@ func (a *apiPost) post() reddit.Post {
 					}
 					m.URL, m.Mime = "https://v.redd.it/"+vid, "video/mp4"
 				default:
-					ext := extFromMime(meta.M)
+					// The extension of the preview URL is the uploaded one;
+					// the MIME type can't tell .jpg from .jpeg.
+					_, ext := reddit.ImageFromURL(html.UnescapeString(meta.S.U))
+					if ext == "" {
+						ext = extFromMime(meta.M)
+					}
 					m.URL, m.Mime = reddit.OriginalImageURL(it.MediaID, ext), "image/"+strings.Replace(ext, "jpg", "jpeg", 1)
 				}
 				p.Media = append(p.Media, m)

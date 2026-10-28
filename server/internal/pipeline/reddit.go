@@ -382,14 +382,12 @@ func (p *Pipeline) redditImage(ctx context.Context, rc *runCtx, dir, base, url s
 		os.Remove(m)
 	}
 	part := filepath.Join(dir, base+".part")
-	out, err := os.Create(part)
-	if err != nil {
-		return f, false, failure(ytdlp.ClassTransient, err.Error())
-	}
-	rc.log.Printf("Downloading %s", url)
-	resp, err := p.d.Reddit.Client().Download(ctx, url, "https://www.reddit.com/", out, maxImageBytes)
-	if cerr := out.Close(); err == nil && cerr != nil {
-		err = cerr
+	resp, err := p.fetchImage(ctx, rc, url, part)
+	// A JPEG whose extension came from its MIME type may have the other
+	// spelling (.jpg ↔ .jpeg); i.redd.it answers the wrong one with 404.
+	if alt := reddit.OtherJPEGSpelling(url); err == nil && alt != "" && (resp.Status == 404 || resp.Status == 410) {
+		rc.log.Printf("HTTP %d, trying %s", resp.Status, alt)
+		resp, err = p.fetchImage(ctx, rc, alt, part)
 	}
 	fail := func(class ytdlp.Class, reason string) (redditFile, bool, error) {
 		os.Remove(part)
@@ -454,6 +452,20 @@ func (p *Pipeline) imageHash(ctx context.Context, rc *runCtx, path string, info 
 		}
 		f.dhash, f.hashed = h, ok
 	}
+}
+
+// fetchImage downloads url to part with the browser client.
+func (p *Pipeline) fetchImage(ctx context.Context, rc *runCtx, url, part string) (*browser.Response, error) {
+	out, err := os.Create(part)
+	if err != nil {
+		return nil, err
+	}
+	rc.log.Printf("Downloading %s", url)
+	resp, err := p.d.Reddit.Client().Download(ctx, url, "https://www.reddit.com/", out, maxImageBytes)
+	if cerr := out.Close(); err == nil && cerr != nil {
+		err = cerr
+	}
+	return resp, err
 }
 
 func hostOf(u string) string {

@@ -161,11 +161,25 @@ func ImageFromURL(u string) (id, ext string) {
 }
 
 // OriginalImageURL returns the i.redd.it URL of an image id and extension.
+// The extension is kept as it was uploaded: i.redd.it serves a file only
+// under its own extension, and "x.jpeg" is a 404 as "x.jpg".
 func OriginalImageURL(id, ext string) string {
-	if ext == "jpeg" {
-		ext = "jpg"
+	return "https://i.redd.it/" + id + "." + strings.ToLower(ext)
+}
+
+// OtherJPEGSpelling returns an i.redd.it JPEG URL with the other spelling
+// of its extension (.jpg ↔ .jpeg), or "" for any other URL: the fallback
+// when only the MIME type named the extension.
+func OtherJPEGSpelling(u string) string {
+	switch {
+	case !strings.HasPrefix(u, "https://i.redd.it/"):
+		return ""
+	case strings.HasSuffix(u, ".jpg"):
+		return strings.TrimSuffix(u, ".jpg") + ".jpeg"
+	case strings.HasSuffix(u, ".jpeg"):
+		return strings.TrimSuffix(u, ".jpeg") + ".jpg"
 	}
-	return "https://i.redd.it/" + id + "." + ext
+	return ""
 }
 
 // ManifestURL returns the DASH manifest of a v.redd.it video (§4).
