@@ -235,7 +235,7 @@ flowchart TD
 1. **Fetch post.** The post is fetched again through the provider chain and written to `post.json` in the work dir. This replaces `info.json` for images; signed preview URLs and video processing state are thereby fresh. The same freshness rule as for `info.json` applies (`MetaMaxAge`).
 2. **Media key.** The item is re-keyed to the post's media key through the existing path in `attempt`: it takes the key lock for the new key, and an item whose key is already in the archive is skipped. A Reddit item also counts as already in the library if the media index knows the key ([§7.5](#75-duplicates-and-crossposts)). The key always comes from `post.json`, never from yt-dlp's metadata. yt-dlp's generic extractor names every manifest `DASHPlaylist`, so all Reddit videos would get the key `generic DASHPlaylist`, and every video after the first would be skipped as *already in library*.
 3. **Images and GIFs.** Download from `i.redd.it` to `media.part`, then rename to `media.<ext>`. The extension comes from the content ([§7.3](#73-verify)). A `.gif` stays a GIF; there is no conversion in this concept.
-4. **Galleries.** Download each image in gallery order to `media-NN.part`, verify it, and rename it to `media-NN.<ext>`. Already verified files are kept and reused after a retry or crash (invariant 5).
+4. **Galleries.** Download each image that isn't already in the library ([§7.5](#75-duplicates-and-crossposts)) in gallery order to `media-NN.part`, verify it, and rename it to `media-NN.<ext>`. `NN` is the image's position in the gallery. Already verified files are kept and reused after a retry or crash (invariant 5).
    - An image that returns 404 or 410 is a warning ("2 of 14 images were removed").
    - If all images are gone, the item fails as `permanent`.
    - Other errors fail the attempt as `transient`.
@@ -328,12 +328,12 @@ CREATE INDEX media_index_sha ON media_index(sha256);
 - **After the post is fetched:** the item is re-keyed to the media key (step 2 in [§7.2](#72-pipeline)), and the existing key lock and archive check skip it as "Already in library (crosspost of r/<sub>: <title>)". The existing re-keying of subscription entries (`rekeyEntries`) moves the entries to the media key and merges the ones that now share a key.
 - **Galleries:** besides the gallery key, each image's media key is looked up.
   - If all images are in the library (for example, posted one by one before), the item is skipped.
-  - If only some are, the gallery is *partly known*. What happens to its known images is open question 6 in [§14](#14-decisions-and-open-questions). Until it is decided: the whole gallery is downloaded so the album is complete, with the warning "3 of 5 images are already in the library".
+  - If only some are, the gallery is *partly known*. Its known images are neither downloaded nor stored again: the file somewhere in the library is enough (decision 6 in [§14](#14-decisions-and-open-questions)). The gallery's folder holds only the new images, and the marker lists the known ones with the path of the file that already has them. The item gets the warning "2 of 5 images were already in the library and were not stored again", with links to those files.
 
 **Level 2.** After verify, the SHA-256 of each image is looked up in the media index.
 
 - A single image that is identical to a library file: the item is *skipped* ("Identical to `<path>`") with an alias row, and its work dir is removed. Nothing is finalized.
-- A gallery whose images are all identical to library files is skipped the same way. A partly identical gallery is *partly known*, as in level 1. This is the common case: a gallery is usually a fresh upload with new media IDs, so its overlap with the library only shows up here, after the download.
+- A gallery whose images are all identical to library files is skipped the same way. A partly identical gallery is *partly known*, as in level 1: the identical files are removed from the work dir before finalize, and their media keys get alias rows. This is the common case: a gallery is usually a fresh upload with new media IDs, so its overlap with the library only shows up here, after the download.
 - Videos get no file hash: two downloads of the same stream give different merged files, so the hash would never match. The video key covers crossposts.
 
 **Level 3.** A 64-bit dHash per image: ffmpeg scales the first frame to 9 × 8 gray pixels, and each bit says whether a pixel is brighter than its right neighbour. This works the same way for every image type ffmpeg reads.
@@ -347,7 +347,9 @@ CREATE INDEX media_index_sha ON media_index(sha256);
 - The hashes are kept in memory as a list of 64-bit values and compared linearly. A million images take 8 MB and a few milliseconds per lookup, so no special index is needed.
 - Videos are not hashed in this concept. A later version can hash frames at 10, 50 and 90 % of the duration, together with the duration.
 
-**What a duplicate never does:** it never replaces, moves, links or deletes anything in the library; it only skips the new download. Duplicates across sites (the same picture from Reddit and from another site) are out of scope, except for linked videos, which share the target's key ([§7.6](#76-links-to-other-sites)).
+**Force re-download** skips levels 1 to 3 for that item, as it skips the archive check today: the user asked for the post again, with all its images.
+
+**What a duplicate never does:** it never replaces, moves, links or deletes anything in the library; it only skips the new download or file. Duplicates across sites (the same picture from Reddit and from another site) are out of scope, except for linked videos, which share the target's key ([§7.6](#76-links-to-other-sites)).
 
 ### 7.6 Links to other sites
 
@@ -394,7 +396,7 @@ The exception is a single post URL pasted by hand that turns out to be a link po
 - **Folder per subscription (S9)**: `<library>/<folder>/<item folder>/`. The item folder comes from the naming template like any item: `title` = post title, `id` = post ID, `uploader` = author, `channel` = `r/<sub>`, `upload_date` = post date.
 - **Files**:
   - an image: `<base>.<ext>`, the template's file name;
-  - a gallery: `<base> - 01.<ext>`, `<base> - 02.<ext>`, … in gallery order;
+  - a gallery: `<base> - 01.<ext>`, `<base> - 02.<ext>`, … by position in the gallery. Images that were already in the library leave a gap in the numbering ([§7.5](#75-duplicates-and-crossposts)), so the order stays visible;
   - a video: as today (`<base>.mkv`, `folder.jpg`, `movie.nfo`, subtitles).
 
   `<base>` is the rendered file name without extension. Galleries don't need a new template syntax.
@@ -405,8 +407,12 @@ The exception is a single post URL pasted by hand that turns out to be a link po
    "author": "…", "title": "…", "permalink": "https://www.reddit.com/r/EarthPorn/comments/1abc23/",
    "created": "2026-10-27T18:03:11Z", "provider": "native",
    "files": [{"name": "… - 01.jpg", "media": "redditmedia q8x2v0f3k1", "sha256": "…"},
-             {"name": "… - 02.png", "media": "redditmedia 7h1kz9pa2m", "sha256": "…"}]}
+             {"name": "… - 03.png", "media": "redditmedia 7h1kz9pa2m", "sha256": "…"}],
+   "known": [{"position": 2, "media": "redditmedia c4n0p2w7xe",
+              "path": "EarthPorn/Other post [1x9y8z]/Other post [1x9y8z].jpg"}]}
   ```
+
+  `known` lists the gallery's images that were already in the library and were not stored again, with the file that has them (relative to the library root).
 
   `library.FolderVideoID` and `library.ScanFolders` fall back to this file when there is no `movie.nfo`, and return the ID part of its `key`. Then `ChooseTarget` still replaces the same post instead of adding ` (2)`, and *Archive → Check library* finds image folders. `ScanFolders` also learns the image extensions.
 - **Jellyfin**: a movie library ignores images. A Reddit subscription should therefore use a library of the Jellyfin type *Home videos and photos*; the subscription's library can be chosen per subscription (S9). If only one library exists, or the chosen one is not marked as a Reddit library, the add dialog warns that Jellyfin's movie libraries don't show images. It doesn't block. Whether Jellyfin reads `movie.nfo` in that library type is not verified; the videos play either way. Jellyfin ignores the hidden marker.
@@ -521,7 +527,9 @@ With `--fixtures`, it stores the pages and JSON responses with usernames and tit
 | Two crossposts of the same image in one check | One entry, one download |
 | An identical re-upload (new media ID, same bytes) | Downloaded, skipped before finalize, alias row written. A later crosspost of it is caught at listing time. |
 | A resized repost | `similar = warn`: finalized with the warning. `skip`: skipped with an alias row |
-| A gallery with 3 of 5 images in the library | Whole gallery downloaded, warning |
+| A gallery with 3 of 5 images in the library, known by media key | Only the 2 new images are downloaded and stored, with their gallery positions in the names. Warning with the 3 paths, `known` in the marker |
+| A gallery with 2 of 5 images identical to library files, found after the download | The 2 files are removed before finalize, alias rows for their media keys, warning. The folder holds 3 images |
+| Force re-download of a partly known gallery | All 5 images downloaded and stored |
 | The original's archive entry is removed | Its media index rows and aliases are gone, and the duplicate can be downloaded |
 | SIGKILL around a duplicate skip | After the restart, the skip and its alias row are both there or both missing |
 | An image URL returns an HTML page with status 200 | Item failed, `permanent`, not an image |
@@ -546,21 +554,10 @@ Decided on 2026-10-28:
 | 3 | Images and a movie-only library | **Warn, don't block.** The add dialog says that Jellyfin's movie libraries don't show images. | [§8](#8-library-layout) |
 | 4 | NSFW | **Included by default.** Native reads NSFW posts through the blur and the 18+ dialog, like the browser extensions that remove them. Only content that Reddit withholds on the server goes through Arctic Shift. | [§2](#2-access-situation), [§5.4](#54-errors) |
 | 5 | Links to other sites | **Designed in [§7.6](#76-links-to-other-sites)** and built in phase R-5: an allowlist, the target's own key, metadata and site rules, and one job per target site. | R9 |
+| 6 | A gallery whose images are partly in the library | **Store only the new images.** A file that is somewhere in the library is enough. The gallery's folder holds the new images, numbered by their position in the gallery; the marker lists the known ones with their paths. Rejected: keeping every image (duplicates on disk) and hardlinks (no extra space, but duplicates in Jellyfin and in backups that don't understand hardlinks). | [§7.5](#75-duplicates-and-crossposts), [§8](#8-library-layout) |
 | 7 | Default of level 3 (similar images) | **`warn`**: a perceptual match can be wrong (screenshots, memes on the same template), and a skipped image is easy to miss. | [§7.5](#75-duplicates-and-crossposts) |
 
-Still open:
-
-**6. A partly known gallery.** Example: the library has images A and B from single posts. A new gallery holds A, B, C, D and E. Most of the time this is found by the file hash after the download (level 2), because the gallery was uploaded fresh. What happens to A and B in the gallery's folder?
-
-| Option | Gallery folder | Disk | Jellyfin |
-|---|---|---|---|
-| **a. Keep everything** | complete (A–E) | A and B twice | A and B show up twice |
-| **b. Drop the known ones** | only C, D, E; the marker points to A and B elsewhere | no duplicates | an album with gaps |
-| **c. Hardlink the known ones** | complete (A–E); A and B are second names of the existing files | no extra space | A and B show up twice |
-
-Option c links the existing library file into the staging folder in place of the downloaded copy, before the usual atomic rename. The existing file isn't changed: a hardlink only adds a second name for the same data, and deleting one name leaves the other. If linking fails (another filesystem, a library on a share without hardlinks), the downloaded copy is kept as in option a. When level 1 already knows A and B before the download, option c doesn't download them at all.
-
-Recommendation: **c**, falling back to **a**. An album with gaps (b) is worse than a duplicate entry in Jellyfin, and c costs no disk space. The trade-offs of c: a backup tool that doesn't understand hardlinks stores the file twice, and editing one name in place (rare for media) changes both.
+No questions are open.
 
 ## 15. Rollout
 
