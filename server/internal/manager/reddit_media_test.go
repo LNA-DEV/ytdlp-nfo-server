@@ -12,6 +12,7 @@ import (
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/library"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/pipeline"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/browser"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
@@ -274,6 +275,21 @@ func TestRedditRetriesWhenArcticIsBack(t *testing.T) {
 	if j.State != store.JobCompleted || !strings.Contains(l, "Post rr via arcticshift") ||
 		!strings.Contains(l, "Attempt 1 failed (transient: blocked by Reddit's network security (arcticshift: Arctic Shift: HTTP 503") {
 		t.Fatalf("%s %s\n%s", j.State, j.Error, l)
+	}
+}
+
+// An item that fails before writing anything leaves no empty work dir.
+func TestRedditFailedItemLeavesNoWorkDir(t *testing.T) {
+	w, site := redditMediaWorld(t)
+	site.Add(&fakereddit.Post{ID: "ff", Subreddit: "pics", Title: "Unreachable", Kind: "image", Media: []string{"f1"}, Created: time.Now()})
+	site.SetNativeBlocked(true)
+	site.SetArcticDown(true)
+	j := w.download(postURL("pics", "ff"), config.OptionsRequest{})
+	if j.State != store.JobFailed {
+		t.Fatalf("%s\n%s", j.State, w.log(j.ID))
+	}
+	if _, err := os.Stat(pipeline.JobWorkDir(w.env, j.ID)); !os.IsNotExist(err) {
+		t.Fatalf("work dir left: %v", err)
 	}
 }
 

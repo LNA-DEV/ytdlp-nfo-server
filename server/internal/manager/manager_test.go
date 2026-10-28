@@ -686,6 +686,9 @@ func TestForceRedownloadReplaces(t *testing.T) {
 	if len(files) != 3 || !strings.Contains(strings.Join(files, "\n"), "Force [fr]/Force [fr].mkv") {
 		t.Fatalf("library: %v", files)
 	}
+	if n := strings.Count(w.archiveFile(), " fr\n"); n != 1 {
+		t.Fatalf("the key is %d times in the archive file:\n%s", n, w.archiveFile())
+	}
 }
 
 // Delete-all while downloads run: every process group is gone before the

@@ -3,15 +3,13 @@ package library
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 )
 
-// ArchiveFile maintains the yt-dlp compatible .ytdlp-archive.txt that the
-// ytdlp-nfo CLI and other tools share (§4.6). The SQLite archive is the
-// source of truth; this file is kept in sync for compatibility.
 // FileKey reports whether a key belongs in .ytdlp-archive.txt: tools that
 // read it know yt-dlp's keys, including "reddit <id>" for Reddit videos,
 // but not the server's own image, gallery and post keys (Reddit concept
@@ -21,12 +19,16 @@ func FileKey(key string) bool {
 		!strings.HasPrefix(key, "redditpost ")
 }
 
+// ArchiveFile maintains the yt-dlp compatible .ytdlp-archive.txt that the
+// ytdlp-nfo CLI and other tools share (§4.6). The SQLite archive is the
+// source of truth; this file is kept in sync for compatibility.
 type ArchiveFile struct {
 	Path string
 	mu   sync.Mutex
 }
 
-// Append adds a key and fsyncs the file.
+// Append adds a key that the file doesn't hold yet (a forced re-download
+// finalizes a key again) and fsyncs the file.
 func (a *ArchiveFile) Append(key string) error {
 	if a == nil || a.Path == "" || key == "" {
 		return nil
@@ -41,12 +43,18 @@ func (a *ArchiveFile) Append(key string) error {
 		return err
 	}
 	defer f.Close()
-	prefix := ""
-	if fi, err := f.Stat(); err == nil && fi.Size() > 0 {
-		last := make([]byte, 1)
-		if _, err := f.ReadAt(last, fi.Size()-1); err == nil && last[0] != '\n' {
-			prefix = "\n" // another tool left no trailing newline
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == key {
+			return nil
 		}
+	}
+	prefix := ""
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		prefix = "\n" // another tool left no trailing newline
 	}
 	if _, err := f.WriteString(prefix + key + "\n"); err != nil {
 		return err

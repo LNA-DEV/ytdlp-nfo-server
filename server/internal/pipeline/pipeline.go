@@ -171,6 +171,22 @@ func JobWorkDir(env *config.Env, jobID int64) string {
 	return filepath.Join(env.WorkRoot(), strconv.FormatInt(jobID, 10))
 }
 
+// removeEmptyDirs removes the empty item work dirs of a job that keeps
+// its work for a retry (items that failed before writing anything), and
+// the job's dir if nothing is left. A retry creates them again.
+func removeEmptyDirs(jobDir string) {
+	entries, err := os.ReadDir(jobDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			os.Remove(filepath.Join(jobDir, e.Name())) // fails unless empty
+		}
+	}
+	os.Remove(jobDir)
+}
+
 // ItemWorkDir returns the work directory of an item.
 func ItemWorkDir(env *config.Env, jobID, itemID int64) string {
 	return filepath.Join(JobWorkDir(env, jobID), strconv.FormatInt(itemID, 10))
@@ -732,6 +748,9 @@ func (p *Pipeline) finishJob(rc *runCtx, items []*store.Item) scheduler.Outcome 
 	msg := fmt.Sprintf("=== Job %s: %d done, %d already in library, %d failed ===", job.State, done, skipped, failed)
 	if job.Hint != "" && job.State == store.JobCompleted {
 		msg = fmt.Sprintf("=== Job completed: %s ===", job.Hint)
+	}
+	if job.State != store.JobCompleted {
+		removeEmptyDirs(JobWorkDir(p.d.Env, job.ID)) // before the job shows as finished
 	}
 	rc.log.Line(msg)
 	p.saveJob(job)

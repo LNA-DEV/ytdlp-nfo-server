@@ -62,3 +62,14 @@ func TestAnonymizeSlugs(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
+
+// The report counts post elements only, and NSFW by the posts' attributes.
+func TestReportCounts(t *testing.T) {
+	page := `<html><style>.nsfw-blurred{}</style><shreddit-post id="t3_a1" nsfw><shreddit-post-flair></shreddit-post-flair></shreddit-post>` +
+		`<shreddit-post id="t3_a2" post-title="x"></shreddit-post><shreddit-post id="t3_a3" nsfw="" subreddit-nsfw></shreddit-post>`
+	var out bytes.Buffer
+	report(&out, "native", "browser", []response{{url: "https://www.reddit.com/r/example/", status: 200, body: []byte(page)}}, nil, nil, "")
+	if s := out.String(); !strings.Contains(s, "  3 <shreddit-post>") || !strings.Contains(s, "2 NSFW posts") || strings.Contains(s, "quarantine") {
+		t.Fatalf("%s", s)
+	}
+}

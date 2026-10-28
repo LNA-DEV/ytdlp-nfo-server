@@ -607,7 +607,7 @@ ytdlp-nfo-server reddit-probe [--provider native|arcticshift|all] [--client brow
 
 It runs the providers from the container's network and prints:
 - the HTTP status per request;
-- whether a JavaScript check, block page, rate-limit page, login gate or NSFW overlay was detected;
+- whether a JavaScript check, block page, rate-limit page or login gate was detected, and how many posts carry the NSFW attribute;
 - the number of posts parsed and which attributes were found;
 - for the first image and video, whether `i.redd.it` and the `v.redd.it` manifest answer.
 

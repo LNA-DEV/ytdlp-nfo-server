@@ -236,10 +236,10 @@ func report(w io.Writer, name, client string, resps []response, posts []reddit.P
 		if strings.Contains(r.url, "/login") {
 			marks = append(marks, "login page")
 		}
-		if strings.Contains(lower, "blurred") || strings.Contains(lower, "nsfw") {
-			marks = append(marks, "NSFW markup")
+		posts := len(postTags.FindAllString(lower, -1))
+		if n := len(nsfwPosts.FindAllString(lower, -1)); n > 0 {
+			marks = append(marks, fmt.Sprintf("%d NSFW posts", n))
 		}
-		posts := strings.Count(lower, "<"+native.Layout.PostTag)
 		fmt.Fprintf(w, "  HTTP %d  %7d bytes  %3d <%s>  %s %s\n", r.status, len(r.body), posts, native.Layout.PostTag, r.url,
 			strings.Join(marks, ", "))
 	}
@@ -280,6 +280,11 @@ func report(w io.Writer, name, client string, resps []response, posts []reddit.P
 }
 
 var (
+	// postTags matches the post elements only (not shreddit-post-flair).
+	postTags = regexp.MustCompile(`<` + native.Layout.PostTag + `[\s>]`)
+	// nsfwPosts matches post elements with an NSFW attribute; the word
+	// alone is in the scripts and styles of every page.
+	nsfwPosts = regexp.MustCompile(`<` + native.Layout.PostTag + `\s[^>]*\s(?:` + strings.Join(native.Layout.NSFW, "|") + `)(?:[\s>]|="(?:|true)")`)
 	htmlAttrs = regexp.MustCompile(`((?:author|post-title)=")[^"]*"`)
 	jsonAttrs = regexp.MustCompile(`("(?:author|title|selftext|author_fullname)"\s*:\s*")(?:[^"\\]|\\.)*"`)
 	// The title is also in every permalink, as its last part.

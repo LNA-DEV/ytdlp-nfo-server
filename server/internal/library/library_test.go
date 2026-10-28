@@ -421,6 +421,13 @@ func TestArchiveFile(t *testing.T) {
 	if string(b) != "youtube a\nyoutube b\nvimeo c\n" {
 		t.Fatalf("got %q", b)
 	}
+	// A key the file holds is not added again (forced re-download).
+	if err := a.Append("youtube b"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ = os.ReadFile(p); string(b) != "youtube a\nyoutube b\nvimeo c\n" {
+		t.Fatalf("duplicate: %q", b)
+	}
 	a.Remove("youtube b")
 	b, _ = os.ReadFile(p)
 	if string(b) != "youtube a\nvimeo c\n" {
