@@ -143,3 +143,47 @@ func TestPagingAndErrors(t *testing.T) {
 		t.Fatalf("top list: %v", err)
 	}
 }
+
+// Findings of the first real run: "slow down" answers, posts filtered by
+// AutoModerator, and video posts whose id is only in some fields.
+func TestRealWorldShapes(t *testing.T) {
+	fake := fakereddit.New(t)
+	fake.Handle("arctic-shift.photon-reddit.com", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(422)
+		w.Write([]byte(`{"error":"Timeout. Maybe slow down a bit"}`))
+	})
+	c, err := browser.New(browser.Options{RootCAs: fake.Roots, Dial: fake.Dial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	p := New(c)
+	p.MinInterval = 0
+	if _, err := p.Post(context.Background(), "abc", ""); reddit.AsError(err).Class != ytdlp.ClassRateLimited {
+		t.Fatalf("422: %v", err)
+	}
+
+	cat := func(s string) *string { return &s }
+	for name, c := range map[string]struct {
+		a       apiPost
+		removed bool
+		video   string
+	}{
+		"automod":    {apiPost{ID: "a", URL: "https://i.redd.it/x.jpeg", PostHint: "image", RemovedByCategory: cat("automod_filtered")}, false, ""},
+		"unknown":    {apiPost{ID: "b", URL: "https://i.redd.it/x.jpeg", PostHint: "image", RemovedByCategory: cat("something_new")}, false, ""},
+		"moderator":  {apiPost{ID: "c", URL: "https://i.redd.it/x.jpeg", PostHint: "image", RemovedByCategory: cat("moderator")}, true, ""},
+		"self":       {apiPost{ID: "d", IsSelf: true, Selftext: "[removed]"}, true, ""},
+		"video dest": {apiPost{ID: "e", IsVideo: true, URL: "https://www.reddit.com/r/example/comments/e/x/", URLOverridden: "https://v.redd.it/vidabc"}, false, "vidabc"},
+		"video dash": {apiPost{ID: "f", IsVideo: true, Media: &mediaObj{RedditVideo: &struct {
+			FallbackURL string     `json:"fallback_url"`
+			DashURL     string     `json:"dash_url"`
+			HLSURL      string     `json:"hls_url"`
+			Duration    flexNumber `json:"duration"`
+		}{DashURL: "https://v.redd.it/viddef/DASHPlaylist.mpd?a=1"}}}, false, "viddef"},
+	} {
+		got := c.a.post()
+		if got.Removed != c.removed || got.VideoID != c.video {
+			t.Errorf("%s: removed %v video %q", name, got.Removed, got.VideoID)
+		}
+	}
+}

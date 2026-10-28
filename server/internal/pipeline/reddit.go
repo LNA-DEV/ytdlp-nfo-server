@@ -182,6 +182,11 @@ func (p *Pipeline) fetchPost(ctx context.Context, rc *runCtx, it *store.Item, di
 	if post.Provider == "" {
 		post.Provider = provider
 	}
+	kind := string(post.Kind)
+	if kind == "" && post.CrosspostParent != "" {
+		kind = "crosspost"
+	}
+	rc.log.Printf("Post %s via %s: %s in r/%s", post.ID, provider, kind, post.Subreddit)
 	if post.Kind == "" && post.CrosspostParent != "" {
 		orig, _, rerr := chain.Post(ctx, post.CrosspostParent, "")
 		if ctx.Err() != nil {
@@ -519,6 +524,16 @@ func (p *Pipeline) skipDuplicate(rc *runCtx, it *store.Item, msg string, aliases
 func (p *Pipeline) redditVideo(ctx context.Context, rc *runCtx, it *store.Item, post *reddit.Post, dir string) error {
 	rc.proxy = rc.settings.Reddit.Proxy
 	defer func() { rc.proxy = "" }()
+	// v.redd.it answers plain clients with 403: the first try already
+	// impersonates a browser when this yt-dlp build can.
+	if rc.impersonate == "" && rc.bin.ImpersonateAvailable {
+		rc.impersonate = "chrome"
+		defer func() {
+			if rc.impersonate == "chrome" {
+				rc.impersonate = ""
+			}
+		}()
+	}
 	_, meta, err := p.fetchMeta(ctx, rc, it, dir, reddit.ManifestURL(post.VideoID), false)
 	if err != nil {
 		return err

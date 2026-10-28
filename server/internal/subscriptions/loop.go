@@ -438,7 +438,7 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 		if window > maxWindow {
 			window = 0
 		}
-		log.Printf("No known entry among them: more than %d new videos, listing more", len(listing.Entries))
+		log.Printf("No known entry among them: more than %d new entries, listing more", len(listing.Entries))
 	}
 }
 

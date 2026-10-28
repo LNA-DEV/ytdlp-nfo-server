@@ -118,10 +118,16 @@ The next-page requests are what third parties observed for `/new`. `reddit-probe
 - **Profile updates**: the browser profile comes with the library and is updated with it. User-Agent, client hints and TLS profile always come from the same profile: a Chrome 150 User-Agent on a Chrome 131 fingerprint is more conspicuous than either alone.
 - **Limits of the disguise**:
   - The IP address can't be faked. The optional `proxy` setting routes Reddit requests through a connection of the user's choice, for example the home connection when the server runs on a VPS. There are no proxy pools and no CAPTCHA services.
-  - If Reddit starts to require JavaScript challenges, native is blocked. The next step would be a real browser in a sidecar container ([§15](#15-rollout)).
+  - **JavaScript check.** Reddit sometimes answers with a check instead of the page: an HTTP 200 page with a hidden GET form (`solution`, `js_challenge`, `jsc_token`, …) whose inline script computes a field and submits the form. Native recognizes it ([§5.4](#54-errors)). Only with the setting `solveChallenge` ([§9](#9-settings), default off) does it answer the check, once per page:
+    - the page's inline scripts (at most 64 KB) run in [goja](https://github.com/dop251/goja), a JavaScript engine in pure Go, against a minimal stand-in for `document`, the form, `location`, `navigator`, `URLSearchParams`, timers, `TextEncoder` and `crypto.subtle.digest`. Nothing else of the page runs, and nothing is loaded;
+    - goja runs in a child process: the server binary itself, started with an empty environment, a 3 s limit for the script, 10 s for the process and 256 MB of heap;
+    - native follows the form's submission only if it is a GET to `https://` on the page's own host, with the page as `Referer`;
+    - if the answer doesn't lead to the page, native is `blocked` as without the setting.
+
+    This runs code from Reddit on the server, which is why it is off by default; Reddit's terms don't allow automated access either. It does not help against real browser fingerprinting (canvas, WebGL, …). If Reddit starts to require that, native stays blocked, and the next step would be a real browser in a sidecar container ([§15](#15-rollout)).
 - **Media**:
   - Images from `i.redd.it` use the same client and identity, with `Sec-Fetch-Dest: image` and `Referer: https://www.reddit.com/`.
-  - Videos go through yt-dlp, which gets `--impersonate chrome` for `v.redd.it` when a target is available.
+  - Videos go through yt-dlp, which gets `--impersonate chrome` for `v.redd.it` from the first try when the yt-dlp build has a target (`v.redd.it` answers plain clients with 403).
 - **Pacing beyond one listing**: the subscription loop already allows one check per site at a time and waits `siteDelaySeconds` between checks of a site ([subscriptions §5.4](subscriptions-concept.md#54-politeness-errors-and-rate-limits)).
 - **Limits**: 5 MB per HTML document, 30 s per request, redirects only to allowlisted hosts ([§10](#10-security)).
 
@@ -151,8 +157,9 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
 
 | Response | Class | Effect |
 |---|---|---|
-| 429, or a 200 with Reddit's rate-limit page | `rate_limited` | Site cooldown for `reddit.com` (`Retry-After` if sent, else `rateLimitCooldownMinutes`). Falls through to the next provider. |
-| 403, or a 200 with the "blocked by network security" page | `blocked` | Falls through. Resets the cookie jar. Hint: "Reddit blocks this server's network (VPN or datacenter addresses are often blocked). Use Arctic Shift, or route Reddit through another connection (setting `proxy`)." |
+| 429, or a 200 with Reddit's rate-limit page | `rate_limited` | Cooldown of native (`Retry-After` if sent, else `rateLimitCooldownMinutes`). Falls through to the next provider. |
+| 403, or a 200 with the "blocked by network security" page | `blocked` | Falls through. Resets the cookie jar and pauses native for 30 minutes. Hint: "Reddit blocks this server's network (VPN or datacenter addresses are often blocked). Use Arctic Shift, or route Reddit through another connection (setting `proxy`)." |
+| A 200 with the JavaScript check ([§5.1](#51-requests)) | `blocked` | Answered once if `solveChallenge` is on. Otherwise, or if the answer fails: falls through, resets the cookie jar and pauses native for 30 minutes. The hint names the setting. |
 | Redirect to the login page, a quarantine gate, or a page whose posts are withheld (age verification) | `auth_required` | Falls through. Hint: "Reddit shows this community only to logged-in or verified users. Arctic Shift has it if it is enabled." An NSFW blur or 18+ dialog is not a gate: the posts are read through it. |
 | 404, "community not found", banned or private community | `permanent` | No fall-through. Hint as for a removed channel |
 | A 200 page without readable posts | `extractor_broken` | Falls through. Hint: "Reddit's page layout changed; the server needs an update." Logged with the first 2 KB of the page. |
@@ -178,10 +185,12 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
   - pages of 100;
   - a normal check lists at most `firstListing` posts ([§9](#9-settings)). Only gap fills and backfills go deeper, at most `backfillMax` posts per run, and never through a subreddit's whole history in one go ([§7.7](#77-history-top-lists-and-gaps)).
 - **Errors**:
-  - 429 sets a site cooldown for `arctic-shift.photon-reddit.com` until `X-RateLimit-Reset` and falls through;
+  - 429, and 422 or an error that asks to "slow down", are `rate_limited`: they set a cooldown of Arctic Shift until `X-RateLimit-Reset` (else `rateLimitCooldownMinutes`) and fall through;
   - "Query timed out" is retried once with half the page size, then `transient`;
   - an unknown subreddit is an empty result. Combined with a native `permanent` error, it is `permanent`.
 - **Removed posts**: Arctic Shift keeps posts that were deleted on Reddit. If their media is gone from `i.redd.it`, the item fails as `permanent` ("removed from Reddit") and is not queued again (subscriptions S3).
+  - `removed_by_category` counts as removed only for `deleted`, `author`, `moderator`, `reddit`, `anti_evil_ops`, `community_ops`, `copyright_takedown`, `content_takedown` and `legal`. `automod_filtered` (held for review, often approved later) and unknown categories are not removed: the media decides.
+- **Video IDs**: the `v.redd.it` ID comes from `secure_media` or `media` (`fallback_url`, `dash_url`, `hls_url`), else from `url_overridden_by_dest` or `url`. Only a video post without any of these is listed as `redditpost <id>`.
 
 ## 7. Integration
 
@@ -215,7 +224,7 @@ type ListResult struct {
 | Entry | `ListEntry{ExtractorKey, ID, URL: permalink, Title, Timestamp, Thumbnail, Duration}` plus two new optional fields, `MediaKind` and `NSFW`. The key is the media key if the listing shows the media, else `redditpost <post id>`. Both providers show it for images, GIFs and videos; only Arctic Shift shows it for galleries ([§7.5](#75-duplicates-and-crossposts)). |
 | Not media | `text` posts are stored as ignored with the reason `no media`, like `not a video`. Link posts to a host on `externalHosts` become entries for their target ([§7.6](#76-links-to-other-sites)); other link posts are ignored with the reason `link to <host>`. |
 | Preview | A subreddit or user URL previews its newest 10 posts; a top URL (`/top/?t=week`) previews that top list and preselects a top source. A post URL switches to its subreddit, as a video URL switches to its channel (subscriptions decision 20). The preview names the provider that answered. |
-| Errors | The classes from [§5.4](#54-errors). Each provider sets the cooldown of its own site, and a provider whose site is in a cooldown is skipped. After the whole chain fails, the error of the first provider is recorded, with a hint that names all providers that were tried. |
+| Errors | The classes from [§5.4](#54-errors). Each provider has a cooldown of its own (keys `reddit-native` and `arctic-shift`), separate from the site key `reddit.com` of checks and jobs: a rate limit sets it as in [§5.4](#54-errors) and [§6](#6-arctic-shift-provider), a block pauses the provider for 30 minutes. A provider in a cooldown is skipped and reports the error that paused it. After the whole chain fails, the error of the first provider is recorded, with a hint that names all providers that were tried. |
 
 **Filters.** `store.Filters` gets `mediaKinds` (a subset of `image`, `gallery`, `video`, `gif`, `linked`; empty = all) and `nsfw` (`include`, `exclude` or `only`; default `include`). Both only use listing data and leave non-Reddit entries alone. As with all filters, entries that don't match are ignored with a reason such as `filter: video`.
 
@@ -251,6 +260,8 @@ flowchart TD
 1. **Fetch post.** The post is fetched again through the provider chain and written to `post.json` in the work dir. This replaces `info.json` for images; signed preview URLs and video processing state are thereby fresh. The same freshness rule as for `info.json` applies (`MetaMaxAge`).
 2. **Media key.** The item is re-keyed to the post's media key through the existing path in `attempt`: it takes the key lock for the new key, and an item whose key is already in the archive is skipped. A Reddit item also counts as already in the library if the media index knows the key ([§7.5](#75-duplicates-and-crossposts)). The key always comes from `post.json`, never from yt-dlp's metadata. yt-dlp's generic extractor names every manifest `DASHPlaylist`, so all Reddit videos would get the key `generic DASHPlaylist`, and every video after the first would be skipped as *already in library*.
 3. **Images and GIFs.** Download from `i.redd.it` to `media.part`, then rename to `media.<ext>`. The extension comes from the content ([§7.3](#73-verify)). A `.gif` stays a GIF; there is no conversion in this concept.
+   - `i.redd.it` serves a file only under the extension it was uploaded with: `.jpeg` and `.jpg` are different URLs. The URL keeps the extension from the post. Where only the MIME type is known (galleries without a preview), a 404 or 410 is tried once more with the other spelling before the image counts as removed.
+   - An `i.redd.it` URL without an extension is an image too; its type comes from the content.
 4. **Galleries.** Download each image that isn't already in the library ([§7.5](#75-duplicates-and-crossposts)) in gallery order to `media-NN.part`, verify it, and rename it to `media-NN.<ext>`. `NN` is the image's position in the gallery. Already verified files are kept and reused after a retry or crash (invariant 5).
    - An image that returns 404 or 410 is a warning ("2 of 14 images were removed").
    - If all images are gone, the item fails as `permanent`.
@@ -385,6 +396,7 @@ Many posts link to media elsewhere: YouTube videos, Redgifs clips, Imgur images 
 
 - **More hosts**: the user can add hosts (an exact host or `*.example.com`). A host without a known URL form gets the key `url <normalized URL>`, which the subscription system already uses for entries without an ID. After the metadata is fetched, the item is re-keyed to yt-dlp's key as usual. Adding a host also follows the link posts to it that earlier checks left out.
 - **Imgur still images** keep the post's URL as their entry URL: the Reddit pipeline fetches the post and downloads the image from `i.imgur.com` like a Reddit image (key `imgur <id>`, verify, levels 2 and 3, marker). A removed Imgur image (a redirect to `removed.png`) fails as removed.
+  - Unlike Reddit's image keys, `imgur <id>` is written to `.ytdlp-archive.txt`: it is the key yt-dlp itself writes for Imgur, so a tool that reads the file skips that ID, which is right because the server already has it.
 - **Keys**: the known keys are the ones yt-dlp writes (`<extractor key, lowercase> <id>`), and tests pin them against yt-dlp's URL patterns. A wrong guess costs nothing: the re-keying after fetch meta corrects it, and the key lock prevents a double download.
 - **Not followed**:
   - hosts not on the list;
@@ -516,7 +528,8 @@ The items run in the order of the list (rank 1 first), not oldest first as in su
 | Setting | Default | Range | Notes |
 |---|---|---|---|
 | `providers` | `["native", "arcticshift"]` | ordered subset of `native`, `arcticshift` | Global chain (R3, R5). The settings page says that Arctic Shift is a third-party service without guarantees that sees the subreddits and posts the server asks for. |
-| `nativeProfile` | `chrome` | `chrome`, `firefox`, `safari` | Browser identity of native (R4). Always the newest profile of that browser in the library. |
+| `nativeProfile` | `chrome` | `chrome`, `firefox`, `safari` | Browser identity of native (R4). Always the newest profile of that browser in the library. *Later*: `azuretls-client` brings a usable Chrome profile only, so native is always Chrome until a library with consistent Firefox and Safari profiles is usable. |
+| `solveChallenge` | `false` | – | Answer Reddit's JavaScript check in the sandbox of [§5.1](#51-requests). Off by default, because it runs code from Reddit on the server. |
 | `proxy` | `""` | `http://`, `https://` or `socks5://` URL | Route all Reddit and Arctic Shift requests and media downloads through this proxy, for example the home connection. Credentials in it are never logged. |
 | `externalHosts` | see [§7.6](#76-links-to-other-sites) | hosts or `*.domain` | Link posts to these hosts are downloaded |
 | `firstListing` | `100` | 25–1000 | Depth of the first listing and of a full rescan |
@@ -528,7 +541,7 @@ The items run in the order of the list (rank 1 first), not oldest first as in su
 | `duplicates.similarDistance` | `6` | 0–16 | Bits two dHashes may differ in to count as similar |
 | `gapFill` | `true` | – | Fill gaps from Arctic Shift if it is in the chain ([§7.7](#77-history-top-lists-and-gaps)) |
 | `backfillMax` | `5000` | 100–50000 | Posts per backfill or gap fill run |
-| `topDefault` | `10` | 1–1000 | N of a new top source |
+| `topDefault` | `10` | 1–1000 | N of a new top source. Comes with the top sources in R-6. |
 
 A subscription can override the chain (`provider`: `""` = global, `native`, `arcticshift`, `native,arcticshift`, `arcticshift,native`). A subscription's override is stored on its jobs with the other effective options (`redditProviders`), so a retry uses the same chain; jobs without an override use the global order at the time they run.
 
@@ -586,18 +599,18 @@ Items need no new columns.
 **Diagnostics: `reddit-probe`** (ships with R-2).
 
 ```bash
-ytdlp-nfo-server reddit-probe [--provider native|arcticshift|all] [--client browser|plain] [--proxy URL] [--limit N] [--fixtures DIR] [--quiet] <subreddit, user or post URL>
+ytdlp-nfo-server reddit-probe [--provider native|arcticshift|all] [--client browser|plain] [--proxy URL] [--limit N] [--fixtures DIR] [--quiet] [--solve] <subreddit, user or post URL>
 ```
 
 It runs the providers from the container's network and prints:
 - the HTTP status per request;
-- whether a block page, rate-limit page, login gate or NSFW overlay was detected;
+- whether a JavaScript check, block page, rate-limit page, login gate or NSFW overlay was detected;
 - the number of posts parsed and which attributes were found;
 - for the first image and video, whether `i.redd.it` and the `v.redd.it` manifest answer.
 
-`--client` compares the browser identity (`browser`, the default) with a plain `net/http` client (`plain`). This shows whether the disguise makes a difference from that network. The first real runs should include an NSFW community and an NSFW post page, to confirm that the posts are in the page behind the overlay ([§2](#2-access-situation)).
+`--solve` answers the JavaScript check as the setting `solveChallenge` does ([§5.1](#51-requests)). `--client` compares the browser identity (`browser`, the default) with a plain `net/http` client (`plain`). This shows whether the disguise makes a difference from that network. The first real runs should include an NSFW community and an NSFW post page, to confirm that the posts are in the page behind the overlay ([§2](#2-access-situation)).
 
-With `--fixtures`, it stores the pages and JSON responses with usernames and titles replaced, as fixtures for the parser tests. Until such real fixtures exist, the parser tests use hand-written pages built from the names in [§5.2](#52-parsing). It writes nothing else and needs no database. Run hourly for a few days with `--quiet` (one line per run), it shows how stable each provider is from that network. The exit code is 0 when every provider answered, 1 when one failed and 2 for wrong arguments. `--proxy` defaults to the environment variable `REDDIT_PROXY`.
+With `--fixtures`, it stores the pages and JSON responses with usernames, titles and the title part of every permalink (`/comments/<id>/x/`) replaced, as fixtures for the parser tests. Until such real fixtures exist, the parser tests use hand-written pages built from the names in [§5.2](#52-parsing). It writes nothing else and needs no database. Run hourly for a few days with `--quiet` (one line per run), it shows how stable each provider is from that network. The exit code is 0 when every provider answered and its media could be loaded, 1 when a provider or a media check failed and 2 for wrong arguments. `--proxy` defaults to the environment variable `REDDIT_PROXY`.
 
 **Automated tests** never touch the network:
 - a fake Reddit and a fake Arctic Shift (`httptest`) serve the fixtures (hand-written until real ones from `reddit-probe` exist), block pages, 429 responses and gates;
@@ -655,7 +668,16 @@ With `--fixtures`, it stores the pages and JSON responses with usernames and tit
 | A post URL pasted as a job | One Reddit item, 201 |
 | OPML with Reddit RSS feeds | One Reddit subscription per feed |
 | A post links to a private address or another host | Never fetched |
-| Arctic Shift 429 with `X-RateLimit-Reset` | Cooldown for the Arctic Shift site key, chain falls through |
+| Arctic Shift 429 with `X-RateLimit-Reset` | Cooldown of Arctic Shift (`arctic-shift`), chain falls through |
+| Arctic Shift 422 "Timeout. Maybe slow down a bit" | `rate_limited`, cooldown of Arctic Shift |
+| Native answers with the JavaScript check, `solveChallenge` off | `blocked` with the hint, cookie jar reset, native paused for 30 minutes; the check goes on through Arctic Shift, and later checks report the cause while native is paused |
+| The same with `solveChallenge` on | The check is answered once in the sandbox, and the page is read |
+| A check script that loops, grows memory, fetches, or submits to another host | Refused within the limits, `blocked` |
+| An image uploaded as `.jpeg` | Fetched under `.jpeg`, never under `.jpg`; stored with the extension of its content |
+| `removed_by_category = automod_filtered` | Not removed; the media decides |
+| A video post whose `v.redd.it` ID is only in `url_overridden_by_dest` or `dash_url` | Key `reddit <id>`, not `redditpost` |
+| `i.redd.it/<name>` without an extension | An image, downloaded |
+| A `v.redd.it` video that answers only an impersonating client | Downloaded on the first try with `--impersonate chrome` |
 
 ## 14. Decisions and open questions
 
@@ -664,7 +686,7 @@ Decided on 2026-10-28:
 | # | Topic | Decision | Where |
 |---|---|---|---|
 | 1 | Arctic Shift | **On by default**, as the fallback after native. The settings page says what Arctic Shift sees, and it can be switched off. | R5, [§9](#9-settings) |
-| 2 | How native presents itself | **As much like a browser as possible**: one consistent Chrome identity across TLS, HTTP/2, headers, navigation, cookies and timing. Not possible without JavaScript or another IP address, and therefore not done: JavaScript challenges and a different IP. The `proxy` setting covers the second. | R4, [§5.1](#51-requests) |
+| 2 | How native presents itself | **As much like a browser as possible**: one consistent Chrome identity across TLS, HTTP/2, headers, navigation, cookies and timing. Not possible without JavaScript or another IP address, and therefore not done: JavaScript challenges and a different IP. The `proxy` setting covers the second; decision 14 revisits the first. | R4, [§5.1](#51-requests) |
 | 3 | Images and a movie-only library | **Warn, don't block.** The add dialog says that Jellyfin's movie libraries don't show images. | [§8](#8-library-layout) |
 | 4 | NSFW | **Included by default.** Native reads NSFW posts through the blur and the 18+ dialog, like the browser extensions that remove them. Only content that Reddit withholds on the server goes through Arctic Shift. | [§2](#2-access-situation), [§5.4](#54-errors) |
 | 5 | Links to other sites | **Designed in [§7.6](#76-links-to-other-sites)** and built in phase R-5: an allowlist, the target's own key, metadata and site rules, and one job per target site. | R9 |
@@ -676,6 +698,14 @@ Decided on 2026-10-28:
 | 11 | Sort order of a pasted URL | **Kept** for one-off jobs; items run in the order of the list. | [§7.7](#77-history-top-lists-and-gaps) |
 | 12 | File dates | **Post time** as the modification time of every media file. | [§8](#8-library-layout) |
 | 13 | Probe before building | **No.** R-1 to R-3 are built first, against hand-written fixtures. The probe ships as the diagnostics command `reddit-probe`, and the reality check on the user's server follows R-3. | R10, [§15](#15-rollout) |
+
+Decided after the first reality check (2026-10-28):
+
+| # | Topic | Decision | Where |
+|---|---|---|---|
+| 14 | Reddit's JavaScript check | **Answer it in a sandbox, off by default** (`solveChallenge`): goja in a child process with time and memory limits, against a minimal stand-in for the browser, following only a GET form on Reddit's own host. Robust against changes to the computed value, but it runs code from Reddit on the server, and it doesn't help against real fingerprinting. | [§5.1](#51-requests), [§9](#9-settings) |
+| 15 | Provider cooldowns | **One key per provider** (`reddit-native`, `arctic-shift`), separate from `reddit.com`; a block pauses the provider for 30 minutes, rate limits use the server's reset time. | [§7.1](#71-subscriptions) |
+| 16 | `nativeProfile` | **Later.** Native is always Chrome until a library with consistent Firefox and Safari profiles is usable. `topDefault` comes with R-6. | [§9](#9-settings) |
 
 No questions are open.
 
@@ -689,4 +719,4 @@ No questions are open.
 | **R-4 Similar images** | Level 3 (dHash), settings, warning and link in the UI | Level 3 tests pass. On a real subreddit with known reposts, the warnings were checked by hand for false positives |
 | **R-5 Links** | [§7.6](#76-links-to-other-sites): allowlist and known URL forms, `linked` entries, one job per target site, Imgur still images, settings and filter | The link tests from [§13](#13-testing) pass. A subreddit with YouTube and Redgifs links downloads them as ordinary items of those sites, and videos already in the library are not downloaded again |
 | **R-6 History and top lists** | [§7.7](#77-history-top-lists-and-gaps): top sources, backfills (`top`, `range`, `rangeTop`) with counts, *Continue* and server-side filters, sort orders of one-off jobs, UI for *Load older…* | The history and top-list tests from [§13](#13-testing) pass. A real subreddit's top 100 of the year and its posts of one month land in the backlog and download through *Download backlog…*. Posts from before 2016 need R-5 |
-| Later | A real browser in a sidecar container if Reddit starts to require JavaScript challenges, perceptual hashes for videos, Imgur albums, score filters (once scores settle), a logged-in provider if one becomes necessary | – |
+| Later | A real browser in a sidecar container if Reddit starts to require more than the JavaScript check of [§5.1](#51-requests) (browser fingerprinting), `nativeProfile`, perceptual hashes for videos, Imgur albums, score filters (once scores settle), a logged-in provider if one becomes necessary | – |

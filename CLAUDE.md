@@ -49,7 +49,7 @@ Tests never touch the network: `internal/testutil/fakereddit` serves a fake Redd
 - `server/internal/library/` — naming (yt-dlp-compatible sanitizing), atomic finalize, archive file
 - `server/internal/scheduler/` — slots, queue bands, cooldowns, retry policy
 - `server/internal/subscriptions/` — subscription check loop, listing, diff (`Apply`), filters, canonical URLs
-- `server/internal/reddit/` — Reddit URLs, posts, provider chain; `native/`, `arcticshift/`, `browser/` (browser identity), `probe/` (`reddit-probe`)
+- `server/internal/reddit/` — Reddit URLs, posts, provider chain; `native/`, `arcticshift/`, `browser/` (browser identity), `jschallenge/` (answers Reddit's JavaScript check in goja, in a child process of the server binary: `main` and every test binary that runs it handle `jschallenge.ChildEnv` first), `probe/` (`reddit-probe`)
 - `server/internal/ytdlp/` — command lines, runner, progress parser, error classifier; `versions/` is the version manager
 - `server/internal/store/` — SQLite schema, migrations, jobs.json/archive import
 - `server/internal/nfo/` — NFO writer (golden files from the Python implementation in `testdata/`)

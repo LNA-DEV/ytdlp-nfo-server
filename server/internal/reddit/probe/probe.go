@@ -124,9 +124,9 @@ func Main(args []string, stdout io.Writer) int {
 	for _, p := range providers {
 		posts, perr := run(ctx, p, target, *limit)
 		resps := rec.take()
-		media := ""
+		media, mediaOK := "", true
 		if perr == nil {
-			media = checkMedia(ctx, c, posts)
+			media, mediaOK = checkMedia(ctx, c, posts)
 			rec.take()
 		}
 		if *fixtures != "" {
@@ -137,6 +137,9 @@ func Main(args []string, stdout io.Writer) int {
 		if perr != nil {
 			failed = true
 			summary = append(summary, fmt.Sprintf("%s=%s(%s)", p.Name(), perr.Class, perr.Reason))
+		} else if !mediaOK {
+			failed = true
+			summary = append(summary, fmt.Sprintf("%s=media(%d posts%s)", p.Name(), len(posts), media))
 		} else {
 			summary = append(summary, fmt.Sprintf("%s=ok(%d posts%s)", p.Name(), len(posts), media))
 		}
@@ -169,26 +172,33 @@ func run(ctx context.Context, p reddit.Provider, t reddit.Target, limit int) ([]
 	return page.Posts, nil
 }
 
-// checkMedia fetches the first image and the first video manifest.
-func checkMedia(ctx context.Context, c *browser.Client, posts []reddit.Post) string {
+// checkMedia fetches the first image and the first video manifest; ok is
+// false when one of them can't be loaded.
+func checkMedia(ctx context.Context, c *browser.Client, posts []reddit.Post) (summary string, ok bool) {
 	var out []string
-	img, vid := false, false
+	img, vid, ok := false, false, true
+	check := func(what string, r *browser.Response, err error) {
+		if err != nil || r.Status != 200 {
+			ok = false
+		}
+		out = append(out, what+" "+result(r, err))
+	}
 	for _, p := range posts {
 		switch {
 		case !img && (p.Kind == reddit.KindImage || p.Kind == reddit.KindGallery) && len(p.Media) > 0:
 			img = true
 			r, err := c.Download(ctx, p.Media[0].URL, "https://www.reddit.com/", io.Discard, 50<<20)
-			out = append(out, "image "+result(r, err))
+			check("image", r, err)
 		case !vid && p.Kind == reddit.KindVideo && p.VideoID != "":
 			vid = true
 			r, err := c.Download(ctx, reddit.ManifestURL(p.VideoID), "https://www.reddit.com/", io.Discard, 5<<20)
-			out = append(out, "video manifest "+result(r, err))
+			check("video manifest", r, err)
 		}
 	}
 	if len(out) == 0 {
-		return ""
+		return "", ok
 	}
-	return ", " + strings.Join(out, ", ")
+	return ", " + strings.Join(out, ", "), ok
 }
 
 func result(r *browser.Response, err error) string {
@@ -272,11 +282,14 @@ func report(w io.Writer, name, client string, resps []response, posts []reddit.P
 var (
 	htmlAttrs = regexp.MustCompile(`((?:author|post-title)=")[^"]*"`)
 	jsonAttrs = regexp.MustCompile(`("(?:author|title|selftext|author_fullname)"\s*:\s*")(?:[^"\\]|\\.)*"`)
+	// The title is also in every permalink, as its last part.
+	slugs = regexp.MustCompile(`((?:/|\\/)comments(?:/|\\/)[A-Za-z0-9]+(?:/|\\/))[^/"'\\?#&<>\s]+`)
 )
 
 // anonymize replaces user names, titles and texts; structure and IDs stay.
 func anonymize(b []byte) []byte {
 	b = htmlAttrs.ReplaceAll(b, []byte(`${1}x"`))
+	b = slugs.ReplaceAll(b, []byte(`${1}x`))
 	return jsonAttrs.ReplaceAll(b, []byte(`${1}x"`))
 }
 

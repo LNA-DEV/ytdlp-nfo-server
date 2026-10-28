@@ -20,13 +20,17 @@ import (
 )
 
 // redditMediaWorld is a world with a fake Reddit whose v.redd.it videos
-// are fake yt-dlp videos.
+// are fake yt-dlp videos. Like v.redd.it, they answer only a client that
+// impersonates a browser.
 func redditMediaWorld(t *testing.T, videos ...string) (*world, *fakereddit.Site) {
 	t.Helper()
 	site := fakereddit.NewSite(t)
 	sc := &scenario.Scenario{Videos: map[string]scenario.Video{}, Aliases: map[string]string{}}
 	for _, id := range videos {
-		sc.Videos[id] = vid(id, "Clip "+id)
+		v := vid(id, "Clip "+id)
+		v.Meta = []scenario.Behavior{{RequireImpersonate: true}}
+		v.Download = []scenario.Behavior{{RequireImpersonate: true}}
+		sc.Videos[id] = v
 		sc.Aliases[reddit.ManifestURL(id)] = scenario.VideoPrefix + id
 	}
 	w := newWorld(t, sc)
@@ -81,6 +85,9 @@ func TestRedditPostDownloads(t *testing.T) {
 	if its[0].ArchiveKey != "redditmedia img1" || its[0].FinalPath != "Lake [p1]" {
 		t.Fatalf("image item: %+v", its[0])
 	}
+	if l := w.log(j.ID); !strings.Contains(l, "Post p1 via native: image in r/pics") {
+		t.Fatalf("the log doesn't name the provider:\n%s", l)
+	}
 	if got := w.lib("Lake [p1]"); !slices.Equal(got, []string{library.MarkerName, "Lake [p1].png"}) {
 		t.Fatalf("image folder: %v", got)
 	}
@@ -108,8 +115,8 @@ func TestRedditPostDownloads(t *testing.T) {
 	}
 
 	j = w.download(postURL("pics", "p4"), config.OptionsRequest{})
-	if j.State != store.JobCompleted {
-		t.Fatalf("video: %s %s\n%s", j.State, j.Error, w.log(j.ID))
+	if l := w.log(j.ID); j.State != store.JobCompleted || strings.Contains(l, "Retrying with impersonation") {
+		t.Fatalf("video (the first try impersonates): %s %s\n%s", j.State, j.Error, l)
 	}
 	got := w.lib("Clip [p4]")
 	if !slices.Equal(got, []string{library.MarkerName, "Clip [p4].mkv", "folder.jpg", "movie.nfo"}) {

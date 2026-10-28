@@ -157,11 +157,13 @@ Paste a post, share link, subreddit or user URL as a download, or subscribe to a
 - **native** reads the pages Reddit shows a logged-out browser, with a browser's TLS and HTTP/2 fingerprint and headers; NSFW posts are read through the blur.
 - **Arctic Shift** is a third-party archive (no guarantees; it sees which subreddits and posts the server asks for). It answers when native is blocked and fills gaps when more posts appeared between two checks than native can list.
 
+Reddit sometimes shows a JavaScript check instead of the page, especially to VPN and datacenter addresses. Native then pauses for 30 minutes and Arctic Shift answers. **Answer Reddit's JavaScript check** (off by default) runs the check's script in a sandbox: an embedded JavaScript engine in a child process, without network or file access, with time and memory limits. It still runs code from Reddit on your server, and Reddit's terms don't allow automated access.
+
 Link posts to YouTube, Redgifs, Streamable and Imgur (more sites in **Settings → Reddit**) are downloaded from the site they link to, in a job of their own with that site's rule, and a video already in the library is not downloaded again; other link posts are left out.
 
 Images keep their type (`.jpg`, `.png`, `.gif`, …) and are checked by their content; galleries become `Title [id] - 01.jpg`, `- 02.jpg`, … in one folder; videos get `movie.nfo` and `folder.jpg` like any video. Every file gets the post time as its date. A hidden `.ytdlp-nfo.json` in each folder lists the files, so a re-download replaces the folder and **Archive → Check library** finds image folders. Crossposts, posts already in the library under another subscription and identical re-uploads are skipped; a gallery that partly exists stores only its new images. Resized or recompressed reposts get a warning ("Looks like …") or, if you choose, are skipped as well. Use a Jellyfin library of the type *Home videos and photos*: movie libraries don't show images.
 
-`ytdlp-nfo-server reddit-probe <subreddit or post URL>` shows what each provider gets from your network (statuses, block pages, parsed posts, media reachability); `--fixtures DIR` saves the pages anonymized for bug reports. See [`docs/reddit-concept.md`](docs/reddit-concept.md).
+`ytdlp-nfo-server reddit-probe <subreddit or post URL>` shows what each provider gets from your network (statuses, JavaScript checks, block pages, parsed posts, media reachability); `--solve` answers the JavaScript check like the setting, and `--fixtures DIR` saves the pages anonymized for bug reports. See [`docs/reddit-concept.md`](docs/reddit-concept.md).
 
 ### Browser add-on
 

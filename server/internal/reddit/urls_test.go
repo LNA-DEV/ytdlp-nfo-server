@@ -119,3 +119,14 @@ func TestImageExtensionsAreKept(t *testing.T) {
 		}
 	}
 }
+
+// An i.redd.it file without an extension is an image; its type comes from
+// the download.
+func TestImageWithoutExtension(t *testing.T) {
+	p := Post{ID: "p1"}
+	p.Classify("https://i.redd.it/9f0c2e7a-55d1-4c3b-8e2f-1a2b3c4d5e6f", "")
+	if p.Kind != KindImage || p.Media[0].URL != "https://i.redd.it/9f0c2e7a-55d1-4c3b-8e2f-1a2b3c4d5e6f" ||
+		p.MediaKey() != "redditmedia 9f0c2e7a-55d1-4c3b-8e2f-1a2b3c4d5e6f" {
+		t.Fatalf("%+v %s", p, p.MediaKey())
+	}
+}

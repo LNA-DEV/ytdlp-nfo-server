@@ -139,8 +139,9 @@ func GalleryHash(media []Media) string {
 func ImageMediaKey(mediaID string) string { return "redditmedia " + mediaID }
 
 var (
-	vreddRe = regexp.MustCompile(`(?i)^https?://v\.redd\.it/([a-z0-9]+)`)
-	ireddRe = regexp.MustCompile(`(?i)^https?://(?:i|preview)\.redd\.it/([a-z0-9_-]+)\.([a-z0-9]+)`)
+	mediaNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{4,64}$`)
+	vreddRe     = regexp.MustCompile(`(?i)^https?://v\.redd\.it/([a-z0-9]+)`)
+	ireddRe     = regexp.MustCompile(`(?i)^https?://(?:i|preview)\.redd\.it/([a-z0-9_-]+)\.([a-z0-9]+)`)
 )
 
 // VideoIDFromURL returns the v.redd.it id of a URL, or "".
@@ -224,6 +225,12 @@ func (p *Post) Classify(content, hint string) {
 			return
 		}
 		host := strings.ToLower(u.Hostname())
+		if name := strings.Trim(u.Path, "/"); host == "i.redd.it" && mediaNameRe.MatchString(name) {
+			// An i.redd.it file without an extension: the type comes from
+			// its content when it is downloaded.
+			p.Kind, p.Media = KindImage, []Media{{URL: "https://i.redd.it/" + name, MediaID: name}}
+			return
+		}
 		switch {
 		case IsRedditHost(host) && (strings.Contains(u.Path, "/gallery/") || hint == "gallery" || hint == "multi_media"):
 			p.Kind = KindGallery

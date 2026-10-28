@@ -40,6 +40,8 @@ type Post struct {
 	// NoPreview leaves the preview URLs out of a gallery's Arctic Shift
 	// metadata, so only the MIME type hints at the extension.
 	NoPreview bool
+	// Slug is the title part of the permalink (default "post").
+	Slug string
 }
 
 // Site serves the same posts through native pages, the Arctic Shift API
@@ -69,6 +71,7 @@ func NewSite(t testing.TB) *Site {
 	s.Handle("arctic-shift.photon-reddit.com", s.arctic)
 	s.Handle("i.redd.it", s.media)
 	s.Handle("i.imgur.com", s.media)
+	s.Handle("v.redd.it", s.video)
 	return s
 }
 
@@ -269,7 +272,13 @@ func contentHref(p *Post) string {
 	return permalink(p)
 }
 
-func permalink(p *Post) string { return "/r/" + p.Subreddit + "/comments/" + p.ID + "/post/" }
+func permalink(p *Post) string {
+	slug := p.Slug
+	if slug == "" {
+		slug = "post"
+	}
+	return "/r/" + p.Subreddit + "/comments/" + p.ID + "/" + slug + "/"
+}
 
 func postHTML(p *Post, full bool) string {
 	var b strings.Builder
@@ -443,6 +452,30 @@ func (s *Site) arctic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"data": out})
+}
+
+// video answers the manifests of the site's v.redd.it videos.
+func (s *Site) video(w http.ResponseWriter, r *http.Request) {
+	id, file, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	s.mu.Lock()
+	known := false
+	for _, p := range s.byID {
+		known = known || p.Kind == "video" && len(p.Media) > 0 && p.Media[0] == id && !p.Removed && !s.gone[id]
+	}
+	s.mu.Unlock()
+	switch {
+	case !known:
+		http.Error(w, "Not Found", http.StatusNotFound)
+	case file == "DASHPlaylist.mpd":
+		w.Header().Set("Content-Type", "application/dash+xml")
+		fmt.Fprintf(w, `<?xml version="1.0"?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period><AdaptationSet>`+
+			`<Representation id="%s" bandwidth="1000"><BaseURL>DASH_720.mp4</BaseURL></Representation></AdaptationSet></Period></MPD>`, id)
+	case file == "HLSPlaylist.m3u8":
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		fmt.Fprint(w, "#EXTM3U\n")
+	default:
+		http.Error(w, "Not Found", http.StatusNotFound)
+	}
 }
 
 func (s *Site) media(w http.ResponseWriter, r *http.Request) {

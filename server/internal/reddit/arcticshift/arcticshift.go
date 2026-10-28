@@ -90,6 +90,13 @@ func (p *Provider) get(ctx context.Context, path string, q url.Values) ([]apiPos
 			e.RetryAfter = time.Duration(n) * time.Second
 		}
 		return nil, e
+	case resp.Status == 422 || strings.Contains(strings.ToLower(r.Error), "slow down"):
+		// "Timeout. Maybe slow down a bit": the API is overloaded by us.
+		e := &reddit.Error{Class: ytdlp.ClassRateLimited, Reason: "Arctic Shift asks to slow down: " + r.Error}
+		if n, err := strconv.Atoi(resp.Header.Get("X-RateLimit-Reset")); err == nil && n > 0 {
+			e.RetryAfter = time.Duration(n) * time.Second
+		}
+		return nil, e
 	case strings.Contains(strings.ToLower(r.Error), "timed out"):
 		return nil, &reddit.Error{Class: ytdlp.ClassTransient, Reason: "Arctic Shift: query timed out"}
 	case resp.Status >= 500:
@@ -226,6 +233,8 @@ type galleryData struct {
 type mediaObj struct {
 	RedditVideo *struct {
 		FallbackURL string     `json:"fallback_url"`
+		DashURL     string     `json:"dash_url"`
+		HLSURL      string     `json:"hls_url"`
 		Duration    flexNumber `json:"duration"`
 	} `json:"reddit_video"`
 }
@@ -290,7 +299,7 @@ func (a *apiPost) post() reddit.Post {
 	} else {
 		p.Permalink = reddit.PostURL(a.Subreddit, p.ID)
 	}
-	p.Removed = a.RemovedByCategory != nil || a.Selftext == "[removed]" || a.Selftext == "[deleted]"
+	p.Removed = removed(a)
 	src := a
 	if len(a.CrosspostParentList) > 0 {
 		src = &a.CrosspostParentList[0]
@@ -332,9 +341,6 @@ func (a *apiPost) post() reddit.Post {
 		}
 	case src.IsVideo || src.redditVideo() != "":
 		vid := src.redditVideo()
-		if vid == "" {
-			vid = reddit.VideoIDFromURL(src.URL)
-		}
 		p.Kind, p.VideoID = reddit.KindVideo, vid
 		if vid != "" {
 			p.Media = []reddit.Media{{URL: "https://v.redd.it/" + vid, MediaID: vid}}
@@ -360,12 +366,36 @@ func (a *apiPost) post() reddit.Post {
 	return p
 }
 
+// removed reports whether a post's media was taken down. Posts filtered
+// by AutoModerator are often approved later and keep their media, as do
+// categories we don't know: the download decides for them.
+func removed(a *apiPost) bool {
+	if a.RemovedByCategory != nil {
+		switch *a.RemovedByCategory {
+		case "deleted", "author", "moderator", "reddit", "anti_evil_ops", "community_ops", "copyright_takedown",
+			"content_takedown", "legal":
+			return true
+		}
+		return false
+	}
+	return a.Selftext == "[removed]" || a.Selftext == "[deleted]"
+}
+
+// redditVideo returns the v.redd.it id of a video post from whichever of
+// its fields has it: the media objects, the post's URL or its destination.
 func (a *apiPost) redditVideo() string {
 	for _, m := range []*mediaObj{a.SecureMedia, a.Media} {
 		if m != nil && m.RedditVideo != nil {
-			if id := reddit.VideoIDFromURL(m.RedditVideo.FallbackURL); id != "" {
-				return id
+			for _, u := range []string{m.RedditVideo.FallbackURL, m.RedditVideo.DashURL, m.RedditVideo.HLSURL} {
+				if id := reddit.VideoIDFromURL(u); id != "" {
+					return id
+				}
 			}
+		}
+	}
+	for _, u := range []string{a.URLOverridden, a.URL} {
+		if id := reddit.VideoIDFromURL(u); id != "" {
+			return id
 		}
 	}
 	return ""
