@@ -24,6 +24,15 @@ type SourceResult struct {
 	Impersonated bool // listed with escalated impersonation
 	Nightly      bool // listed with the latest nightly
 	Output       []string
+	Provider     string // the Reddit provider that answered
+	// Gap: the listing reached its limit without a known entry (Reddit
+	// concept §7.7). GapFilled: the posts in between were listed by time;
+	// GapLeft < 0: the fill stopped at its limit.
+	Gap        bool
+	GapFilled  bool
+	GapLeft    int
+	GapListed  int
+	GapSuggest time.Duration
 }
 
 // Result is the outcome of the listing phase of a check.
@@ -159,6 +168,14 @@ func classRank(c ytdlp.Class) int {
 
 // Hint returns the hint shown with a check error.
 func Hint(c ytdlp.Classification) string {
+	switch c.Hint {
+	case "", ytdlp.HintPermanent, ytdlp.HintAuthRequired, ytdlp.HintBlocked, ytdlp.HintExtractorBroken,
+		ytdlp.HintRateLimited, ytdlp.HintCrash:
+	default:
+		if c.Class != ytdlp.ClassUnknown && c.Class != ytdlp.ClassTransient {
+			return c.Hint // a specific hint, e.g. from a Reddit provider
+		}
+	}
 	switch c.Class {
 	case ytdlp.ClassPermanent:
 		if c.Hint != "" && c.Hint != ytdlp.HintPermanent {
@@ -307,15 +324,29 @@ func Apply(in Input) *Output {
 			}
 			date, sortTime := listingDate(le)
 			e := byKey[key]
+			if e == nil && le.AltKey != "" {
+				e = byKey[le.AltKey]
+			}
 			if e == nil {
 				e = &store.Entry{SubscriptionID: sub.ID, Key: key, URL: le.URL, SourceID: src.ID, Position: pos,
 					Backlog: first, FirstSeenAt: now, LastSeenAt: now, SortDate: now}
+				if le.AltKey != "" && le.AltKey != key {
+					// Another provider may list it under this key (Reddit
+					// concept §7.5).
+					e.ListingKey = le.AltKey
+					byKey[le.AltKey] = e
+				}
 				if sortTime.IsZero() {
 					// Unknown dates keep the listing order.
 					e.SortDate = undatedSort(now, pos, len(entries), src.NewestFirst)
 				}
-				if le.Nested {
+				switch {
+				case le.Nested:
 					e.Ignored, e.IgnoreReason = true, ReasonNotAVideo
+				case le.MediaKind == "text":
+					e.Ignored, e.IgnoreReason = true, ReasonNoMedia
+				case le.MediaKind == "link":
+					e.Ignored, e.IgnoreReason = true, ReasonLinkPrefix+linkHost(le.Link)
 				}
 				byKey[key] = e
 				inserted[e] = true
@@ -362,6 +393,10 @@ func Apply(in Input) *Output {
 				e.Thumbnail = le.Thumbnail
 			}
 			e.LiveStatus, e.Availability = le.LiveStatus, le.Availability
+			if le.MediaKind != "" {
+				e.MediaKind = le.MediaKind
+			}
+			e.NSFW = e.NSFW || le.NSFW
 		}
 		// Where new entries appeared in a complete listing confirms the
 		// order of a source whose listing has no dates.
@@ -386,7 +421,9 @@ func Apply(in Input) *Output {
 			src.FirstOKAt = now
 		}
 		src.LastOKAt = now
-		if r.Complete {
+		// A listing without a window went as deep as the lister goes, even
+		// where that isn't complete (Reddit, R8).
+		if r.Complete || r.Window == 0 {
 			src.LastFullAt = now
 		}
 		if r.Impersonated {
@@ -464,6 +501,17 @@ func Apply(in Input) *Output {
 			}
 			out.Auto = cands
 		}
+	}
+	// Gaps are reported until a check without one (Reddit concept §7.7);
+	// a cap warning takes precedence.
+	if g := gapOf(in.Result); g != nil {
+		if !IsCapWarning(sub.Warning) {
+			sub.Warning = GapWarning(g.GapListed, g.GapFilled, g.GapLeft, g.GapSuggest)
+		}
+	} else if IsGapWarning(sub.Warning) && ok > 0 {
+		sub.Warning = ""
+	}
+	if auto {
 		// Upcoming entries that became available, and the classifier path
 		// ("not available yet" without live_status), each get a new
 		// one-item job: the only queueing after discovery (S3).

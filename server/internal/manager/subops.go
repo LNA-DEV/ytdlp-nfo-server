@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,10 +14,12 @@ import (
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/library"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/subscriptions"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp/versions"
 )
 
 // ErrUnprocessable is returned when a URL cannot be subscribed to (a video
@@ -75,6 +78,7 @@ type SubscriptionView struct {
 	EffectiveInterval int                   `json:"effectiveIntervalMinutes"`
 	Listing           string                `json:"listing"`
 	Notify            bool                  `json:"notify"`
+	Provider          string                `json:"provider,omitempty"` // Reddit provider chain override
 	State             string                `json:"state"`
 	Failures          int                   `json:"failures"`
 	Error             string                `json:"error,omitempty"`
@@ -98,7 +102,7 @@ func (m *Manager) subView(sub *store.Subscription, all []*store.Subscription) Su
 		Uploader: sub.Uploader, Thumbnail: sub.Thumbnail, Mode: sub.Mode, Enabled: sub.Enabled, Backlog: sub.Backlog,
 		Filters: sub.Filters, Options: sub.Requested, Library: lib, IntervalMinutes: sub.IntervalMinutes,
 		EffectiveInterval: int(subscriptions.Interval(sub, settings.Subscriptions) / time.Minute), Listing: sub.Listing,
-		Notify: sub.Notify, State: sub.State, Failures: sub.Failures, Error: sub.Error, ErrorClass: sub.ErrorClass,
+		Notify: sub.Notify, Provider: sub.Provider, State: sub.State, Failures: sub.Failures, Error: sub.Error, ErrorClass: sub.ErrorClass,
 		Hint: sub.Hint, Warning: sub.Warning, LastCheckAt: tptr(sub.LastCheckAt), LastOKAt: tptr(sub.LastOKAt),
 		NextCheckAt: tptr(sub.NextCheckAt), CreatedAt: sub.CreatedAt, Sources: []SourceView{}, Counts: m.subCounts(sub.ID),
 	}
@@ -151,6 +155,8 @@ type EntryView struct {
 	Thumbnail      string     `json:"thumbnail,omitempty"`
 	LiveStatus     string     `json:"liveStatus,omitempty"`
 	Availability   string     `json:"availability,omitempty"`
+	MediaKind      string     `json:"mediaKind,omitempty"` // Reddit
+	NSFW           bool       `json:"nsfw,omitempty"`
 	SourceID       string     `json:"sourceId,omitempty"`
 	Backlog        bool       `json:"backlog"`
 	FirstSeenAt    time.Time  `json:"firstSeenAt"`
@@ -168,7 +174,8 @@ type EntryView struct {
 func entryView(e *store.Entry, names map[int64]string) EntryView {
 	v := EntryView{ID: itoa(e.ID), SubscriptionID: itoa(e.SubscriptionID), Subscription: names[e.SubscriptionID],
 		Key: e.Key, URL: e.URL, Title: e.Title, Duration: e.Duration, UploadDate: e.UploadDate, SortDate: e.SortDate,
-		Thumbnail: e.Thumbnail, LiveStatus: e.LiveStatus, Availability: e.Availability, Backlog: e.Backlog,
+		Thumbnail: e.Thumbnail, LiveStatus: e.LiveStatus, Availability: e.Availability, MediaKind: e.MediaKind, NSFW: e.NSFW,
+		Backlog:     e.Backlog,
 		FirstSeenAt: e.FirstSeenAt, GoneAt: tptr(e.GoneAt), Ignored: e.Ignored, IgnoreReason: e.IgnoreReason,
 		Status: e.Status, ItemState: string(e.ItemState)}
 	if e.SourceID != 0 {
@@ -289,7 +296,10 @@ type SubscriptionInput struct {
 	IntervalMinutes *int                   `json:"intervalMinutes,omitempty"`
 	Listing         *string                `json:"listing,omitempty"`
 	Notify          *bool                  `json:"notify,omitempty"`
-	DismissWarning  bool                   `json:"dismissWarning,omitempty"`
+	// Provider overrides the Reddit provider chain: "" (global),
+	// "native", "arcticshift" or both joined by a comma.
+	Provider       *string `json:"provider,omitempty"`
+	DismissWarning bool    `json:"dismissWarning,omitempty"`
 }
 
 func invalid(format string, args ...any) error {
@@ -324,7 +334,7 @@ func sourcesFromInput(in []SourceInput) ([]*store.Source, error) {
 			return nil, invalid("source %q is listed twice", s.URL)
 		}
 		seen[canon] = true
-		out = append(out, &store.Source{URL: u, Canonical: canon, Tab: tab})
+		out = append(out, subscriptions.NewSource(u, canon, tab))
 	}
 	return out, nil
 }
@@ -336,6 +346,15 @@ func (m *Manager) applyInput(ctx context.Context, sub *store.Subscription, in Su
 	}
 	if sub.Name == "" || len(sub.Name) > 200 {
 		return false, false, invalid("name is required (at most 200 characters)")
+	}
+	if in.Provider != nil {
+		p := strings.ReplaceAll(strings.TrimSpace(*in.Provider), " ", "")
+		if p != "" {
+			if err := config.ValidateRedditChain(strings.Split(p, ",")); err != nil {
+				return false, false, invalid("%v", err)
+			}
+		}
+		sub.Provider = p
 	}
 	if in.Folder != nil {
 		sub.Folder = strings.TrimSpace(*in.Folder)
@@ -372,7 +391,7 @@ func (m *Manager) applyInput(ctx context.Context, sub *store.Subscription, in Su
 		if _, err := subscriptions.CompileFilters(*in.Filters); err != nil {
 			return false, false, invalid("filters: %v", err)
 		}
-		filtersChanged = *in.Filters != sub.Filters
+		filtersChanged = !reflect.DeepEqual(*in.Filters, sub.Filters)
 		sub.Filters = *in.Filters
 	}
 	if in.Options != nil {
@@ -438,6 +457,26 @@ func (m *Manager) CreateSubscription(ctx context.Context, in SubscriptionInput) 
 	}
 	sub := &store.Subscription{Mode: store.ModeManual, Enabled: true, Listing: store.ListingAuto, Sources: srcs,
 		NextCheckAt: time.Now()}
+	if t, ok := reddit.Parse(srcs[0].URL); ok && t.IsListing() {
+		// Reddit defaults (§7.1): r/<name> as entered, a folder without
+		// the slash, and the library marked for Reddit.
+		if in.Name == nil || strings.TrimSpace(*in.Name) == "" {
+			name := t.Name()
+			in.Name = &name
+		}
+		if in.Folder == nil || strings.TrimSpace(*in.Folder) == "" {
+			folder := subscriptions.FolderFromName(*in.Name)
+			in.Folder = &folder
+		}
+		if lib := m.Settings.Settings().Reddit.DefaultLibrary; lib != "" && (in.Options == nil || in.Options.Library == nil) {
+			opts := config.OptionsRequest{}
+			if in.Options != nil {
+				opts = *in.Options
+			}
+			opts.Library = &lib
+			in.Options = &opts
+		}
+	}
 	if in.Name == nil || strings.TrimSpace(*in.Name) == "" {
 		name := srcs[0].URL
 		in.Name = &name
@@ -869,6 +908,9 @@ type Preview struct {
 	Entries      []PreviewEntry  `json:"entries"`
 	InLibrary    int             `json:"inLibrary"`
 	Sources      []PreviewSource `json:"sources"`
+	Folder       string          `json:"folder,omitempty"`  // suggested folder (Reddit: the name without "r/")
+	Site         string          `json:"site,omitempty"`    // "reddit" for Reddit listings
+	Library      string          `json:"library,omitempty"` // suggested library
 }
 
 // PreviewError carries a classified listing failure.
@@ -889,9 +931,14 @@ func (m *Manager) PreviewSubscription(ctx context.Context, raw string) (*Preview
 	if err != nil {
 		return nil, invalid("%v", err)
 	}
-	bin, release, err := m.resolver.Acquire(ctx, opts.YtdlpVersion)
-	if err != nil {
-		return nil, err
+	_, isReddit := reddit.Parse(raw)
+	var bin versions.Binary
+	release := func() {}
+	if !isReddit { // Reddit listings need no yt-dlp
+		bin, release, err = m.resolver.Acquire(ctx, opts.YtdlpVersion)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer release()
 	call := ytdlp.CallOptions{Impersonate: opts.Impersonate, SleepRequests: opts.SleepRequests,
@@ -983,6 +1030,9 @@ func (m *Manager) PreviewSubscription(ctx context.Context, raw string) (*Preview
 	var canons []string
 	for _, s := range p.Sources {
 		canons = append(canons, s.Canonical)
+	}
+	if t, ok := reddit.Parse(target); ok && t.IsListing() {
+		p.Site, p.Folder, p.Library = "reddit", subscriptions.FolderFromName(p.Name), settings.Reddit.DefaultLibrary
 	}
 	existing, err := m.Store.SourcesByCanonical(ctx, canons)
 	if err != nil {

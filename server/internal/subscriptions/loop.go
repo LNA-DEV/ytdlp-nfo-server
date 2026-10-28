@@ -239,7 +239,20 @@ func (l *Loop) check(ctx context.Context, sub *store.Subscription, opts config.O
 		return
 	}
 	settings := l.d.Host.Settings()
-	bin, release, err := l.d.Host.Acquire(ctx, opts.YtdlpVersion)
+	// Reddit sources don't list with yt-dlp; a check of only those needs
+	// no yt-dlp build.
+	needYtdlp := false
+	for _, src := range sub.Sources {
+		if _, ok := l.d.ListerFor(src.Canonical).(YtdlpLister); ok {
+			needYtdlp = true
+		}
+	}
+	var bin versions.Binary
+	release := func() {}
+	var err error
+	if needYtdlp {
+		bin, release, err = l.d.Host.Acquire(ctx, opts.YtdlpVersion)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			l.abort(sub.ID)
@@ -255,7 +268,9 @@ func (l *Loop) check(ctx context.Context, sub *store.Subscription, opts config.O
 	}
 	defer release()
 	res.Ytdlp = bin.ID
-	log.Printf("yt-dlp %s (%s)", bin.Version, bin.ID)
+	if needYtdlp {
+		log.Printf("yt-dlp %s (%s)", bin.Version, bin.ID)
+	}
 
 	call := ytdlp.CallOptions{Impersonate: opts.Impersonate, SleepRequests: opts.SleepRequests, CacheDir: l.d.CacheDir}
 	if opts.CookieProfile != "" {
@@ -368,35 +383,53 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 			desc += ", impersonating"
 		}
 		log.Printf("Listing %s (%s)", src.Canonical, desc)
-		res, cls := l.d.ListerFor(src.Canonical).List(ctx, ListRequest{URL: src.Canonical, Tab: src.Tab,
-			Window: window, Timeout: timeout, Bin: bin, Call: call})
+		lister := l.d.ListerFor(src.Canonical)
+		req := ListRequest{URL: src.Canonical, Tab: src.Tab, Window: window, Timeout: timeout, Bin: bin, Call: call,
+			Providers: sub.Provider}
+		res, cls := lister.List(ctx, req)
 		if ctx.Err() != nil {
 			return r
 		}
-		if cls != nil {
-			for _, line := range tail(res.Output, 20) {
+		_, viaYtdlp := lister.(YtdlpLister)
+		if !viaYtdlp {
+			// A Reddit chain's lines are short: always in the log.
+			for _, line := range res.Output {
 				log.Line("  " + line)
+			}
+		}
+		if cls != nil {
+			if viaYtdlp {
+				for _, line := range tail(res.Output, 20) {
+					log.Line("  " + line)
+				}
 			}
 			log.Printf("--- Failed (%s: %s) ---", cls.Class, cls.Reason)
 			r.Err, r.Output = cls, res.Output
 			return r
 		}
 		listing := res.Listing
-		r.Listing = listing
+		r.Listing, r.Provider = listing, res.Provider
+		via := ""
+		if res.Provider != "" {
+			via = " via " + res.Provider
+		}
 		if res.Complete {
 			r.Complete = true
-			log.Printf("Listed %d entries", len(listing.Entries))
+			log.Printf("Listed %d entries%s", len(listing.Entries), via)
 			return r
 		}
 		gap := true
 		for _, e := range listing.Entries {
-			if known[EntryKey(e)] {
+			if known[EntryKey(e)] || e.AltKey != "" && known[e.AltKey] {
 				gap = false
 				break
 			}
 		}
 		if !gap || res.Exhausted {
-			log.Printf("Listed %d entries", len(listing.Entries))
+			log.Printf("Listed %d entries%s", len(listing.Entries), via)
+			if gap && res.Truncated && !src.LastOKAt.IsZero() {
+				l.fillGap(ctx, lister, req, src, &r, log)
+			}
 			return r
 		}
 		window *= 2
@@ -405,6 +438,56 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 		}
 		log.Printf("No known entry among them: more than %d new videos, listing more", len(listing.Entries))
 	}
+}
+
+// fillGap handles a listing that reached its limit without a known entry:
+// more posts appeared since the last check than the lister can list. The
+// posts in between are listed by time where the lister can (Reddit
+// concept §7.7); the subscription is warned either way.
+func (l *Loop) fillGap(ctx context.Context, lister Lister, req ListRequest, src *store.Source, r *SourceResult, log *joblog.Log) {
+	listing := r.Listing
+	r.Gap, r.GapListed, r.GapSuggest = true, len(listing.Entries), suggestInterval(listing)
+	log.Printf("No known entry among the newest %d: posts since the last check may be missing", len(listing.Entries))
+	gf, ok := lister.(GapFiller)
+	if !ok {
+		return
+	}
+	var oldest int64
+	for _, e := range listing.Entries {
+		if e.Timestamp > 0 && (oldest == 0 || e.Timestamp < oldest) {
+			oldest = e.Timestamp
+		}
+	}
+	if oldest == 0 {
+		return
+	}
+	after, before := src.LastOKAt.Add(-time.Hour), time.Unix(oldest, 0)
+	req.Timeout = FullTimeout
+	res, cls := gf.FillGap(ctx, req, after, before)
+	for _, line := range res.Output {
+		log.Line("  " + line)
+	}
+	if cls != nil {
+		log.Printf("Gap not filled (%s: %s)", cls.Class, cls.Reason)
+		return
+	}
+	have := map[string]bool{}
+	for _, e := range listing.Entries {
+		have[EntryKey(e)] = true
+	}
+	added := 0
+	for _, e := range res.Listing.Entries {
+		if k := EntryKey(e); k != "" && !have[k] {
+			have[k] = true
+			listing.Entries = append(listing.Entries, e)
+			added++
+		}
+	}
+	r.GapFilled = !res.Truncated
+	if res.Truncated {
+		r.GapLeft = -1
+	}
+	log.Printf("Gap filled with %d posts via %s%s", added, res.Provider, map[bool]string{true: " (stopped at the limit)"}[res.Truncated])
 }
 
 func tail(lines []string, n int) []string {

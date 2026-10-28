@@ -291,6 +291,13 @@ UPDATE subscription_sources SET newest_first = 1, order_known = 1 WHERE tab != '
 	`
 ALTER TABLE subscriptions ADD COLUMN full_requested INTEGER NOT NULL DEFAULT 0;
 `,
+	// 6: Reddit sources: the provider chain of a subscription, the media
+	// kind and NSFW flag of an entry (Reddit concept §9)
+	`
+ALTER TABLE subscriptions ADD COLUMN provider TEXT NOT NULL DEFAULT '';
+ALTER TABLE subscription_entries ADD COLUMN media_kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE subscription_entries ADD COLUMN nsfw INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

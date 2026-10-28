@@ -1,0 +1,98 @@
+package config
+
+import (
+	"fmt"
+	"net/url"
+	"slices"
+)
+
+// Reddit providers (Reddit concept §5, §6).
+const (
+	RedditNative      = "native"
+	RedditArcticShift = "arcticshift"
+)
+
+// RedditSettings are the global Reddit values (Reddit concept §9).
+type RedditSettings struct {
+	// Providers is the global chain, in order (R3). Arctic Shift is a
+	// third-party service that sees what the server asks for (R5).
+	Providers []string `json:"providers"`
+	// Proxy routes Reddit and Arctic Shift requests and media downloads
+	// (http://, https:// or socks5://).
+	Proxy            string `json:"proxy"`
+	FirstListing     int    `json:"firstListing"`     // depth of a first listing and a full rescan
+	JobListLimit     int    `json:"jobListLimit"`     // posts of a pasted subreddit URL
+	PageDelaySeconds int    `json:"pageDelaySeconds"` // between two native pages (±jitter)
+	DefaultLibrary   string `json:"defaultLibrary"`   // preselected for new Reddit subscriptions
+	GapFill          bool   `json:"gapFill"`          // fill gaps from Arctic Shift (§7.7)
+	BackfillMax      int    `json:"backfillMax"`      // posts per gap fill or backfill run
+}
+
+// DefaultRedditSettings returns the documented defaults.
+func DefaultRedditSettings() RedditSettings {
+	return RedditSettings{Providers: []string{RedditNative, RedditArcticShift}, FirstListing: 100, JobListLimit: 25,
+		PageDelaySeconds: 2, GapFill: true, BackfillMax: 5000}
+}
+
+// normalize fills settings stored before Reddit support existed.
+func (r *RedditSettings) normalize() {
+	d := DefaultRedditSettings()
+	if r.Providers == nil {
+		*r = d
+		return
+	}
+	for _, f := range []struct{ v, d *int }{
+		{&r.FirstListing, &d.FirstListing}, {&r.JobListLimit, &d.JobListLimit},
+		{&r.PageDelaySeconds, &d.PageDelaySeconds}, {&r.BackfillMax, &d.BackfillMax},
+	} {
+		if *f.v <= 0 {
+			*f.v = *f.d
+		}
+	}
+}
+
+// ValidRedditProvider reports whether p is a provider name.
+func ValidRedditProvider(p string) bool { return p == RedditNative || p == RedditArcticShift }
+
+// ValidateRedditChain checks an ordered provider list.
+func ValidateRedditChain(ps []string) error {
+	for i, p := range ps {
+		if !ValidRedditProvider(p) {
+			return fmt.Errorf("unknown Reddit provider %q", p)
+		}
+		if slices.Contains(ps[:i], p) {
+			return fmt.Errorf("Reddit provider %q listed twice", p)
+		}
+	}
+	return nil
+}
+
+// Validate checks the ranges of §9.
+func (r RedditSettings) Validate(libraries map[string]bool) error {
+	if err := ValidateRedditChain(r.Providers); err != nil {
+		return err
+	}
+	if r.Proxy != "" {
+		u, err := url.Parse(r.Proxy)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "socks5" && u.Scheme != "socks5h") {
+			return fmt.Errorf("reddit.proxy must be an http://, https:// or socks5:// URL")
+		}
+	}
+	for _, x := range []struct {
+		name      string
+		v, lo, hi int
+	}{
+		{"firstListing", r.FirstListing, 25, 1000},
+		{"jobListLimit", r.JobListLimit, 1, 1000},
+		{"pageDelaySeconds", r.PageDelaySeconds, 1, 60},
+		{"backfillMax", r.BackfillMax, 100, 50000},
+	} {
+		if x.v < x.lo || x.v > x.hi {
+			return fmt.Errorf("reddit.%s must be between %d and %d", x.name, x.lo, x.hi)
+		}
+	}
+	if r.DefaultLibrary != "" && !libraries[r.DefaultLibrary] {
+		return fmt.Errorf("reddit.defaultLibrary %q does not exist", r.DefaultLibrary)
+	}
+	return nil
+}

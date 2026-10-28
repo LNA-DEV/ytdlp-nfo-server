@@ -57,9 +57,6 @@ func (m *Manager) initSubscriptions() error {
 	return nil
 }
 
-// listerFor picks the lister of a subscription source or preview URL.
-func (m *Manager) listerFor(string) subscriptions.Lister { return subscriptions.YtdlpLister{} }
-
 // startSubscriptions recovers interrupted checks and starts the loops.
 func (m *Manager) startSubscriptions() error {
 	n, err := m.Store.ResetChecking(m.ctx, time.Now())

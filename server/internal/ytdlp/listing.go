@@ -40,6 +40,14 @@ type ListEntry struct {
 	Availability string
 	// Nested marks an entry that is itself a listing (a tab or playlist).
 	Nested bool
+	// Reddit listings (Reddit concept §7.1): the post's media kind ("" =
+	// unknown), NSFW flag, and the target of a link post.
+	MediaKind string
+	NSFW      bool
+	Link      string
+	// AltKey is another key the same entry may be listed under: a Reddit
+	// post's key when the entry is keyed by its media.
+	AltKey string
 }
 
 // Key returns the archive key of the entry ("" if the listing has no

@@ -16,6 +16,8 @@ type ListRequest struct {
 	Timeout time.Duration
 	Bin     versions.Binary // the yt-dlp build of the check
 	Call    ytdlp.CallOptions
+	// Providers overrides the Reddit provider chain ("" = the global one).
+	Providers string
 }
 
 // ListResult is the outcome of a listing.
@@ -26,8 +28,12 @@ type ListResult struct {
 	// Exhausted: the lister can't list deeper, so a larger window would
 	// return the same entries.
 	Exhausted bool
+	// Truncated: it stopped at its limit, not at the end of the source;
+	// with no known entry in it, there is a gap (Reddit concept §7.7).
+	Truncated bool
 	TimedOut  bool
-	Output    []string // tool output, for the check log on failure
+	Output    []string // tool output, for the check log
+	Provider  string   // the Reddit provider that answered
 }
 
 // Lister lists sources (Reddit concept §7.1). The check loop and the

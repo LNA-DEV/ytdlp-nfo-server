@@ -183,7 +183,7 @@ func (m *Manager) ImportSubscriptions(ctx context.Context, format, data string) 
 			continue
 		}
 		seen[canon] = true
-		plan = append(plan, planned{item: it, src: &store.Source{URL: u, Canonical: canon, Tab: tab}})
+		plan = append(plan, planned{item: it, src: subscriptions.NewSource(u, canon, tab)})
 	}
 	var canons []string
 	for _, p := range plan {

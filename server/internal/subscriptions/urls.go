@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
 )
 
@@ -80,6 +82,9 @@ func ChannelTabURL(channelID, tab string) string {
 // source and a renamed handle doesn't break the subscription. Other URLs
 // are normalized like job URLs.
 func Canonical(raw string, l *ytdlp.Listing) (canonical, tab string) {
+	if t, ok := reddit.Parse(raw); ok && t.IsListing() {
+		return t.Canonical(), "" // Reddit concept §7.1
+	}
 	base, tab, ok := YouTubeChannel(raw)
 	if !ok || tab == "" {
 		return config.NormalizeURL(raw), ""
@@ -102,6 +107,17 @@ func Canonical(raw string, l *ytdlp.Listing) (canonical, tab string) {
 		return ChannelTabURL(id, tab), tab
 	}
 	return config.NormalizeURL(raw), tab
+}
+
+// NewSource returns a new source. A Reddit listing of new posts lists
+// newest first, known up front, so checks use the window from the start
+// (Reddit concept §7.1).
+func NewSource(u, canonical, tab string) *store.Source {
+	src := &store.Source{URL: u, Canonical: canonical, Tab: tab}
+	if t, ok := reddit.Parse(canonical); ok && t.IsListing() && t.EffectiveSort() == reddit.SortNew {
+		src.NewestFirst, src.OrderKnown = true, true
+	}
+	return src
 }
 
 // Kind returns "channel" if the listing is a channel (its id is the

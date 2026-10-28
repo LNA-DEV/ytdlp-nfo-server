@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/browser"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/testutil"
@@ -60,6 +61,7 @@ type world struct {
 	sc       *scenario.Scenario
 	resolver *fakeResolver
 	state    string
+	reddit   *browser.Options // set to use a fake Reddit
 }
 
 func newWorld(t *testing.T, sc *scenario.Scenario) *world {
@@ -98,7 +100,7 @@ func newWorld(t *testing.T, sc *scenario.Scenario) *world {
 func (w *world) start() *Manager {
 	w.t.Helper()
 	m, err := New(Options{
-		Env: w.env, Resolver: w.resolver, DisableBackground: true, Logf: w.t.Logf,
+		Env: w.env, Resolver: w.resolver, DisableBackground: true, Logf: w.t.Logf, Reddit: w.reddit,
 		TweakPolicy: func(p *scheduler.Policy) {
 			p.Base, p.Cap, p.RateLimitCooldown = 20*time.Millisecond, 100*time.Millisecond, 150*time.Millisecond
 		},
