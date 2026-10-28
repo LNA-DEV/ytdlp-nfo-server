@@ -142,6 +142,9 @@ func (s *Server) handleOptions(w http.ResponseWriter, r *http.Request) {
 		// For the path preview of the subscription dialog (§7.4).
 		"libraryPaths": paths, "namingTemplate": st.Naming.EffectiveTemplate(),
 		"subscriptionInterval": st.Subscriptions.IntervalMinutes,
+		// The library marked for Reddit (Reddit concept §8): other ones get
+		// the warning that Jellyfin's movie libraries don't show images.
+		"redditLibrary": st.Reddit.DefaultLibrary,
 	})
 }
 

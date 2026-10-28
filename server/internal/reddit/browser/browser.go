@@ -9,11 +9,13 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	nethttp "net/http"
 	"net/netip"
 	"net/url"
 	"strings"
@@ -61,6 +63,12 @@ type Options struct {
 	// instead of the checked direct dial.
 	RootCAs *x509.CertPool
 	Dial    func(ctx context.Context, network, addr string) (net.Conn, error)
+	// Plain sends requests with Go's own HTTP client and a descriptive
+	// User-Agent instead of the browser identity (reddit-probe compares
+	// both).
+	Plain bool
+	// OnResponse sees every response with a body (reddit-probe).
+	OnResponse func(url string, status int, body []byte)
 }
 
 // Client sends requests as the browser identity. It is safe for concurrent
@@ -288,6 +296,9 @@ func (c *Client) do(ctx context.Context, k kind, raw, referer string, stream boo
 }
 
 func (c *Client) get(ctx context.Context, k kind, raw, referer string, max int64) (*Response, error) {
+	if c.opts.Plain {
+		return c.plainGet(ctx, k, raw, max)
+	}
 	resp, err := c.do(ctx, k, raw, referer, false)
 	if err != nil {
 		return nil, err
@@ -295,7 +306,66 @@ func (c *Client) get(ctx context.Context, k kind, raw, referer string, max int64
 	if int64(len(resp.Body)) > max {
 		return nil, fmt.Errorf("response larger than %d bytes", max)
 	}
+	if c.opts.OnResponse != nil {
+		c.opts.OnResponse(resp.Url, resp.StatusCode, resp.Body)
+	}
 	return &Response{Status: resp.StatusCode, Header: resp.Header, Body: resp.Body, URL: resp.Url}, nil
+}
+
+// plainGet is the request of a client without the browser identity.
+func (c *Client) plainGet(ctx context.Context, k kind, raw string, max int64) (*Response, error) {
+	if !c.Allowed(raw) {
+		return nil, fmt.Errorf("%s: %w", hostOf(raw), ErrNotAllowed)
+	}
+	tr := &nethttp.Transport{Proxy: nil, ForceAttemptHTTP2: true, TLSClientConfig: &tls.Config{RootCAs: c.opts.RootCAs}}
+	switch {
+	case c.opts.Dial != nil:
+		tr.DialContext = c.opts.Dial
+	case c.opts.Proxy != "":
+		u, err := url.Parse(c.opts.Proxy)
+		if err != nil {
+			return nil, err
+		}
+		tr.Proxy = nethttp.ProxyURL(u)
+	default:
+		tr.DialContext = checkedDial(c.opts.Timeout)
+	}
+	hc := &nethttp.Client{Transport: tr, Timeout: c.opts.Timeout,
+		CheckRedirect: func(req *nethttp.Request, via []*nethttp.Request) error {
+			if len(via) >= 10 || !c.Allowed(req.URL.String()) {
+				return ErrNotAllowed
+			}
+			return nil
+		}}
+	defer tr.CloseIdleConnections()
+	req, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, raw, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "ytdlp-nfo-server (reddit-probe)")
+	if k == kindJSON {
+		req.Header.Set("Accept", "application/json")
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > max {
+		return nil, fmt.Errorf("response larger than %d bytes", max)
+	}
+	if c.opts.OnResponse != nil {
+		c.opts.OnResponse(resp.Request.URL.String(), resp.StatusCode, body)
+	}
+	h := http.Header{}
+	for k, v := range resp.Header {
+		h[k] = v
+	}
+	return &Response{Status: resp.StatusCode, Header: h, Body: body, URL: resp.Request.URL.String()}, nil
 }
 
 // Document loads a page as a navigation; referer "" is a typed URL.
@@ -316,6 +386,16 @@ func (c *Client) JSON(ctx context.Context, raw string, max int64) (*Response, er
 // Download streams an image to w, at most max bytes. The response has no
 // Body; a status other than 200 writes nothing.
 func (c *Client) Download(ctx context.Context, raw, referer string, w io.Writer, max int64) (*Response, error) {
+	if c.opts.Plain {
+		r, err := c.plainGet(ctx, kindImage, raw, max)
+		if err == nil && r.Status == 200 {
+			_, err = w.Write(r.Body)
+		}
+		if r != nil {
+			r.Body = nil
+		}
+		return r, err
+	}
 	resp, err := c.do(ctx, kindImage, raw, referer, true)
 	if err != nil {
 		return nil, err

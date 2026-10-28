@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/subscriptions"
 )
@@ -97,7 +98,10 @@ func parseImport(format, data string) ([]importItem, error) {
 				// A feed URL stands for the whole channel: the Videos tab,
 				// unless htmlUrl names another tab (our own export does).
 				_, tab, isTab := subscriptions.YouTubeChannel(strings.TrimSpace(o.HTMLURL))
+				rss, isReddit := reddit.RSSListing(o.XMLURL)
 				switch id := youTubeFeedChannel(o.XMLURL); {
+				case isReddit:
+					items = append(items, importItem{URL: rss, Title: title})
 				case id != "" && !(isTab && tab != ""):
 					items = append(items, importItem{URL: subscriptions.ChannelTabURL(id, subscriptions.TabVideos), Title: title})
 				case o.HTMLURL != "":
@@ -170,6 +174,9 @@ func (m *Manager) ImportSubscriptions(ctx context.Context, format, data string) 
 	seen := map[string]bool{}
 	for _, it := range items {
 		u := it.URL
+		if l, ok := reddit.RSSListing(u); ok {
+			u = l // a feed reader's Reddit feed (Reddit concept §11)
+		}
 		if config.ValidateURL(u) != nil {
 			res.Skipped = append(res.Skipped, ImportSkip{URL: u, Reason: "not a valid URL"})
 			continue
@@ -219,6 +226,12 @@ func (m *Manager) ImportSubscriptions(ctx context.Context, format, data string) 
 		sub := &store.Subscription{Name: strings.TrimSpace(p.item.Title), Mode: store.ModeManual, Enabled: true,
 			Listing: store.ListingAuto, Sources: []*store.Source{p.src},
 			NextCheckAt: now.Add(time.Duration(i) * time.Hour / time.Duration(max(n, 1)))}
+		if t, ok := reddit.Parse(p.src.URL); ok && t.IsListing() {
+			if sub.Name == "" || strings.Contains(sub.Name, "reddit.com") {
+				sub.Name = t.Name() // feed readers name feeds after their URL
+			}
+			sub.Folder = subscriptions.FolderFromName(t.Name())
+		}
 		i++
 		if err := m.Store.CreateSubscription(ctx, sub); err != nil {
 			res.Skipped = append(res.Skipped, ImportSkip{URL: p.item.URL, Reason: m.conflict(ctx, err).Error()})

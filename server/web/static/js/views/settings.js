@@ -9,6 +9,7 @@ const SECTIONS = [
   ['naming', 'Naming'],
   ['libraries', 'Libraries'],
   ['subscriptions', 'Subscriptions'],
+  ['reddit', 'Reddit'],
   ['notifications', 'Notifications'],
   ['extras', 'Extras'],
   ['security', 'Security'],
@@ -83,7 +84,7 @@ export class SettingsView {
     const b = clear(this.body);
     const fn = {
       general: this.general, ytdlp: this.ytdlp, sites: this.sites, cookies: this.cookies, naming: this.naming,
-      libraries: this.libraries, subscriptions: this.subscriptions, notifications: this.notifications, extras: this.extras, security: this.security,
+      libraries: this.libraries, subscriptions: this.subscriptions, reddit: this.reddit, notifications: this.notifications, extras: this.extras, security: this.security,
     }[this.section] || this.general;
     b.append(fn.call(this));
   }
@@ -303,6 +304,33 @@ export class SettingsView {
           field('Background slots', num('backgroundSlots', 1, 50), 'Downloads of new videos and backlogs together; they give way to downloads started by hand'),
           field('Retry "not available yet" for (days)', num('upcomingDays', 1, 30), 'Premieres without a live status are tried again by every check'),
           field('Forget removed videos after (days)', num('pruneGoneDays', 0, 3650), '0 = never. Only videos that were never downloaded'))),
+      this.saveBtn());
+  }
+
+  // --- Reddit (Reddit concept §9) ---
+  reddit() {
+    const r = this.s.reddit;
+    const chains = [['native,arcticshift', 'Native, then Arctic Shift'], ['native', 'Native only'],
+      ['arcticshift,native', 'Arctic Shift, then native'], ['arcticshift', 'Arctic Shift only']];
+    const chain = { value: (r.providers || []).join(',') };
+    const sel = bindSelect(chain, 'value', chains);
+    sel.addEventListener('change', () => { r.providers = chain.value.split(','); });
+    const num = (key, min, max) => bindText(r, key, { type: 'number', min, max });
+    const libs = [['', 'None'], ['default', 'default'], ...(this.s.libraries || []).map((l) => [l.name, l.name])];
+    return h('div', {},
+      h('div', { class: 'section' }, h('h2', {}, 'Providers'),
+        h('p', { class: 'muted' }, 'Native reads the pages Reddit shows a logged-out browser. Arctic Shift is a third-party archive without guarantees; it sees the subreddits and posts the server asks for. A provider that is blocked or rate-limited hands over to the next one.'),
+        h('div', { class: 'grid' },
+          field('Order', sel, 'Subscriptions can override it'),
+          field('Proxy', bindText(r, 'proxy', { placeholder: 'socks5://host:1080' }), 'Reddit, Arctic Shift and media downloads go through it (http://, https:// or socks5://)'),
+          field('Pause between native pages (s)', num('pageDelaySeconds', 1, 60), '±20 % jitter'))),
+      h('div', { class: 'section' }, h('h2', {}, 'Listings'),
+        h('div', { class: 'grid' },
+          field('First listing (posts)', num('firstListing', 25, 1000), 'Depth of the first check and of a full rescan; native lists at most 1000'),
+          field('Posts of a pasted subreddit URL', num('jobListLimit', 1, 1000)),
+          field('Library for new Reddit subscriptions', bindSelect(r, 'defaultLibrary', libs), 'Use a Jellyfin library of the type "Home videos and photos": movie libraries don\'t show images')),
+        h('div', { class: 'btn-row', style: 'margin-top:.8rem' }, bindCheck(r, 'gapFill', 'Fill gaps from Arctic Shift when more posts appeared than native can list')),
+        h('div', { class: 'grid' }, field('Posts per gap fill', num('backfillMax', 100, 50000)))),
       this.saveBtn());
   }
 

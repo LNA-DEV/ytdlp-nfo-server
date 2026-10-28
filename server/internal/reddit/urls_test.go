@@ -38,11 +38,11 @@ func TestParseAndCanonical(t *testing.T) {
 
 func TestRSSListing(t *testing.T) {
 	for in, want := range map[string]string{
-		"https://www.reddit.com/r/EarthPorn/.rss":            "https://www.reddit.com/r/earthporn/new",
-		"https://www.reddit.com/r/EarthPorn/new/.rss":        "https://www.reddit.com/r/earthporn/new",
-		"https://www.reddit.com/r/EarthPorn/top/.rss?t=week": "https://www.reddit.com/r/earthporn/top?t=week",
+		"https://www.reddit.com/r/EarthPorn/.rss":            "https://www.reddit.com/r/EarthPorn/new",
+		"https://www.reddit.com/r/EarthPorn/new/.rss":        "https://www.reddit.com/r/EarthPorn/new",
+		"https://www.reddit.com/r/EarthPorn/top/.rss?t=week": "https://www.reddit.com/r/EarthPorn/top?t=week",
 		"https://www.reddit.com/user/someone/submitted/.rss": "https://www.reddit.com/user/someone/submitted",
-		"https://www.reddit.com/r/EarthPorn.rss":             "https://www.reddit.com/r/earthporn/new",
+		"https://www.reddit.com/r/EarthPorn.rss":             "https://www.reddit.com/r/EarthPorn/new",
 	} {
 		if got, ok := RSSListing(in); !ok || got != want {
 			t.Errorf("%s: %q %v", in, got, ok)

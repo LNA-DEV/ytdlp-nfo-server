@@ -74,12 +74,13 @@ func TestRedditSubscription(t *testing.T) {
 		t.Fatalf("preview: %+v", p)
 	}
 
+	created := time.Now()
 	v := w.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: "https://old.reddit.com/r/EarthPorn/"}}})
 	if v.Name != "r/EarthPorn" || v.Folder != "EarthPorn" || !v.Sources[0].NewestFirst || !v.Sources[0].OrderKnown {
 		t.Fatalf("subscription: %+v", v)
 	}
 	id := sid(v)
-	sub := w.waitChecked(id, time.Time{})
+	sub := w.waitChecked(id, created)
 	if sub.Error != "" {
 		t.Fatalf("check error: %s %s", sub.Error, sub.Hint)
 	}
@@ -163,9 +164,10 @@ func TestRedditGap(t *testing.T) {
 	site.PageSize = 100
 	start := time.Now().Truncate(time.Second)
 	site.Add(mixedPosts("big", start, 2000, 5)...)
+	created := time.Now()
 	v := w.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/big/"}}})
 	id := sid(v)
-	w.waitChecked(id, time.Time{})
+	w.waitChecked(id, created)
 	// 1100 new posts, all images, created after the first check.
 	var posts []*fakereddit.Post
 	for i := 0; i < 1100; i++ {
@@ -209,4 +211,28 @@ func (w *world) newCount(id int64) int {
 		w.t.Fatal(err)
 	}
 	return c[id].New
+}
+
+// Feed readers export Reddit feeds as OPML; Reddit ends RSS on 2026-11-13
+// (Reddit concept §11).
+func TestRedditRSSImport(t *testing.T) {
+	w, _ := redditWorld(t)
+	opml := `<?xml version="1.0"?><opml version="2.0"><body><outline text="Reddit">
+<outline type="rss" text="EarthPorn" xmlUrl="https://www.reddit.com/r/EarthPorn/.rss" htmlUrl="https://www.reddit.com/r/EarthPorn"/>
+<outline type="rss" text="https://www.reddit.com/r/pics/new/.rss" xmlUrl="https://www.reddit.com/r/pics/new/.rss"/>
+<outline type="rss" text="dup" xmlUrl="https://old.reddit.com/r/earthporn/new/.rss"/>
+</outline></body></opml>`
+	res, err := w.m.ImportSubscriptions(context.Background(), FormatOPML, opml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, v := range res.Created {
+		got = append(got, v.Name+"|"+v.Folder+"|"+v.Sources[0].Canonical)
+	}
+	sort.Strings(got)
+	want := "EarthPorn|EarthPorn|https://www.reddit.com/r/earthporn/new r/pics|pics|https://www.reddit.com/r/pics/new"
+	if strings.Join(got, " ") != want || len(res.Skipped) != 1 || res.Skipped[0].Reason != "listed twice" {
+		t.Fatalf("import: %v skipped %+v", got, res.Skipped)
+	}
 }

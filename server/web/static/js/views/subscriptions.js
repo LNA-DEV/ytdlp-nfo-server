@@ -16,6 +16,10 @@ const DETAIL_TABS = [
   ['failed', 'Failed', 'failed'],
 ];
 const PAGE = 50;
+// Reddit (Reddit concept §7.1, §9).
+const MEDIA_KINDS = [['image', 'Images'], ['gif', 'GIFs'], ['gallery', 'Galleries'], ['video', 'Videos']];
+const PROVIDERS = [['', 'Default (settings)'], ['native,arcticshift', 'Native, then Arctic Shift'], ['native', 'Native only'],
+  ['arcticshift,native', 'Arctic Shift, then native'], ['arcticshift', 'Arctic Shift only']];
 
 // --- formatting ---
 
@@ -195,6 +199,45 @@ function readFilterInputs(root) {
   return f;
 }
 
+function isReddit(sub) { return sub.sources.some((s) => (s.canonical || s.url).startsWith('https://www.reddit.com/')); }
+
+function redditFilterInputs(f = {}, provider = null) {
+  const kinds = f.mediaKinds || [];
+  return h('div', { class: 'more' },
+    h('div', { class: 'span-all small muted' }, 'Media (none checked = all)', h('div', { class: 'choices' },
+      MEDIA_KINDS.map(([v, l]) => h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'mediaKind', value: v, checked: kinds.includes(v) }), l)))),
+    h('label', {}, 'NSFW posts', select('nsfw', [['', 'Include'], ['exclude', 'Exclude'], ['only', 'Only NSFW']], f.nsfw === 'include' ? '' : f.nsfw || '')),
+    provider ? h('label', {}, 'Providers', provider) : null);
+}
+
+function readRedditFilters(root) {
+  const f = {};
+  const kinds = [...root.querySelectorAll('[name=mediaKind]:checked')].map((cb) => cb.value);
+  if (kinds.length) f.mediaKinds = kinds;
+  const nsfw = root.querySelector('[name=nsfw]').value;
+  if (nsfw) f.nsfw = nsfw;
+  return f;
+}
+
+// redditLibraryWarning warns when a Reddit subscription goes to another
+// library than the one marked for Reddit: Jellyfin's movie libraries don't
+// show images (Reddit concept §8). It doesn't block.
+function redditLibraryWarning(o, lf, cur = {}) {
+  const warn = h('div', { class: 'warn-text small hidden' });
+  let on = false;
+  const update = () => {
+    // An explicit library that was reset to Default falls back to the
+    // default library; otherwise the effective one (a site rule's) stays.
+    const l = (lf.lib && lf.lib.value) || (cur.library ? o.defaults.library : cur.effectiveLibrary || o.defaults.library);
+    clear(warn).append(o.redditLibrary
+      ? `Library “${l}” is not the one marked for Reddit (“${o.redditLibrary}”). Jellyfin's movie libraries don't show images.`
+      : 'Jellyfin\'s movie libraries don\'t show images: use a library of the type “Home videos and photos” and mark it under Settings → Reddit.');
+    warn.classList.toggle('hidden', !on || l === o.redditLibrary);
+  };
+  if (lf.lib) lf.lib.addEventListener('change', update);
+  return { el: warn, show: (v) => { on = v; update(); } };
+}
+
 function collapsible(label, content, open = false) {
   const body = h('div', { class: open ? '' : 'hidden' }, content);
   const btn = h('button', { class: 'link-btn', type: 'button' }, (open ? '▾ ' : '▸ ') + label);
@@ -258,13 +301,20 @@ export async function addDialog(initialURL = '') {
     const interval = intervalSelect(o, 0);
     const filters = filterInputs();
     const options = optionInputs(o);
+    const provider = select('provider', PROVIDERS, '');
+    const redditFilters = redditFilterInputs({}, provider);
+    const libWarn = redditLibraryWarning(o, lf);
+    const redditBox = h('div', { class: 'hidden' },
+      collapsible('Reddit (media, NSFW, providers)', redditFilters, true));
+    let reddit = false;
     form.append(
       h('div', { class: 'field' }, 'Tabs', tabsBox),
       h('label', { class: 'field' }, 'Name', name),
-      lf.row, lf.preview,
+      lf.row, lf.preview, libWarn.el,
       h('div', { class: 'field' }, 'Mode', mode),
       h('div', { class: 'field' }, 'Existing videos', backlog),
       h('label', { class: 'field' }, 'Check', interval),
+      redditBox,
       collapsible('Filters (duration, title, date)', filters),
       collapsible('Download options (preset, container, cookies, …)', options));
 
@@ -283,7 +333,9 @@ export async function addDialog(initialURL = '') {
         return;
       }
       previewBtn.disabled = false;
-      const count = p.count ? `~${p.count.toLocaleString()} videos` : `${p.entries.length}${p.entries.length >= 10 ? '+' : ''} videos`;
+      reddit = p.site === 'reddit';
+      const noun = reddit ? 'posts' : 'videos';
+      const count = p.count ? `~${p.count.toLocaleString()} ${noun}` : `${p.entries.length}${p.entries.length >= 10 ? '+' : ''} ${noun}`;
       clear(card).append(h('div', { class: 'preview-head' },
         img('avatar', p.thumbnail, false),
         h('div', {},
@@ -295,11 +347,16 @@ export async function addDialog(initialURL = '') {
       for (const s of p.sources) {
         const cb = h('input', { type: 'checkbox', checked: s.selected && !s.subscriptionId, disabled: !!s.subscriptionId, dataset: { url: s.url, canonical: s.canonical } });
         cb.addEventListener('change', () => { subscribe.disabled = !tabsBox.querySelector('input:checked'); });
-        tabsBox.append(h('label', { class: 'check' }, cb, s.tab ? TAB_LABEL[s.tab] || s.tab : 'This playlist',
+        tabsBox.append(h('label', { class: 'check' }, cb, s.tab ? TAB_LABEL[s.tab] || s.tab : reddit ? `${p.name}, newest posts` : 'This playlist',
           s.subscriptionId ? h('a', { href: '#/subscriptions/' + s.subscriptionId, onclick: () => close() }, ` (already in “${s.subscriptionName}”)`) : null));
       }
       name.value = p.name;
+      if (reddit && p.folder) lf.folder.value = p.folder;
+      if (reddit && p.library && lf.lib) lf.lib.value = p.library;
       name.dispatchEvent(new Event('input'));
+      if (lf.lib) lf.lib.dispatchEvent(new Event('change'));
+      redditBox.classList.toggle('hidden', !reddit);
+      libWarn.show(reddit);
       form.classList.remove('hidden');
       subscribe.disabled = !tabsBox.querySelector('input:checked');
     };
@@ -313,9 +370,10 @@ export async function addDialog(initialURL = '') {
         name: name.value.trim(), folder: lf.folder.value.trim(), sources,
         mode: form.querySelector('[name=mode]:checked').value,
         backlog: bl === 'latest' ? { mode: 'latest', n: Number(latestN.value) || 10 } : { mode: bl },
-        intervalMinutes: Number(interval.value), filters: readFilterInputs(filters),
+        intervalMinutes: Number(interval.value), filters: { ...readFilterInputs(filters), ...(reddit ? readRedditFilters(redditFilters) : {}) },
         options: readOptionInputs(options, lf.lib ? lf.lib.value : ''),
       };
+      if (reddit) body.provider = provider.value;
       subscribe.disabled = true;
       try {
         const sub = await post('/subscriptions', body);
@@ -356,6 +414,11 @@ async function editDialog(sub) {
     const listing = select('listing', [['auto', 'Automatic (window for channel tabs)'], ['window', 'Always a window'], ['full', 'Always a full listing']], sub.listing);
     const filters = filterInputs(sub.filters);
     const options = optionInputs(o, sub.options);
+    const reddit = isReddit(sub);
+    const provider = select('provider', PROVIDERS, sub.provider || '');
+    const redditFilters = redditFilterInputs(sub.filters, provider);
+    const libWarn = redditLibraryWarning(o, lf, { library: sub.options.library, effectiveLibrary: sub.library });
+    libWarn.show(reddit);
     const removed = new Set();
     const srcList = h('div', {});
     const drawSources = () => {
@@ -369,10 +432,11 @@ async function editDialog(sub) {
     save.addEventListener('click', async () => {
       const body = {
         name: name.value.trim(), folder: lf.folder.value.trim(), mode: mode.value, intervalMinutes: Number(interval.value),
-        notify: notify.checked, listing: listing.value, filters: readFilterInputs(filters),
+        notify: notify.checked, listing: listing.value, filters: { ...readFilterInputs(filters), ...(reddit ? readRedditFilters(redditFilters) : {}) },
         options: readOptionInputs(options, lf.lib ? lf.lib.value : sub.options.library || ''),
         removeSources: [...removed],
       };
+      if (reddit) body.provider = provider.value;
       if (addURL.value.trim()) body.addSources = [{ url: addURL.value.trim() }];
       save.disabled = true;
       try {
@@ -383,10 +447,12 @@ async function editDialog(sub) {
     });
     return h('div', { class: 'wide' }, h('h2', {}, `Edit ${sub.name}`),
       h('label', { class: 'field' }, 'Name', name),
-      lf.row, lf.preview, warn,
+      lf.row, lf.preview, warn, libWarn.el,
       h('div', { class: 'form-row' }, h('label', { class: 'field' }, 'Mode', mode), h('label', { class: 'field' }, 'Check', interval)),
       h('label', { class: 'check' }, notify, 'Notify on new videos'),
       h('div', { class: 'field' }, 'Sources', srcList, h('div', { class: 'submit-row' }, addURL)),
+      reddit ? collapsible('Reddit (media, NSFW, providers)', redditFilters,
+        !!((sub.filters || {}).mediaKinds || (sub.filters || {}).nsfw || sub.provider)) : null,
       collapsible('Filters (duration, title, date)', filters, !!Object.keys(sub.filters || {}).length),
       collapsible('Download options', options),
       collapsible('Advanced', h('label', { class: 'field' }, 'Listing', listing)),
@@ -648,7 +714,8 @@ export class SubscriptionsView {
         src.impersonate ? h('span', { class: 'muted small', title: 'This source only lists with impersonation' }, 'impersonating') : null))),
       h('div', { class: 'muted small' }, `${checked} · ${next} · ${every(s.effectiveIntervalMinutes)}`),
       h('div', { class: 'muted small' }, `Library: ${s.library} · Folder: “${s.effectiveFolder}” · Preset: ${o.preset || 'default'} · Container: ${o.container ? o.container.toUpperCase() : 'default'}`,
-        s.sharedWith && s.sharedWith.length ? ` · folder shared with ${s.sharedWith.join(', ')}` : ''));
+        s.sharedWith && s.sharedWith.length ? ` · folder shared with ${s.sharedWith.join(', ')}` : '',
+        s.provider ? ` · Providers: ${s.provider.replace(',', ', ')}` : ''));
     const err = errorLine(s);
     if (err) hd.append(err);
     if (s.warning) {
@@ -764,6 +831,8 @@ export class SubscriptionsView {
       h('div', { class: 'entry-main' },
         h('a', { class: 'entry-title', href: e.url, target: '_blank', rel: 'noreferrer', title: e.title }, e.title || e.url),
         h('div', { class: 'muted small' }, metaLine, badge ? ' ' : '', badge,
+          e.mediaKind ? h('span', { class: 'band-tag' }, e.mediaKind) : null,
+          e.nsfw ? h('span', { class: 'warn-tag' }, 'NSFW') : null,
           e.goneAt ? h('span', { class: 'warn-tag', title: 'No longer listed by the source; files in the library are not touched' }, 'removed from source') : null),
         e.status === 'failed' && (e.error || e.hint) ? h('div', { class: 'bad small' }, e.error, e.hint ? h('span', { class: 'muted' }, ` — ${e.hint}`) : null) : null),
       actions);

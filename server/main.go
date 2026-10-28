@@ -21,6 +21,7 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/manager"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/privdrop"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/probe"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp/versions"
 	"github.com/LNA-DEV/ytdlp-nfo-server/web"
 )
@@ -32,6 +33,8 @@ func main() {
 			os.Exit(healthcheck())
 		case "bundle":
 			os.Exit(bundle(os.Args[2:]))
+		case "reddit-probe":
+			os.Exit(probe.Main(os.Args[2:], os.Stdout))
 		case "version", "--version", "-v":
 			fmt.Println("ytdlp-nfo-server " + buildinfo.String())
 			return

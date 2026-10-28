@@ -164,10 +164,20 @@ func (t Target) EffectiveSort() string {
 // https://www.reddit.com/r/<name lowercase>/new, …/top?t=<period>, or
 // https://www.reddit.com/user/<name>/submitted. A post's canonical URL is
 // https://www.reddit.com/comments/<id>/.
-func (t Target) Canonical() string {
+func (t Target) Canonical() string { return t.url(true) }
+
+// URL returns the listing's URL in the canonical form, but with the name
+// as written.
+func (t Target) URL() string { return t.url(false) }
+
+func (t Target) url(lower bool) string {
 	switch t.Kind {
 	case TargetSubreddit:
-		base := "https://www.reddit.com/r/" + strings.ToLower(t.Subreddit)
+		sub := t.Subreddit
+		if lower {
+			sub = strings.ToLower(sub)
+		}
+		base := "https://www.reddit.com/r/" + sub
 		switch s := t.EffectiveSort(); s {
 		case SortTop, SortControversial:
 			return base + "/" + s + "?t=" + t.Period
@@ -250,5 +260,5 @@ func RSSListing(raw string) (string, bool) {
 	if !ok || !t.IsListing() {
 		return "", false
 	}
-	return t.Canonical(), true
+	return t.URL(), true
 }

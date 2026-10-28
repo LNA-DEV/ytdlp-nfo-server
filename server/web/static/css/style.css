@@ -225,3 +225,6 @@ details.menu > summary::-webkit-details-marker { display: none; }
 .entry-sub { color: var(--muted); }
 @media (max-width: 640px) { .feed-tools .filter { width: 100%; } }
 a.tab:hover { text-decoration: none; color: #fff; }
+.entry .band-tag, .entry .warn-tag { margin-left: .3rem; }
+.more label.check { flex-direction: row; font-size: .85rem; color: #bbb; }
+.more .span-all { grid-column: 1 / -1; }

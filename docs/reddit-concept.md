@@ -585,7 +585,7 @@ Items need no new columns.
 **Diagnostics: `reddit-probe`** (ships with R-2).
 
 ```bash
-ytdlp-nfo-server reddit-probe [--provider native|arcticshift|all] [--client browser|tlsclient|plain] [--proxy URL] [--fixtures DIR] <subreddit or post URL>
+ytdlp-nfo-server reddit-probe [--provider native|arcticshift|all] [--client browser|plain] [--proxy URL] [--limit N] [--fixtures DIR] [--quiet] <subreddit, user or post URL>
 ```
 
 It runs the providers from the container's network and prints:
@@ -596,7 +596,7 @@ It runs the providers from the container's network and prints:
 
 `--client` compares the browser identity (`browser`, the default) with a plain `net/http` client (`plain`). This shows whether the disguise makes a difference from that network. The first real runs should include an NSFW community and an NSFW post page, to confirm that the posts are in the page behind the overlay ([§2](#2-access-situation)).
 
-With `--fixtures`, it stores the pages and JSON responses with usernames and titles replaced, as fixtures for the parser tests. Until such real fixtures exist, the parser tests use hand-written pages built from the names in [§5.2](#52-parsing). It writes nothing else and needs no database. Run hourly for a few days with `--quiet` (one line per run), it shows how stable each provider is from that network.
+With `--fixtures`, it stores the pages and JSON responses with usernames and titles replaced, as fixtures for the parser tests. Until such real fixtures exist, the parser tests use hand-written pages built from the names in [§5.2](#52-parsing). It writes nothing else and needs no database. Run hourly for a few days with `--quiet` (one line per run), it shows how stable each provider is from that network. The exit code is 0 when every provider answered, 1 when one failed and 2 for wrong arguments. `--proxy` defaults to the environment variable `REDDIT_PROXY`.
 
 **Automated tests** never touch the network:
 - a fake Reddit and a fake Arctic Shift (`httptest`) serve the fixtures (hand-written until real ones from `reddit-probe` exist), block pages, 429 responses and gates;
