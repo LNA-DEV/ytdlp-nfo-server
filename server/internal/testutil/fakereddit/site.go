@@ -60,12 +60,16 @@ type Site struct {
 	seeds         map[string]string // token → seed of a check page
 	// Solved counts the JavaScript checks answered correctly.
 	Solved int
+	// names holds each subreddit's own spelling (of its first post), the
+	// only one Reddit renders a feed for.
+	names       map[string]string
+	quarantined map[string]bool
 }
 
 // NewSite starts a fake site.
 func NewSite(t testing.TB) *Site {
 	s := &Site{Server: New(t), subs: map[string][]*Post{}, byID: map[string]*Post{}, PageSize: 25, images: map[string][]byte{}, gone: map[string]bool{},
-		seeds: map[string]string{}}
+		seeds: map[string]string{}, names: map[string]string{}, quarantined: map[string]bool{}}
 	s.Handle("www.reddit.com", s.native)
 	s.Handle("reddit.com", s.native)
 	s.Handle("arctic-shift.photon-reddit.com", s.arctic)
@@ -81,6 +85,9 @@ func (s *Site) Add(posts ...*Post) {
 	defer s.mu.Unlock()
 	for _, p := range posts {
 		sub := strings.ToLower(p.Subreddit)
+		if s.names[sub] == "" {
+			s.names[sub] = p.Subreddit
+		}
 		s.subs[sub] = append(s.subs[sub], p)
 		s.byID[p.ID] = p
 		if p.Original != nil {
@@ -88,6 +95,35 @@ func (s *Site) Add(posts ...*Post) {
 		}
 		sort.SliceStable(s.subs[sub], func(i, j int) bool { return s.subs[sub][i].Created.After(s.subs[sub][j].Created) })
 	}
+}
+
+// SetQuarantined makes a subreddit's page a quarantine gate without posts.
+func (s *Site) SetQuarantined(sub string) {
+	s.mu.Lock()
+	s.quarantined[strings.ToLower(sub)] = true
+	s.mu.Unlock()
+}
+
+// spelling returns a subreddit's own spelling.
+func (s *Site) spelling(sub string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n := s.names[strings.ToLower(sub)]; n != "" {
+		return n
+	}
+	return sub
+}
+
+// ShellPage is what Reddit sends a first-time visitor of a post URL
+// without its title, or of a subreddit in another spelling: no content,
+// only a script call that redirects to the canonical URL, and data that
+// mentions "quarantined" on every page.
+func ShellPage(target string) []byte {
+	t := html.EscapeString(target)
+	return []byte(`<html><head><title>Reddit</title></head><body><shreddit-app pageType="post_detail"></shreddit-app>` +
+		`<div id="canonical-url-updater" value="https://www.reddit.com` + t + `"></div>` +
+		`<div id="shreddit-redirect"><ac-call delay="0" method="location.replace(&quot;` + t + `&quot;)" target="window" trigger="init"></ac-call></div>` +
+		`<shreddit-async-loader data="{&quot;nsfw&quot;:false,&quot;quarantined&quot;:false}"></shreddit-async-loader></body></html>`)
 }
 
 // SetNativeBlocked makes native pages answer with the block page.
@@ -324,6 +360,8 @@ func (s *Site) native(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := strings.FieldsFunc(r.URL.Path, func(c rune) bool { return c == '/' })
 	switch {
+	case len(parts) == 3 && parts[0] == "r" && parts[2] == "new" && s.spelling(parts[1]) != parts[1]:
+		w.Write(ShellPage("/r/" + s.spelling(parts[1]) + "/new/?feedViewType=compactView"))
 	case len(parts) == 3 && parts[0] == "r" && parts[2] == "new":
 		s.page(w, parts[1], "", true)
 	case len(parts) == 4 && parts[0] == "svc" && parts[2] == "community-more-posts":
@@ -338,6 +376,10 @@ func (s *Site) native(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		if p == nil {
 			w.Write([]byte("<html><body>Sorry, this post was deleted.</body></html>"))
+			return
+		}
+		if r.URL.Path != permalink(p) {
+			w.Write(ShellPage(permalink(p)))
 			return
 		}
 		fmt.Fprintf(w, "<html><body>%s</body></html>", postHTML(p, true))
@@ -361,7 +403,21 @@ func (s *Site) page(w http.ResponseWriter, sub, after string, first bool) {
 	end := min(start+s.PageSize, len(posts))
 	var b strings.Builder
 	if first {
-		fmt.Fprintf(&b, `<html><body><shreddit-subreddit-header display-name="%s"></shreddit-subreddit-header><shreddit-feed>`, sub)
+		s.mu.Lock()
+		quarantined := s.quarantined[strings.ToLower(sub)]
+		s.mu.Unlock()
+		// Like Reddit's: the header has no icon attribute; the page data
+		// has the spelling, the icon and the flags.
+		fmt.Fprintf(&b, `<html><body><reddit-page-data data="{&quot;subreddit&quot;:{&quot;name&quot;:&quot;%s&quot;,`+
+			`&quot;prefixedName&quot;:&quot;r/%[1]s&quot;,&quot;isNsfw&quot;:false,&quot;isQuarantined&quot;:%v,`+
+			`&quot;communityIcon&quot;:&quot;https://styles.redditmedia.com/t5_1/styles/communityIcon_%[1]s.png&quot;}}"></reddit-page-data>`,
+			sub, quarantined)
+		if quarantined {
+			b.WriteString(`<div>Quarantined community</div></body></html>`)
+			w.Write([]byte(b.String()))
+			return
+		}
+		fmt.Fprintf(&b, `<shreddit-subreddit-header display-name="%s" prefixed-name="r/%[1]s" icon-size="large"></shreddit-subreddit-header><shreddit-feed>`, sub)
 	}
 	for _, p := range posts[start:end] {
 		b.WriteString("<article>" + postHTML(p, false) + "</article>")

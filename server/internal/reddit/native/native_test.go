@@ -234,3 +234,82 @@ func TestChallenge(t *testing.T) {
 		t.Fatalf("failed answer: %v", err)
 	}
 }
+
+// Reddit answers a post URL without its title, and a subreddit in another
+// spelling, with a page whose script only redirects to the canonical URL.
+// Native follows it once, and asks for the subreddit in its own spelling
+// from then on.
+func TestScriptRedirects(t *testing.T) {
+	site := fakereddit.NewSite(t)
+	now := time.Now().Truncate(time.Second)
+	site.Add(&fakereddit.Post{ID: "abc12", Subreddit: "Example", Title: "A title", Kind: "image", Media: []string{"img1"},
+		Created: now, Slug: "a_title"},
+		&fakereddit.Post{ID: "abc13", Subreddit: "Example", Title: "Older", Kind: "image", Media: []string{"img2"},
+			Created: now.Add(-time.Minute)})
+	site.PageSize = 1
+	p := newProvider(t, site.Server)
+	ctx := context.Background()
+
+	post, err := p.Post(ctx, "abc12", "Example")
+	if err != nil || post.ID != "abc12" || post.MediaKey() != "redditmedia img1" {
+		t.Fatalf("post: %+v %v", post, err)
+	}
+	if n := site.Count("www.reddit.com", "/r/Example/comments/abc12/a_title/"); n != 1 {
+		t.Fatalf("%d requests of the canonical post URL", n)
+	}
+
+	tg, _ := reddit.Parse("https://www.reddit.com/r/example/")
+	for i := 0; i < 2; i++ {
+		pg, err := p.List(ctx, reddit.Query{Target: tg, Limit: 10})
+		if err != nil || summary(pg.Posts) != "abc12:image:redditmedia img1 abc13:image:redditmedia img2" {
+			t.Fatalf("listing %d: %v %v", i, pg, err)
+		}
+		if pg.Icon != "https://styles.redditmedia.com/t5_1/styles/communityIcon_Example.png" {
+			t.Fatalf("icon %q", pg.Icon)
+		}
+	}
+	if n := site.Count("www.reddit.com", "/r/example/new"); n != 1 {
+		t.Fatalf("%d requests in the other spelling, want 1 (then the learned one)", n)
+	}
+	var more []string
+	for _, r := range site.Requests() {
+		if strings.HasPrefix(r.Path, "/svc/shreddit/community-more-posts/") {
+			q, _ := url.ParseQuery(r.Query)
+			more = append(more, q.Get("name"))
+		}
+	}
+	if len(more) < 2 || strings.Trim(strings.Join(more, ","), "Example,") != "" {
+		t.Fatalf("more posts asked for %v", more)
+	}
+}
+
+// A redirect is only followed on Reddit's own host.
+func TestScriptRedirectToOtherHost(t *testing.T) {
+	fake := fakereddit.New(t)
+	fake.Handle("www.reddit.com", func(w http.ResponseWriter, r *http.Request) {
+		w.Write(fakereddit.ShellPage("https://i.redd.it/elsewhere"))
+	})
+	p := newProvider(t, fake)
+	_, err := p.Post(context.Background(), "abc12", "example")
+	if e := reddit.AsError(err); e.Class != ytdlp.ClassExtractorBroken || len(fake.Requests()) != 1 {
+		t.Fatalf("%v after %d requests", err, len(fake.Requests()))
+	}
+}
+
+// Every community page says "quarantined":false; only the page data's
+// flag marks a quarantined community.
+func TestQuarantine(t *testing.T) {
+	site := fakereddit.NewSite(t)
+	p := newProvider(t, site.Server)
+	ctx := context.Background()
+	tg, _ := reddit.Parse("https://www.reddit.com/r/empty/")
+	pg, err := p.List(ctx, reddit.Query{Target: tg, Limit: 10})
+	if err != nil || len(pg.Posts) != 0 || !pg.End {
+		t.Fatalf("empty subreddit: %+v %v", pg, err)
+	}
+	site.SetQuarantined("gated")
+	tg, _ = reddit.Parse("https://www.reddit.com/r/gated/")
+	if _, err := p.List(ctx, reddit.Query{Target: tg, Limit: 10}); reddit.AsError(err).Class != ytdlp.ClassAuthRequired {
+		t.Fatalf("quarantined: %v", err)
+	}
+}

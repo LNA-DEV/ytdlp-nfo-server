@@ -99,9 +99,11 @@ Both providers fill the same struct (`internal/reddit/post.go`). Fields a provid
 | Top of a period | `https://www.reddit.com/r/<sub>/top/?t=<period>&feedViewType=compactView`, then `…/community-more-posts/top/?t=<period>&after=<cursor>&name=<sub>&feedViewType=compactView`. `<period>` is `hour`, `day`, `week`, `month`, `year` or `all`. |
 | Hot, rising, controversial (one-off jobs only) | The same with the sort order's name (`controversial` with `t=`) |
 | User posts | `https://www.reddit.com/user/<name>/submitted/?feedViewType=compactView`, then its own more-posts endpoint |
-| One post (item metadata) | `https://www.reddit.com/r/<sub>/comments/<id>/`; without a subreddit, `https://www.reddit.com/comments/<id>/` (redirects to the full URL) |
+| One post (item metadata) | `https://www.reddit.com/r/<sub>/comments/<id>/`; without a subreddit, `https://www.reddit.com/comments/<id>/`. Both lead to the canonical URL with the title (`…/comments/<id>/<title>/`) through the script redirect below. |
 
 The next-page requests are what third parties observed for `/new`. `reddit-probe` shows their real form for every sort order and for user pages.
+
+**Script redirects.** For a first-time visitor, Reddit answers a post URL without its title, and a subreddit in another spelling than its own (`/r/example/` for `r/Example`), with a page that has no content, only `<div id="shreddit-redirect"><ac-call method="location.replace(&quot;<canonical path>&quot;)">`. A browser follows it at once. Native follows it once, if the page lacks what was asked for and the target is on the same host, with the first page as `Referer`. It then remembers the subreddit's own spelling (from the page data, [§5.2](#52-parsing)), so later checks of a subscription, whose canonical URL is lower-case, ask for the right spelling directly. The memory lasts until the server restarts; the first check after that pays one more request.
 
 **Browser identity** (R4). Native presents itself as one current desktop Chrome, and every layer tells the same story:
 
@@ -145,6 +147,7 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
 | Media | `content-href` (`i.redd.it/…`, `v.redd.it/<id>`, `reddit.com/gallery/<id>` or an external URL). The post page adds gallery images (`gallery-carousel` images) and the player's `v.redd.it` URL. |
 | `NSFW`, `Spoiler` | The corresponding boolean attributes |
 | Cursor | `more-posts-cursor` on the last post (observed: base64 of `t3_<id>`) |
+| Community | `<reddit-page-data data="{subreddit: {name, prefixedName, isNsfw, isQuarantined, communityIcon}}">` on listing pages: the own spelling, the icon (the header itself has only `icon-size`) and the quarantine flag |
 
 ### 5.3 Listing
 
@@ -160,7 +163,7 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
 | 429, or a 200 with Reddit's rate-limit page | `rate_limited` | Cooldown of native (`Retry-After` if sent, else `rateLimitCooldownMinutes`). Falls through to the next provider. |
 | 403, or a 200 with the "blocked by network security" page | `blocked` | Falls through. Resets the cookie jar and pauses native for 30 minutes. Hint: "Reddit blocks this server's network (VPN or datacenter addresses are often blocked). Use Arctic Shift, or route Reddit through another connection (setting `proxy`)." |
 | A 200 with the JavaScript check ([§5.1](#51-requests)) | `blocked` | Answered once if `solveChallenge` is on. Otherwise, or if the answer fails: falls through, resets the cookie jar and pauses native for 30 minutes. The hint names the setting. |
-| Redirect to the login page, a quarantine gate, or a page whose posts are withheld (age verification) | `auth_required` | Falls through. Hint: "Reddit shows this community only to logged-in or verified users. Arctic Shift has it if it is enabled." An NSFW blur or 18+ dialog is not a gate: the posts are read through it. |
+| Redirect to the login page, a quarantine gate (`isQuarantined` in the page data, or the gate's text; every community page has `"quarantined":false` in its data, so the word alone means nothing), or a page whose posts are withheld (age verification) | `auth_required` | Falls through. Hint: "Reddit shows this community only to logged-in or verified users. Arctic Shift has it if it is enabled." An NSFW blur or 18+ dialog is not a gate: the posts are read through it. |
 | 404, "community not found", banned or private community | `permanent` | No fall-through. Hint as for a removed channel |
 | A 200 page without readable posts | `extractor_broken` | Falls through. Hint: "Reddit's page layout changed; the server needs an update." Logged with the first 2 KB of the page. |
 | Network errors, 5xx, timeouts | `transient` | Falls through, backoff as usual |
@@ -678,6 +681,9 @@ With `--fixtures`, it stores the pages and JSON responses with usernames, titles
 | A video post whose `v.redd.it` ID is only in `url_overridden_by_dest` or `dash_url` | Key `reddit <id>`, not `redditpost` |
 | `i.redd.it/<name>` without an extension | An image, downloaded |
 | A `v.redd.it` video that answers only an impersonating client | Downloaded on the first try with `--impersonate chrome` |
+| A post URL without its title, a subreddit in another spelling | The script redirect is followed once; later listings ask for the own spelling directly |
+| A script redirect to another host | Not followed |
+| An empty subreddit (its data says `"quarantined":false`), a quarantined one | Empty listing; `auth_required` |
 
 ## 14. Decisions and open questions
 

@@ -2,7 +2,9 @@ package native
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,27 @@ type page struct {
 	feed   bool   // a feed element was present
 	title  string
 	icon   string
+	// From the page data: the community's own spelling, and whether
+	// Reddit quarantined it.
+	name        string
+	quarantined bool
+	// redirect is the absolute URL the page's script redirects to.
+	redirect string
+}
+
+// redirectCall reads the target of a script call like
+// location.replace("/r/Example/comments/abc/title/").
+var redirectCall = regexp.MustCompile(`^\s*(?:window\.)?location\.(?:replace|assign)\(\s*(["'])([^"']+)["']\s*\)\s*;?\s*$`)
+
+var jsUnescape = strings.NewReplacer(`\/`, "/", `\u002F`, "/", `\u002f`, "/", `\u0026`, "&")
+
+// pageData is the part of the page data the parser reads.
+type pageData struct {
+	Subreddit *struct {
+		Name          string `json:"name"`
+		Icon          string `json:"communityIcon"`
+		IsQuarantined bool   `json:"isQuarantined"`
+	} `json:"subreddit"`
 }
 
 type postState struct {
@@ -117,6 +140,8 @@ func parse(body []byte, base *url.URL) page {
 	// closed by their end tags; other elements may be left open in HTML.
 	var stack []*postState
 	inGallery := 0
+	// Div depth inside the redirect element, 0 outside of it.
+	inRedirect := 0
 	build := func(ps *postState) reddit.Post {
 		p := ps.post
 		content := ps.content
@@ -202,6 +227,26 @@ func parse(body []byte, base *url.URL) page {
 				if v := first(m, Layout.HeaderIcon); v != "" {
 					pg.icon = absolute(base, v)
 				}
+			case name == Layout.PageData:
+				var d pageData
+				if json.Unmarshal([]byte(m["data"]), &d) == nil && d.Subreddit != nil {
+					pg.name, pg.quarantined = d.Subreddit.Name, d.Subreddit.IsQuarantined
+					if pg.icon == "" && d.Subreddit.Icon != "" {
+						pg.icon = absolute(base, d.Subreddit.Icon)
+					}
+				}
+			case name == "div" && inRedirect > 0:
+				if !self {
+					inRedirect++
+				}
+			case name == "div" && m["id"] == Layout.RedirectID:
+				if !self {
+					inRedirect = 1
+				}
+			case name == Layout.RedirectCall && inRedirect > 0 && pg.redirect == "":
+				if c := redirectCall.FindStringSubmatch(m["method"]); c != nil {
+					pg.redirect = absolute(base, jsUnescape.Replace(c[2]))
+				}
 			case name == Layout.PartialTag:
 				if src := m["src"]; strings.Contains(src, Layout.MorePosts) {
 					pg.more = absolute(base, src)
@@ -245,6 +290,9 @@ func parse(body []byte, base *url.URL) page {
 			}
 			if n == Layout.GalleryTag && inGallery > 0 {
 				inGallery--
+			}
+			if n == "div" && inRedirect > 0 {
+				inRedirect--
 			}
 		}
 	}

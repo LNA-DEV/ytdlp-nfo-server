@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
@@ -29,6 +30,11 @@ type Provider struct {
 	// submits to (package jschallenge); nil, or ErrNoAnswer, leaves such
 	// pages blocked.
 	Solve func(ctx context.Context, page []byte, pageURL *url.URL) (string, error)
+
+	mu sync.Mutex
+	// spelling maps lower-cased subreddit names to their own spelling:
+	// Reddit renders a feed only for that one (§5.3).
+	spelling map[string]string
 }
 
 // ErrNoAnswer is returned by a Solve that doesn't answer checks (the
@@ -92,11 +98,38 @@ func moreURL(t reddit.Target, cursor string) string {
 // starts: base64 of its full name, as observed (§5.2).
 func cursorFor(id string) string { return base64.StdEncoding.EncodeToString([]byte("t3_" + id)) }
 
+// spelled returns a target with the subreddit's own spelling, if known.
+func (p *Provider) spelled(t reddit.Target) reddit.Target {
+	if t.Kind != reddit.TargetSubreddit {
+		return t
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if s := p.spelling[strings.ToLower(t.Subreddit)]; s != "" {
+		t.Subreddit = s
+	}
+	return t
+}
+
+// learn remembers the spelling of a subreddit seen on a page.
+func (p *Provider) learn(name string) {
+	if name == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.spelling == nil {
+		p.spelling = map[string]string{}
+	}
+	p.spelling[strings.ToLower(name)] = name
+}
+
 // List implements reddit.Provider.
 func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, error) {
 	if !q.After.IsZero() || !q.Before.IsZero() {
 		return nil, &reddit.Error{Class: ytdlp.ClassPermanent, Reason: "native can't list a time range", Unsupported: true}
 	}
+	q.Target = p.spelled(q.Target)
 	first := ListingURL(q.Target)
 	if first == "" {
 		return nil, &reddit.Error{Class: ytdlp.ClassPermanent, Reason: "not a listing", Unsupported: true}
@@ -105,40 +138,44 @@ func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, erro
 	out := &reddit.Page{Title: q.Target.Name()}
 	seen := map[string]bool{}
 	next, referer := first, ""
-	for page := 0; next != ""; page++ {
-		if page > 0 {
+	for n := 0; next != ""; n++ {
+		if n > 0 {
 			if err := sleep(ctx, p.PageDelay); err != nil {
 				return nil, err
 			}
 		}
 		var resp *browser.Response
+		var u *url.URL
+		var pg page
 		var err error
-		if page == 0 {
-			resp, err = p.document(ctx, next)
-		} else {
-			resp, err = p.Client.Partial(ctx, next, referer, MaxPage)
+		if n == 0 {
+			resp, u, pg, err = p.load(ctx, next, func(pg page) bool { return pg.feed || len(pg.posts) > 0 })
+		} else if resp, err = p.Client.Partial(ctx, next, referer, MaxPage); err == nil {
+			u, pg = parsed(resp, next)
 		}
 		if err != nil {
 			return nil, transport(err)
 		}
-		u, _ := url.Parse(resp.URL)
-		if u == nil {
-			u, _ = url.Parse(next)
-		}
-		pg := parse(resp.Body, u)
-		if e := classify(resp, u, pg, page == 0, p.Client); e != nil {
-			if page > 0 && e.Class != ytdlp.ClassRateLimited && e.Class != ytdlp.ClassBlocked {
+		if e := classify(resp, u, pg, n == 0, p.Client); e != nil {
+			if n > 0 && e.Class != ytdlp.ClassRateLimited && e.Class != ytdlp.ClassBlocked {
 				out.End = true // a later page failed: keep what we have
 				break
 			}
 			return nil, e
 		}
-		if page == 0 {
+		if n == 0 {
 			if pg.title != "" {
 				out.Title = pg.title
 			}
 			out.Icon = pg.icon
 			referer = first
+			if q.Target.Kind == reddit.TargetSubreddit {
+				if name := subredditOf(pg, u); strings.EqualFold(name, q.Target.Subreddit) && name != q.Target.Subreddit {
+					p.learn(name)
+					q.Target.Subreddit = name // the next pages ask for it by name
+					referer = ListingURL(q.Target)
+				}
+			}
 		}
 		added := 0
 		for _, ps := range pg.posts {
@@ -160,7 +197,7 @@ func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, erro
 			break
 		}
 		switch {
-		case added == 0 && page > 0:
+		case added == 0 && n > 0:
 			next = ""
 		case pg.more != "" && pg.more != next:
 			next = pg.more
@@ -180,16 +217,20 @@ func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, erro
 
 // Post implements reddit.Provider.
 func (p *Provider) Post(ctx context.Context, id, subreddit string) (*reddit.Post, error) {
-	u := reddit.PostURL(subreddit, id)
-	resp, err := p.document(ctx, u)
+	if subreddit != "" {
+		subreddit = p.spelled(reddit.Target{Kind: reddit.TargetSubreddit, Subreddit: subreddit}).Subreddit
+	}
+	resp, base, pg, err := p.load(ctx, reddit.PostURL(subreddit, id), func(pg page) bool {
+		for _, ps := range pg.posts {
+			if ps.ID == id {
+				return true
+			}
+		}
+		return false
+	})
 	if err != nil {
 		return nil, transport(err)
 	}
-	base, _ := url.Parse(resp.URL)
-	if base == nil {
-		base, _ = url.Parse(u)
-	}
-	pg := parse(resp.Body, base)
 	if e := classify(resp, base, pg, true, p.Client); e != nil {
 		return nil, e
 	}
@@ -206,11 +247,56 @@ func (p *Provider) Post(ctx context.Context, id, subreddit string) (*reddit.Post
 		Snippet: snippet(resp.Body)}
 }
 
+// load loads and parses a page. A page without what the caller wants
+// (done) whose script only redirects is followed once, as a browser
+// does: Reddit answers a post URL without its title, and a subreddit in
+// another spelling, with such a page (§5.1).
+func (p *Provider) load(ctx context.Context, u string, done func(page) bool) (*browser.Response, *url.URL, page, error) {
+	resp, err := p.document(ctx, u, "")
+	if err != nil {
+		return nil, nil, page{}, err
+	}
+	base, pg := parsed(resp, u)
+	if done(pg) || pg.redirect == "" {
+		return resp, base, pg, nil
+	}
+	target, err := url.Parse(pg.redirect)
+	if err != nil || target.Scheme != "https" || !strings.EqualFold(target.Host, base.Host) || target.String() == base.String() {
+		return resp, base, pg, nil
+	}
+	if resp, err = p.document(ctx, target.String(), base.String()); err != nil {
+		return nil, nil, page{}, err
+	}
+	base, pg = parsed(resp, target.String())
+	return resp, base, pg, nil
+}
+
+// parsed parses a response; its URL is the final one after HTTP redirects.
+func parsed(resp *browser.Response, requested string) (*url.URL, page) {
+	u, err := url.Parse(resp.URL)
+	if err != nil || resp.URL == "" {
+		u, _ = url.Parse(requested)
+	}
+	return u, parse(resp.Body, u)
+}
+
+// subredditOf returns the subreddit's spelling on a listing page: from
+// its page data, else from its URL.
+func subredditOf(pg page, u *url.URL) string {
+	if pg.name != "" {
+		return pg.name
+	}
+	if parts := strings.Split(strings.Trim(u.Path, "/"), "/"); len(parts) >= 2 && parts[0] == "r" {
+		return parts[1]
+	}
+	return ""
+}
+
 // document loads a page. A JavaScript check instead of the page is
 // answered once if Solve is set; the page that follows is classified as
 // usual, and another check there counts as blocked.
-func (p *Provider) document(ctx context.Context, u string) (*browser.Response, error) {
-	resp, err := p.Client.Document(ctx, u, "", MaxPage)
+func (p *Provider) document(ctx context.Context, u, referer string) (*browser.Response, error) {
+	resp, err := p.Client.Document(ctx, u, referer, MaxPage)
 	if err != nil || p.Solve == nil || !isChallenge(resp.Body) {
 		return resp, err
 	}
@@ -258,7 +344,7 @@ func classify(resp *browser.Response, u *url.URL, pg page, first bool, c *browse
 	case marker(lower, Markers.Banned) || marker(lower, Markers.Private) || resp.Status == 404 || marker(lower, Markers.NotFound):
 		return &reddit.Error{Class: ytdlp.ClassPermanent, Reason: "the subreddit or user does not exist, was banned or is private",
 			Hint: reddit.HintNotFound}
-	case marker(lower, Markers.Quarantine) || marker(lower, Markers.AgeGate):
+	case pg.quarantined || marker(lower, Markers.Quarantine) || marker(lower, Markers.AgeGate):
 		return &reddit.Error{Class: ytdlp.ClassAuthRequired, Reason: "Reddit withholds this content from logged-out visitors",
 			Hint: reddit.HintAuth}
 	case resp.Status == 403:

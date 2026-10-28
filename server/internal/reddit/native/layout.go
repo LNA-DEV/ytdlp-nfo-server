@@ -27,6 +27,16 @@ var Layout = struct {
 	Cursor      string
 	HeaderTitle []string
 	HeaderIcon  []string
+
+	// PageData holds the community as JSON (name, icon, NSFW and
+	// quarantine flags) in its data attribute.
+	PageData string
+	// RedirectID is the element whose script call (RedirectCall, method
+	// "location.replace(...)") sends a browser to the canonical URL: Reddit
+	// answers a post URL without its title, or a subreddit in another
+	// spelling, with an otherwise empty page holding only this redirect.
+	RedirectID   string
+	RedirectCall string
 }{
 	PostTag:     "shreddit-post",
 	FeedTag:     "shreddit-feed",
@@ -49,6 +59,10 @@ var Layout = struct {
 	Cursor:      "more-posts-cursor",
 	HeaderTitle: []string{"display-name", "prefixed-name"},
 	HeaderIcon:  []string{"icon"},
+
+	PageData:     "reddit-page-data",
+	RedirectID:   "shreddit-redirect",
+	RedirectCall: "ac-call",
 }
 
 // Markers are texts that identify special pages when a page has no posts
@@ -70,7 +84,13 @@ var Markers = struct {
 	Banned:     []string{"has been banned", "community is banned"},
 	NotFound:   []string{"community not found", "nobody on reddit goes by that name", "page not found"},
 	Private:    []string{"this community is private", "private community"},
-	Quarantine: []string{"quarantined"},
+	Quarantine: quarantined,
 	AgeGate:    []string{"verify your age", "age verification", "you must be 18"},
 	Empty:      []string{"there doesn't seem to be anything here", "no posts yet", "hasn't posted yet"},
 }
+
+// quarantined marks a quarantine gate. Every community page has
+// "quarantined":false in its data, so only a true value or the gate's text
+// counts.
+var quarantined = []string{"this community has been quarantined", `&quot;isquarantined&quot;:true`, `"isquarantined":true`,
+	`&quot;quarantined&quot;:true`, `"quarantined":true`}
