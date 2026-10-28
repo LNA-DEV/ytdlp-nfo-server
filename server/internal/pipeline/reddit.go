@@ -58,14 +58,6 @@ func redditFailure(e *reddit.Error) error {
 	return &attemptFailure{cls: ytdlp.Classification{Class: e.Class, Reason: e.Reason, Hint: e.Hint, Norm: ytdlp.Normalize(e.Reason)}}
 }
 
-// writesArchiveFile reports whether a key goes to .ytdlp-archive.txt:
-// yt-dlp-compatible tools know Reddit video keys, not image or gallery
-// keys (Reddit concept §7.2).
-func writesArchiveFile(key string) bool {
-	return !strings.HasPrefix(key, "redditmedia ") && !strings.HasPrefix(key, "redditgallery ") &&
-		!strings.HasPrefix(key, "redditpost ")
-}
-
 // attemptReddit runs one attempt of a Reddit item: fetch the post, re-key
 // it to its media key, download and verify its images or video, and
 // finalize it with a marker (Reddit concept §7.2).
@@ -414,6 +406,7 @@ func (p *Pipeline) skipDuplicate(rc *runCtx, it *store.Item, msg string, aliases
 	it.State = store.ItemSkipped
 	it.Error, it.ErrorClass, it.Hint = msg, "", ""
 	it.FinishedAt = p.d.Now()
+	_ = failpoint.Check("reddit:duplicate-found")
 	if err := p.d.Store.SkipDuplicate(bg, it, aliases); err != nil {
 		return failure(ytdlp.ClassTransient, "recording the duplicate failed: "+err.Error())
 	}

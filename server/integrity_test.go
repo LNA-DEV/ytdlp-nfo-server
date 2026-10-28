@@ -22,6 +22,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv(envRedditAddr) != "" {
+		os.Exit(redditServer()) // a child started by a Reddit integrity test
+	}
 	code := m.Run()
 	testutil.Cleanup() // the fake is built once per test binary and shared by all runs
 	os.Exit(code)

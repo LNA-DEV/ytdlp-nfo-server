@@ -12,6 +12,15 @@ import (
 // ArchiveFile maintains the yt-dlp compatible .ytdlp-archive.txt that the
 // ytdlp-nfo CLI and other tools share (§4.6). The SQLite archive is the
 // source of truth; this file is kept in sync for compatibility.
+// FileKey reports whether a key belongs in .ytdlp-archive.txt: tools that
+// read it know yt-dlp's keys, including "reddit <id>" for Reddit videos,
+// but not the server's own image, gallery and post keys (Reddit concept
+// §7.2).
+func FileKey(key string) bool {
+	return !strings.HasPrefix(key, "redditmedia ") && !strings.HasPrefix(key, "redditgallery ") &&
+		!strings.HasPrefix(key, "redditpost ")
+}
+
 type ArchiveFile struct {
 	Path string
 	mu   sync.Mutex

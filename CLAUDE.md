@@ -3,7 +3,7 @@
 ## Project Priorities
 
 - **File integrity is the #1 priority.** Files in the output directory must always be complete and intact. Never move or copy files that are still being written to.
-- The invariants in `docs/overhaul-concept.md` §4.5 are tested by `server/integrity_test.go` (SIGKILL at every pipeline step and at both points of a subscription check) and `internal/library` (fault injection). Keep them green when touching finalize, recovery or the pipeline:
+- The invariants in `docs/overhaul-concept.md` §4.5 are tested by `server/integrity_test.go` (SIGKILL at every pipeline step and at both points of a subscription check), `server/reddit_integrity_test.go` (SIGKILL during a Reddit gallery and around a duplicate skip) and `internal/library` (fault injection). Keep them green when touching finalize, recovery or the pipeline:
   1. nothing appears in the library before it passed verify;
   2. an item appears through one atomic rename (or `renameat2` exchange) of a fully written, fsynced folder;
   3. existing library content is never deleted before its replacement is in place;
@@ -21,6 +21,7 @@
 - yt-dlp versions are managed in `DATA_DIR/ytdlp/<channel>/<tag>/` (SHA-256 verified, smoke-tested); verified stable/nightly builds are bundled in the image under `/opt/ytdlp/bundled`.
 - Every yt-dlp call passes `--ignore-config` and puts the URL after `--`. Never add free-form yt-dlp arguments or `--compat-options allow-unsafe-ext`.
 - Subscriptions (`docs/subscriptions-concept.md`) only create ordinary jobs with pre-planned items; they never touch the library or the archive. `internal/subscriptions` runs the check loop (one check per site, cooldowns, windowed listings) and the pure diff `Apply`; the manager commits a check (entries, jobs, entry links, check state) in one transaction. Entry status is derived in SQL, never stored. Planned jobs (`Job.Planned()`, empty `norm_url`) never probe or expand.
+- Reddit (`docs/reddit-concept.md`): `internal/reddit` holds URLs, the post model and the provider chain; `native` parses logged-out pages through the browser-identity client (`browser`, azuretls), `arcticshift` calls the archive API. Subscriptions list Reddit sources through `subscriptions.RedditLister`; items whose URL is a Reddit post run `pipeline.attemptReddit` (post.json, media keys, image verify by content, `.ytdlp-nfo.json` marker, media index for duplicates). Only `reddit <id>` video keys go to `.ytdlp-archive.txt` (`library.FileKey`). Reddit and media hosts are only reached through the browser client's host allowlist.
 - The scheduler has three bands (interactive > auto > backlog); background jobs share `backgroundSlots` and yield between two items (`Scheduler.ShouldYield`).
 
 ## Build & Test
@@ -33,7 +34,7 @@ go test -race ./...          # includes fake yt-dlp scenarios and SIGKILL integr
 docker build -t ytdlp-nfo-server .
 ```
 
-Tests never touch the network: `internal/testutil/fakeytdlp` is a fake yt-dlp (also `ffprobe`/`ffmpeg` by name) driven by `internal/testutil/scenario` files. Failpoints (`internal/failpoint`, env `YTDLP_NFO_FAILPOINTS`) kill the process at named steps.
+Tests never touch the network: `internal/testutil/fakereddit` serves a fake Reddit, Arctic Shift and i.redd.it over TLS with a test CA; `internal/testutil/fakeytdlp` is a fake yt-dlp (also `ffprobe`/`ffmpeg` by name) driven by `internal/testutil/scenario` files. Failpoints (`internal/failpoint`, env `YTDLP_NFO_FAILPOINTS`) kill the process at named steps.
 
 ## Workflow
 
@@ -42,12 +43,13 @@ Tests never touch the network: `internal/testutil/fakeytdlp` is a fake yt-dlp (a
 
 ## Key Files
 
-- `server/main.go` — entry point, signals, `healthcheck` and `bundle` subcommands
+- `server/main.go` — entry point, signals, `healthcheck`, `bundle` and `reddit-probe` subcommands
 - `server/internal/manager/` — wiring, v1 migration, crash recovery, job operations, events
 - `server/internal/pipeline/` — probe, plan, per-item steps, finalize, extras, verify
 - `server/internal/library/` — naming (yt-dlp-compatible sanitizing), atomic finalize, archive file
 - `server/internal/scheduler/` — slots, queue bands, cooldowns, retry policy
 - `server/internal/subscriptions/` — subscription check loop, listing, diff (`Apply`), filters, canonical URLs
+- `server/internal/reddit/` — Reddit URLs, posts, provider chain; `native/`, `arcticshift/`, `browser/` (browser identity), `probe/` (`reddit-probe`)
 - `server/internal/ytdlp/` — command lines, runner, progress parser, error classifier; `versions/` is the version manager
 - `server/internal/store/` — SQLite schema, migrations, jobs.json/archive import
 - `server/internal/nfo/` — NFO writer (golden files from the Python implementation in `testdata/`)

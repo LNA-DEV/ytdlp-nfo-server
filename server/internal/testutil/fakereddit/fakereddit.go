@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"math/big"
 	"net"
 	"net/http"
@@ -40,6 +41,7 @@ type Request struct {
 type Server struct {
 	srv   *httptest.Server
 	Roots *x509.CertPool
+	CAPEM []byte // the test CA, for a client in another process
 
 	mu       sync.Mutex
 	handlers map[string]http.HandlerFunc
@@ -73,7 +75,8 @@ func New(t testing.TB) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{Roots: x509.NewCertPool(), handlers: map[string]http.HandlerFunc{}}
+	s := &Server{Roots: x509.NewCertPool(), handlers: map[string]http.HandlerFunc{},
+		CAPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})}
 	s.Roots.AddCert(ca)
 	s.srv = httptest.NewUnstartedServer(http.HandlerFunc(s.serve))
 	s.srv.EnableHTTP2 = true
@@ -124,6 +127,9 @@ func (s *Server) Count(host, pathPrefix string) int {
 	}
 	return n
 }
+
+// Addr returns the address every host is served on.
+func (s *Server) Addr() string { return s.srv.Listener.Addr().String() }
 
 // Dial connects to the server, whatever address is asked for.
 func (s *Server) Dial(ctx context.Context, network, _ string) (net.Conn, error) {

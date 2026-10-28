@@ -54,7 +54,9 @@ func (m *Manager) ImportArchive(ctx context.Context, data []byte) (int, error) {
 		if err == nil {
 			var b strings.Builder
 			for _, k := range all {
-				b.WriteString(k + "\n")
+				if library.FileKey(k) {
+					b.WriteString(k + "\n")
+				}
 			}
 			_ = library.WriteFileAtomic(m.Archive.Path, []byte(b.String()), 0o644)
 		}

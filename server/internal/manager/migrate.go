@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/library"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/pipeline"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
@@ -308,7 +309,7 @@ func (m *Manager) syncLegacyArchive(ctx context.Context) {
 	}
 	added := 0
 	for _, k := range keys {
-		if !have[k] {
+		if !have[k] && library.FileKey(k) {
 			if err := m.Archive.Append(k); err != nil {
 				m.logf("archive: could not update %s: %v", m.Archive.Path, err)
 				return

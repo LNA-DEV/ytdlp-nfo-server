@@ -137,7 +137,7 @@ func (p *Pipeline) runFinalize(rc *runCtx, it *store.Item, root, dir, videoID st
 	}
 	p.d.Pub.ItemChanged(it)
 	_ = failpoint.Check("pipeline:recorded")
-	if it.ArchiveKey != "" && writesArchiveFile(it.ArchiveKey) {
+	if it.ArchiveKey != "" && library.FileKey(it.ArchiveKey) {
 		if err := p.d.Archive.Append(it.ArchiveKey); err != nil {
 			rc.log.Printf("WARNING: could not append to %s: %v", p.d.Archive.Path, err)
 		}

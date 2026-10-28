@@ -40,12 +40,14 @@ func main() {
 			return
 		}
 	}
-	if err := run(); err != nil {
+	if err := run(nil); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run() error {
+// run runs the server until SIGTERM or SIGINT. tweak adjusts the manager
+// options (tests: a fake Reddit).
+func run(tweak func(*manager.Options)) error {
 	env, err := config.LoadEnv()
 	if err != nil {
 		return err
@@ -65,7 +67,11 @@ func run() error {
 		return err
 	}
 
-	m, err := manager.New(manager.Options{Env: env})
+	opts := manager.Options{Env: env}
+	if tweak != nil {
+		tweak(&opts)
+	}
+	m, err := manager.New(opts)
 	if err != nil {
 		return err
 	}
