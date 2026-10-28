@@ -280,6 +280,9 @@ func (p *Pipeline) RerunExtras(ctx context.Context, jobID, itemID int64) error {
 	if it.State != store.ItemDone || it.FinalPath == "" {
 		return fmt.Errorf("item is not in the library")
 	}
+	if p.isRedditItem(it) {
+		return fmt.Errorf("extras can't be re-run for Reddit posts; download the post again instead")
+	}
 	st := p.d.Settings()
 	root, ok := st.LibraryPath(p.d.Env, it.Library)
 	if !ok {
@@ -314,7 +317,7 @@ func (p *Pipeline) RerunExtras(ctx context.Context, jobID, itemID int64) error {
 		}
 	}
 	rc.log.Printf("=== Re-running extras for %s ===", it.FinalPath)
-	raw, meta, err := p.fetchMeta(ctx, rc, it, dir, true)
+	raw, meta, err := p.fetchMeta(ctx, rc, it, dir, it.URL, true)
 	if err != nil {
 		return fmt.Errorf("fetching metadata failed: %v", err)
 	}

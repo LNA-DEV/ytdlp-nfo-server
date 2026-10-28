@@ -129,7 +129,7 @@ func (p *Pipeline) runFinalize(rc *runCtx, it *store.Item, root, dir, videoID st
 		Key: it.ArchiveKey, Extractor: strings.ToLower(it.Extractor), VideoID: it.VideoID,
 		Path: it.FinalPath, JobID: it.JobID, FinalizedAt: it.FinishedAt, Source: "server",
 	}
-	if err := p.d.Store.FinalizeItem(bg, it, entry); err != nil {
+	if err := p.d.Store.FinalizeItem(bg, it, entry, mediaRows(it, root)...); err != nil {
 		// The files are in place; the record will be repaired by a retry
 		// (finalize is idempotent and will find the target complete).
 		it.State = store.ItemFinalizing
@@ -137,7 +137,7 @@ func (p *Pipeline) runFinalize(rc *runCtx, it *store.Item, root, dir, videoID st
 	}
 	p.d.Pub.ItemChanged(it)
 	_ = failpoint.Check("pipeline:recorded")
-	if it.ArchiveKey != "" {
+	if it.ArchiveKey != "" && writesArchiveFile(it.ArchiveKey) {
 		if err := p.d.Archive.Append(it.ArchiveKey); err != nil {
 			rc.log.Printf("WARNING: could not append to %s: %v", p.d.Archive.Path, err)
 		}

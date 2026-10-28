@@ -27,6 +27,7 @@ type CallOptions struct {
 	SleepRequests float64
 	SleepInterval float64
 	CacheDir      string
+	Proxy         string // Reddit videos: the Reddit proxy (a validated URL)
 }
 
 // NetworkArgs replace the dead /etc/yt-dlp.conf (F6): explicit retry
@@ -63,6 +64,9 @@ func (o CallOptions) common() []string {
 	}
 	if o.SleepRequests > 0 {
 		args = append(args, "--sleep-requests", fmtFloat(o.SleepRequests))
+	}
+	if o.Proxy != "" {
+		args = append(args, "--proxy", o.Proxy)
 	}
 	return append(args, NetworkArgs()...)
 }

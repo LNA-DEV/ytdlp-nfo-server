@@ -18,6 +18,7 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/joblog"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/library"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
@@ -81,6 +82,7 @@ type Deps struct {
 	CacheDir    string
 	ServerInfo  string // "v2.0.0 (commit …)"
 	MetaMaxAge  time.Duration
+	Reddit      RedditAccess            // nil: Reddit post URLs go to yt-dlp
 	TweakPolicy func(*scheduler.Policy) // tests: shorter backoff
 	Now         func() time.Time
 }
@@ -122,6 +124,7 @@ type runCtx struct {
 	itemCount   int
 	lastPublish time.Time
 	impWarned   bool
+	proxy       string // set while a Reddit video is fetched
 }
 
 func (rc *runCtx) callOpts(p *Pipeline) ytdlp.CallOptions {
@@ -132,6 +135,7 @@ func (rc *runCtx) callOpts(p *Pipeline) ytdlp.CallOptions {
 		SleepRequests: rc.job.Options.SleepRequests,
 		SleepInterval: rc.job.Options.SleepInterval,
 		CacheDir:      p.d.CacheDir,
+		Proxy:         rc.proxy,
 	}
 }
 
@@ -244,7 +248,11 @@ func (p *Pipeline) Run(ctx context.Context, jobID int64) scheduler.Outcome {
 	if len(items) == 0 {
 		job.State = store.JobProbing
 		p.saveJob(job)
-		out, ok := p.probe(ctx, rc)
+		probe := p.probe
+		if t, ok := reddit.Parse(job.URL); ok && p.d.Reddit != nil {
+			probe = func(ctx context.Context, rc *runCtx) (scheduler.Outcome, bool) { return p.redditPlan(ctx, rc, t) }
+		}
+		out, ok := probe(ctx, rc)
 		if !ok {
 			return out
 		}

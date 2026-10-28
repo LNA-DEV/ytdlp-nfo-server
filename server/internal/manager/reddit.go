@@ -88,6 +88,21 @@ func (m *Manager) redditChain(override string, logf func(string, ...any)) *reddi
 		DefaultCooldown: time.Duration(s.RateLimitCooldownMinutes) * time.Minute}
 }
 
+// redditAccess gives the pipeline the provider chain and the client for
+// media downloads.
+type redditAccess struct{ m *Manager }
+
+func (a redditAccess) Chain(providers string, logf func(string, ...any)) *reddit.Chain {
+	return a.m.redditChain(providers, logf)
+}
+
+func (a redditAccess) Client() *browser.Client {
+	a.m.redditProviders()
+	a.m.reddit.mu.Lock()
+	defer a.m.reddit.mu.Unlock()
+	return a.m.reddit.client
+}
+
 // listerFor picks the lister of a subscription source or preview URL.
 func (m *Manager) listerFor(u string) subscriptions.Lister {
 	if _, ok := reddit.Parse(u); ok {

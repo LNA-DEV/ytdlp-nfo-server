@@ -469,6 +469,7 @@ func (m *Manager) subJobTx(ctx context.Context, tx *store.Tx, sub *store.Subscri
 	if len(entries) == 1 && entries[0].Thumbnail != "" {
 		j.Thumbnail = entries[0].Thumbnail
 	}
+	j.Options.RedditProviders = sub.Provider
 	if err := tx.CreateJob(ctx, j); err != nil {
 		return nil, err
 	}

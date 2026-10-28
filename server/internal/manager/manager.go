@@ -185,7 +185,7 @@ func New(o Options) (*Manager, error) {
 		Store: st, Env: env, Settings: m.Settings.Settings, SiteRules: m.siteRules,
 		Versions: m.resolver, Logs: logs, Pub: m, Sched: m.Sched, Finalizer: m.Finalizer, Archive: m.Archive,
 		CookieDir: m.cookieDir, CacheDir: filepath.Join(m.dataDir, "ytdlp", "cache"),
-		ServerInfo: buildinfo.String(), TweakPolicy: o.TweakPolicy,
+		ServerInfo: buildinfo.String(), TweakPolicy: o.TweakPolicy, Reddit: redditAccess{m},
 	})
 	if err := m.initSubscriptions(); err != nil {
 		return nil, err

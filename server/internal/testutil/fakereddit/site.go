@@ -8,6 +8,9 @@ import (
 	"html"
 	"image"
 	"image/color"
+	"image/color/palette"
+	"image/draw"
+	"image/gif"
 	"image/png"
 	"net/http"
 	"sort"
@@ -41,11 +44,12 @@ type Site struct {
 	arcticDown    bool
 	PageSize      int
 	images        map[string][]byte
+	gone          map[string]bool
 }
 
 // NewSite starts a fake site.
 func NewSite(t testing.TB) *Site {
-	s := &Site{Server: New(t), subs: map[string][]*Post{}, byID: map[string]*Post{}, PageSize: 25, images: map[string][]byte{}}
+	s := &Site{Server: New(t), subs: map[string][]*Post{}, byID: map[string]*Post{}, PageSize: 25, images: map[string][]byte{}, gone: map[string]bool{}}
 	s.Handle("www.reddit.com", s.native)
 	s.Handle("reddit.com", s.native)
 	s.Handle("arctic-shift.photon-reddit.com", s.arctic)
@@ -74,19 +78,45 @@ func (s *Site) SetNativeBlocked(b bool) { s.mu.Lock(); s.nativeBlocked = b; s.mu
 // SetArcticDown makes the Arctic Shift API answer 500.
 func (s *Site) SetArcticDown(b bool) { s.mu.Lock(); s.arcticDown = b; s.mu.Unlock() }
 
+// SetGone makes i.redd.it answer 404 for a media id.
+func (s *Site) SetGone(id string) { s.mu.Lock(); s.gone[id] = true; s.mu.Unlock() }
+
 // SetImage sets the bytes of an image id.
 func (s *Site) SetImage(id string, b []byte) { s.mu.Lock(); s.images[id] = b; s.mu.Unlock() }
 
 // PNG returns a small valid PNG whose pixels depend on seed.
 func PNG(seed int) []byte {
+	var b bytes.Buffer
+	png.Encode(&b, picture(seed, ""))
+	return b.Bytes()
+}
+
+// picture is an 80×60 gradient; the bytes of tag are written into its
+// first row, so every media id gets its own image.
+func picture(seed int, tag string) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, 80, 60))
 	for y := 0; y < 60; y++ {
 		for x := 0; x < 80; x++ {
 			img.Set(x, y, color.RGBA{uint8(x*3 + seed*7), uint8(y*4 + seed*13), uint8((x + y + seed) * 2), 255})
 		}
 	}
+	for i := 0; i < len(tag) && i < 80; i++ {
+		img.Set(i, 0, color.RGBA{tag[i], tag[i], tag[i], 255})
+	}
+	return img
+}
+
+// MediaBytes returns what the fake i.redd.it serves for a media id: a PNG,
+// or a GIF for a .gif name, unless SetImage set other bytes.
+func MediaBytes(id string, gifImage bool) []byte {
 	var b bytes.Buffer
-	png.Encode(&b, img)
+	if gifImage {
+		pal := image.NewPaletted(image.Rect(0, 0, 40, 30), palette.Plan9)
+		draw.Draw(pal, pal.Bounds(), picture(len(id), id), image.Point{}, draw.Src)
+		gif.EncodeAll(&b, &gif.GIF{Image: []*image.Paletted{pal, pal}, Delay: []int{10, 10}})
+		return b.Bytes()
+	}
+	png.Encode(&b, picture(len(id), id))
 	return b.Bytes()
 }
 
@@ -292,7 +322,7 @@ func (s *Site) media(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(name, ".png"), ".gif"), ".jpg")
 	s.mu.Lock()
 	b, ok := s.images[id]
-	removed := false
+	removed := s.gone[id]
 	for _, p := range s.byID {
 		for _, m := range p.Media {
 			if m == id && p.Removed {
@@ -306,7 +336,7 @@ func (s *Site) media(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		b = PNG(len(id))
+		b = MediaBytes(id, strings.HasSuffix(name, ".gif"))
 	}
 	w.Write(b)
 }
