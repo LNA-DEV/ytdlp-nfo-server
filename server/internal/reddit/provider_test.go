@@ -90,3 +90,30 @@ func TestChain(t *testing.T) {
 		t.Fatalf("no providers: %+v", err)
 	}
 }
+
+// A blocked provider is paused: the next requests skip it and go to the
+// next provider, and the skip keeps the cause.
+func TestChainPausesBlockedProvider(t *testing.T) {
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	cooldowns, causes := map[string]time.Time{}, map[string]*Error{}
+	native := &stubProvider{name: "native", site: "reddit-native", err: &Error{Class: ytdlp.ClassBlocked, Reason: "a JavaScript check", Hint: HintChallenge}}
+	arctic := &stubProvider{name: "arcticshift", site: "arctic-shift"}
+	chain := &Chain{Providers: []Provider{native, arctic}, Now: func() time.Time { return now }, BlockedCooldown: 30 * time.Minute,
+		Cooldown: func(s string) time.Time { return cooldowns[s] }, SetCooldown: func(s string, u time.Time) { cooldowns[s] = u },
+		OnPause: func(s string, e *Error) { causes[s] = e }, PauseCause: func(s string) *Error { return causes[s] }}
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, name, err := chain.Post(ctx, "abc", ""); err != nil || name != "arcticshift" {
+			t.Fatalf("post %d: %v %s", i, err, name)
+		}
+	}
+	if native.calls != 1 || !cooldowns["reddit-native"].Equal(now.Add(30*time.Minute)) {
+		t.Fatalf("native called %d times, paused until %v", native.calls, cooldowns["reddit-native"])
+	}
+	arctic.err = &Error{Class: ytdlp.ClassTransient, Reason: "HTTP 500"}
+	_, _, err := chain.Post(ctx, "abc", "")
+	if err == nil || err.Class != ytdlp.ClassBlocked || !strings.Contains(err.Reason, "paused until 12:30 after: a JavaScript check") ||
+		!strings.HasPrefix(err.Hint, HintChallenge) {
+		t.Fatalf("skipped cause: %+v", err)
+	}
+}

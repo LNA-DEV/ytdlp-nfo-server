@@ -254,3 +254,66 @@ func TestRedditFirstCheckListsOnce(t *testing.T) {
 		t.Fatalf("%d entries, want firstListing = 100", n)
 	}
 }
+
+// Reddit answers native with a JavaScript check. Without the setting it
+// counts as blocked: Arctic Shift answers, and native is paused, so the
+// posts of a job don't ask native again. With the setting the check is
+// answered once and its cookie kept.
+func TestRedditChallenge(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+	nativeRequests := func(site *fakereddit.Site) int {
+		return site.Count("www.reddit.com", "/")
+	}
+
+	w, site := redditMediaWorld(t, "vid1", "vid6")
+	site.Add(mixedPosts("example", now, 0, 10)...)
+	site.SetChallenge(true)
+	created := time.Now()
+	v := w.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/example/"}}})
+	id := sid(v)
+	sub := w.waitChecked(id, created)
+	log, _ := w.m.subs.logs.Read(id)
+	if sub.Error != "" || !strings.Contains(string(log), "native: failed (blocked: Reddit asks for a JavaScript check)") ||
+		!strings.Contains(string(log), "via arcticshift") {
+		t.Fatalf("check: %q\n%s", sub.Error, log)
+	}
+	if until := w.m.Sched.Status().Cooldowns["reddit-native"]; until.Before(time.Now().Add(20 * time.Minute)) {
+		t.Fatalf("native not paused: %v", until)
+	}
+	if w.m.Sched.Status().Cooldowns["reddit.com"].After(time.Now()) {
+		t.Fatal("Reddit jobs paused with native")
+	}
+	before := nativeRequests(site)
+	if _, err := w.m.DownloadEntries(ctx, DownloadEntriesRequest{Subscription: fmt.Sprint(id), Status: "backlog"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range w.subJobs(id) {
+		if j = w.wait(j.ID, store.JobCompleted, store.JobPartial, store.JobFailed); j.State != store.JobCompleted {
+			t.Fatalf("job: %s\n%s", j.State, w.log(j.ID))
+		}
+	}
+	if n := nativeRequests(site) - before; n != 0 {
+		t.Fatalf("%d requests to the paused native", n)
+	}
+
+	// With the setting on, a new server answers the check and keeps the cookie.
+	w2, site2 := redditWorld(t)
+	site2.Add(mixedPosts("example", now, 0, 10)...)
+	site2.SetChallenge(true)
+	if _, err := w2.m.Settings.Update(ctx, func(s *config.Settings) error { s.Reddit.SolveChallenge = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	created = time.Now()
+	v = w2.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/example/"}}})
+	id = sid(v)
+	sub = w2.waitChecked(id, created)
+	log, _ = w2.m.subs.logs.Read(id)
+	if sub.Error != "" || !strings.Contains(string(log), "via native") || site2.Solved != 1 {
+		t.Fatalf("answered check: %q, %d solved\n%s", sub.Error, site2.Solved, log)
+	}
+	w2.checkNow(id)
+	if site2.Solved != 1 {
+		t.Fatalf("the cookie was not kept: %d checks answered", site2.Solved)
+	}
+}

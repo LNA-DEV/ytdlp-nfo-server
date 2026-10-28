@@ -30,6 +30,10 @@ type RedditSettings struct {
 	BackfillMax      int    `json:"backfillMax"`      // posts per gap fill or backfill run
 	// Duplicates are the levels 2 and 3 of the duplicate check (§7.5).
 	Duplicates RedditDuplicates `json:"duplicates"`
+	// SolveChallenge answers the JavaScript check Reddit shows some
+	// networks instead of the page, in a sandbox (§5.4). Off by default:
+	// it goes against Reddit's wish to keep automated clients out.
+	SolveChallenge bool `json:"solveChallenge"`
 	// ExternalHosts are the sites whose link posts are downloaded (§7.6):
 	// hosts or "*.domain" (the domain and its subdomains).
 	ExternalHosts []string `json:"externalHosts"`

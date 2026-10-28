@@ -40,7 +40,7 @@ type Page struct {
 // Provider reads Reddit data (§5, §6).
 type Provider interface {
 	Name() string
-	Site() string // scheduler site key, for cooldowns
+	Site() string // key of the provider's cooldowns in the scheduler
 	List(ctx context.Context, q Query) (*Page, error)
 	Post(ctx context.Context, id, subreddit string) (*Post, error)
 }
@@ -92,6 +92,7 @@ func AsError(err error) *Error {
 // Hints shown with provider errors (§5.4).
 const (
 	HintBlocked     = "Reddit blocks this server's network (VPN or datacenter addresses are often blocked). Use Arctic Shift, or route Reddit through another connection (setting proxy)."
+	HintChallenge   = "Reddit answered with a JavaScript check instead of the page, usually because of the network (VPN or datacenter addresses). Arctic Shift takes over meanwhile. Turn on \"Answer Reddit's JavaScript check\" in Settings → Reddit, or route Reddit through another connection (setting proxy)."
 	HintAuth        = "Reddit shows this community only to logged-in or verified users. Arctic Shift has it if it is enabled."
 	HintLayout      = "Reddit's page layout changed; the server needs an update. Run reddit-probe to see the page."
 	HintNotFound    = "The subreddit or user does not exist, was banned or is private."
@@ -106,8 +107,15 @@ type Chain struct {
 	Cooldown        func(site string) time.Time
 	SetCooldown     func(site string, until time.Time)
 	DefaultCooldown time.Duration
-	Now             func() time.Time
-	Logf            func(format string, args ...any)
+	// BlockedCooldown pauses a provider that was blocked, so the requests
+	// that follow go straight to the next one.
+	BlockedCooldown time.Duration
+	// OnPause and PauseCause keep the error that paused a provider, so a
+	// skipped provider reports it (blocked stays blocked). Optional.
+	OnPause    func(site string, cause *Error)
+	PauseCause func(site string) *Error
+	Now        func() time.Time
+	Logf       func(format string, args ...any)
 }
 
 func (c *Chain) now() time.Time {
@@ -137,7 +145,13 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 		}
 		if c.Cooldown != nil {
 			if until := c.Cooldown(p.Site()); until.After(c.now()) {
-				e := &Error{Class: ytdlp.ClassRateLimited, Reason: fmt.Sprintf("%s is rate-limited until %s", p.Name(), until.Format("15:04"))}
+				e := &Error{Class: ytdlp.ClassRateLimited, Reason: fmt.Sprintf("%s is paused until %s", p.Name(), until.Format("15:04"))}
+				if c.PauseCause != nil {
+					if cause := c.PauseCause(p.Site()); cause != nil {
+						e.Class, e.Hint = cause.Class, cause.Hint
+						e.Reason += " after: " + cause.Reason
+					}
+				}
 				c.logf("%s: skipped, %s", p.Name(), e.Reason)
 				if first == nil {
 					first = e
@@ -154,13 +168,21 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 		if ctx.Err() != nil {
 			return "", e
 		}
-		if e.Class == ytdlp.ClassRateLimited && c.SetCooldown != nil {
-			d := e.RetryAfter
-			if d <= 0 {
-				d = c.DefaultCooldown
+		if c.SetCooldown != nil {
+			var d time.Duration
+			switch e.Class {
+			case ytdlp.ClassRateLimited:
+				if d = e.RetryAfter; d <= 0 {
+					d = c.DefaultCooldown
+				}
+			case ytdlp.ClassBlocked:
+				d = c.BlockedCooldown
 			}
 			if d > 0 {
 				c.SetCooldown(p.Site(), c.now().Add(d))
+				if c.OnPause != nil {
+					c.OnPause(p.Site(), e)
+				}
 			}
 		}
 		if e.Unsupported {

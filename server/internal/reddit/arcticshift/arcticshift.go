@@ -43,7 +43,7 @@ func New(c *browser.Client) *Provider { return &Provider{Client: c, MinInterval:
 func (p *Provider) Name() string { return reddit.ProviderArcticShift }
 
 // Site implements reddit.Provider.
-func (p *Provider) Site() string { return "photon-reddit.com" }
+func (p *Provider) Site() string { return "arctic-shift" }
 
 // pace waits until MinInterval has passed since the last request. Requests
 // of one provider run one at a time.

@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/url"
@@ -24,7 +25,15 @@ type Provider struct {
 	// PageDelay is the pause between two pages of one listing (2–5 s,
 	// random, §5.1). Tests set it to zero.
 	PageDelay func() time.Duration
+	// Solve answers a JavaScript check page and returns the URL its form
+	// submits to (package jschallenge); nil, or ErrNoAnswer, leaves such
+	// pages blocked.
+	Solve func(ctx context.Context, page []byte, pageURL *url.URL) (string, error)
 }
+
+// ErrNoAnswer is returned by a Solve that doesn't answer checks (the
+// setting is off).
+var ErrNoAnswer = errors.New("checks are not answered")
 
 // New creates the provider.
 func New(c *browser.Client) *Provider {
@@ -36,8 +45,10 @@ func New(c *browser.Client) *Provider {
 // Name implements reddit.Provider.
 func (p *Provider) Name() string { return reddit.ProviderNative }
 
-// Site implements reddit.Provider.
-func (p *Provider) Site() string { return "reddit.com" }
+// Site implements reddit.Provider: the key of native's own cooldowns. It
+// isn't the site key of Reddit jobs and checks, so a blocked native
+// doesn't hold them up while Arctic Shift can answer.
+func (p *Provider) Site() string { return "reddit-native" }
 
 // ListingURL returns the first page of a listing (§5.1).
 func ListingURL(t reddit.Target) string {
@@ -103,7 +114,7 @@ func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, erro
 		var resp *browser.Response
 		var err error
 		if page == 0 {
-			resp, err = p.Client.Document(ctx, next, "", MaxPage)
+			resp, err = p.document(ctx, next)
 		} else {
 			resp, err = p.Client.Partial(ctx, next, referer, MaxPage)
 		}
@@ -170,7 +181,7 @@ func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, erro
 // Post implements reddit.Provider.
 func (p *Provider) Post(ctx context.Context, id, subreddit string) (*reddit.Post, error) {
 	u := reddit.PostURL(subreddit, id)
-	resp, err := p.Client.Document(ctx, u, "", MaxPage)
+	resp, err := p.document(ctx, u)
 	if err != nil {
 		return nil, transport(err)
 	}
@@ -195,6 +206,35 @@ func (p *Provider) Post(ctx context.Context, id, subreddit string) (*reddit.Post
 		Snippet: snippet(resp.Body)}
 }
 
+// document loads a page. A JavaScript check instead of the page is
+// answered once if Solve is set; the page that follows is classified as
+// usual, and another check there counts as blocked.
+func (p *Provider) document(ctx context.Context, u string) (*browser.Response, error) {
+	resp, err := p.Client.Document(ctx, u, "", MaxPage)
+	if err != nil || p.Solve == nil || !isChallenge(resp.Body) {
+		return resp, err
+	}
+	pageURL, err := url.Parse(resp.URL)
+	if err != nil || resp.URL == "" {
+		pageURL, _ = url.Parse(u)
+	}
+	submit, err := p.Solve(ctx, resp.Body, pageURL)
+	if errors.Is(err, ErrNoAnswer) {
+		return resp, nil
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		p.Client.Jar().Reset()
+		return nil, &reddit.Error{Class: ytdlp.ClassBlocked, Reason: "Reddit's JavaScript check could not be answered: " + err.Error(),
+			Hint: reddit.HintChallenge}
+	}
+	return p.Client.Document(ctx, submit, pageURL.String(), MaxPage)
+}
+
+func isChallenge(body []byte) bool { return marker(strings.ToLower(string(body)), Markers.Challenge) }
+
 // classify turns a response without usable posts into an error (§5.4).
 // first: the document is a page (not a partial), where a missing feed is a
 // layout error.
@@ -203,6 +243,10 @@ func classify(resp *browser.Response, u *url.URL, pg page, first bool, c *browse
 	switch {
 	case resp.Status == 429 || marker(lower, Markers.RateLimit) && len(pg.posts) == 0:
 		return &reddit.Error{Class: ytdlp.ClassRateLimited, Reason: "rate-limited by Reddit", RetryAfter: retryAfter(resp)}
+	case marker(lower, Markers.Challenge) && len(pg.posts) == 0:
+		c.Jar().Reset()
+		return &reddit.Error{Class: ytdlp.ClassBlocked, Reason: "Reddit asks for a JavaScript check", Hint: reddit.HintChallenge,
+			Snippet: snippet(resp.Body)}
 	case marker(lower, Markers.Blocked) && len(pg.posts) == 0:
 		c.Jar().Reset()
 		return &reddit.Error{Class: ytdlp.ClassBlocked, Reason: "blocked by Reddit's network security", Hint: reddit.HintBlocked,

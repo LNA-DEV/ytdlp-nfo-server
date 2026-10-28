@@ -54,11 +54,16 @@ type Site struct {
 	PageSize      int
 	images        map[string][]byte
 	gone          map[string]bool
+	challenge     bool
+	seeds         map[string]string // token → seed of a check page
+	// Solved counts the JavaScript checks answered correctly.
+	Solved int
 }
 
 // NewSite starts a fake site.
 func NewSite(t testing.TB) *Site {
-	s := &Site{Server: New(t), subs: map[string][]*Post{}, byID: map[string]*Post{}, PageSize: 25, images: map[string][]byte{}, gone: map[string]bool{}}
+	s := &Site{Server: New(t), subs: map[string][]*Post{}, byID: map[string]*Post{}, PageSize: 25, images: map[string][]byte{}, gone: map[string]bool{},
+		seeds: map[string]string{}}
 	s.Handle("www.reddit.com", s.native)
 	s.Handle("reddit.com", s.native)
 	s.Handle("arctic-shift.photon-reddit.com", s.arctic)
@@ -87,6 +92,58 @@ func (s *Site) SetNativeBlocked(b bool) { s.mu.Lock(); s.nativeBlocked = b; s.mu
 
 // SetArcticDown makes the Arctic Shift API answer 500.
 func (s *Site) SetArcticDown(b bool) { s.mu.Lock(); s.arcticDown = b; s.mu.Unlock() }
+
+// SetChallenge makes native pages answer a client without the check's
+// cookie with a JavaScript check shaped like Reddit's: an inline script
+// puts seed+seed into a hidden GET form and submits it with the page's
+// query. A correct answer sets the cookie and redirects to the page.
+func (s *Site) SetChallenge(on bool) { s.mu.Lock(); s.challenge = on; s.mu.Unlock() }
+
+// ChallengePage returns a check page for a seed, a token and the form's
+// action.
+func ChallengePage(seed, token, action string) []byte {
+	script := `document.addEventListener("DOMContentLoaded",async function(){var e=document.forms[0],n=(e.onsubmit=function(t){` +
+		`return new URLSearchParams(document.location.search).forEach((e,n)=>t.target.appendChild(Object.assign(` +
+		`document.createElement("input"),{name:n,type:"hidden",value:e}))),!0},await(async e=>e+e)("` + seed + `"));` +
+		`e.elements.namedItem("solution").value=n,e.requestSubmit()},{once:!0});`
+	return []byte(`<!DOCTYPE html><html lang="en"><head><title>Reddit</title><script>` + script + `</script></head><body>` +
+		`<form hidden method="GET" action="` + html.EscapeString(action) + `"><input type="hidden" name="solution" />` +
+		`<input type="hidden" name="js_challenge" value="1"/><input type="hidden" name="jsc_token" value="` + token + `"/>` +
+		`<input type="hidden" name="jsc_orig_r" value=""/></form></body></html>`)
+}
+
+// checkChallenge answers a request without the cookie: true if it was
+// handled (a check page, or a redirect after a correct answer).
+func (s *Site) checkChallenge(w http.ResponseWriter, r *http.Request) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.challenge {
+		return false
+	}
+	if c, err := r.Cookie("jsc_ok"); err == nil && c.Value == "1" {
+		return false
+	}
+	q := r.URL.Query()
+	if q.Get("js_challenge") == "1" {
+		if seed, ok := s.seeds[q.Get("jsc_token")]; ok && q.Get("solution") == seed+seed {
+			delete(s.seeds, q.Get("jsc_token"))
+			s.Solved++
+			for _, k := range []string{"js_challenge", "solution", "jsc_token", "jsc_orig_r"} {
+				q.Del(k)
+			}
+			http.SetCookie(w, &http.Cookie{Name: "jsc_ok", Value: "1", Path: "/", Domain: "reddit.com"})
+			u := *r.URL
+			u.RawQuery = q.Encode()
+			http.Redirect(w, r, u.RequestURI(), http.StatusFound)
+			return true
+		}
+	}
+	n := len(s.seeds) + 1
+	seed, token := fmt.Sprintf("seed%04d", n), fmt.Sprintf("token%04d", n)
+	s.seeds[token] = seed
+	w.Write(ChallengePage(seed, token, r.URL.Path))
+	return true
+}
 
 // SetGone makes i.redd.it answer 404 for a media id.
 func (s *Site) SetGone(id string) { s.mu.Lock(); s.gone[id] = true; s.mu.Unlock() }
@@ -251,6 +308,9 @@ func (s *Site) native(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if blocked {
 		w.Write([]byte("<html><body><h1>You've been blocked by network security.</h1></body></html>"))
+		return
+	}
+	if s.checkChallenge(w, r) {
 		return
 	}
 	parts := strings.FieldsFunc(r.URL.Path, func(c rune) bool { return c == '/' })

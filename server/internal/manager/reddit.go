@@ -1,7 +1,9 @@
 package manager
 
 import (
+	"context"
 	"math/rand/v2"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,9 +13,14 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/arcticshift"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/browser"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/jschallenge"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/native"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/subscriptions"
 )
+
+// redditBlockedPause is how long a blocked provider is skipped (Reddit
+// concept §5.4): its requests go straight to the next provider meanwhile.
+const redditBlockedPause = 30 * time.Minute
 
 // redditState holds the Reddit client and providers (Reddit concept §5,
 // §6). They are built on first use and rebuilt when the proxy changes.
@@ -25,6 +32,8 @@ type redditState struct {
 	arctic *arcticshift.Provider
 	// test hooks: trust these roots and dial here (fakereddit).
 	testOpts *browser.Options
+	// pauseCause is the error that paused a provider (by cooldown key).
+	pauseCause map[string]*reddit.Error
 }
 
 // redditProviders returns the providers by name, building them if needed.
@@ -51,6 +60,13 @@ func (m *Manager) redditProviders() map[string]reddit.Provider {
 		}
 		r.client, r.proxy = c, s.Proxy
 		r.native = native.New(c)
+		solver := jschallenge.Solver{UserAgent: browser.Chrome.UserAgent}
+		r.native.Solve = func(ctx context.Context, page []byte, u *url.URL) (string, error) {
+			if !m.Settings.Settings().Reddit.SolveChallenge {
+				return "", native.ErrNoAnswer
+			}
+			return solver.Solve(ctx, page, u)
+		}
 		r.arctic = arcticshift.New(c)
 		if r.testOpts != nil {
 			r.arctic.MinInterval = 0
@@ -85,7 +101,22 @@ func (m *Manager) redditChain(override string, logf func(string, ...any)) *reddi
 	return &reddit.Chain{Providers: ps, Logf: logf,
 		Cooldown:        func(site string) time.Time { return m.Sched.Status().Cooldowns[site] },
 		SetCooldown:     m.Sched.SetCooldown,
-		DefaultCooldown: time.Duration(s.RateLimitCooldownMinutes) * time.Minute}
+		DefaultCooldown: time.Duration(s.RateLimitCooldownMinutes) * time.Minute,
+		BlockedCooldown: redditBlockedPause,
+		OnPause: func(site string, cause *reddit.Error) {
+			m.reddit.mu.Lock()
+			defer m.reddit.mu.Unlock()
+			if m.reddit.pauseCause == nil {
+				m.reddit.pauseCause = map[string]*reddit.Error{}
+			}
+			c := *cause
+			m.reddit.pauseCause[site] = &c
+		},
+		PauseCause: func(site string) *reddit.Error {
+			m.reddit.mu.Lock()
+			defer m.reddit.mu.Unlock()
+			return m.reddit.pauseCause[site]
+		}}
 }
 
 // redditAccess gives the pipeline the provider chain and the client for

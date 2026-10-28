@@ -22,6 +22,7 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/arcticshift"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/browser"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/jschallenge"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/native"
 )
 
@@ -66,6 +67,7 @@ func Main(args []string, stdout io.Writer) int {
 	limit := fs.Int("limit", 25, "posts to list")
 	fixtures := fs.String("fixtures", "", "save the responses, anonymized, in this directory")
 	quiet := fs.Bool("quiet", false, "one line per run (for cron)")
+	solve := fs.Bool("solve", false, "answer Reddit's JavaScript check, as the setting solveChallenge does")
 	fs.Usage = func() {
 		fmt.Fprintln(stdout, "usage: ytdlp-nfo-server reddit-probe [flags] <subreddit, user or post URL>")
 		fs.PrintDefaults()
@@ -96,6 +98,9 @@ func Main(args []string, stdout io.Writer) int {
 	defer c.Close()
 	nat := native.New(c)
 	nat.PageDelay = func() time.Duration { return 2 * time.Second }
+	if *solve {
+		nat.Solve = jschallenge.Solver{UserAgent: browser.Chrome.UserAgent}.Solve
+	}
 	arc := arcticshift.New(c)
 	if testDial != nil {
 		nat.PageDelay, arc.MinInterval = nil, 0
@@ -205,7 +210,8 @@ func report(w io.Writer, name, client string, resps []response, posts []reddit.P
 			label string
 			texts []string
 		}{
-			{"block page", native.Markers.Blocked}, {"rate limit", native.Markers.RateLimit}, {"age gate", native.Markers.AgeGate},
+			{"JS challenge", native.Markers.Challenge}, {"block page", native.Markers.Blocked}, {"rate limit", native.Markers.RateLimit},
+			{"age gate", native.Markers.AgeGate},
 			{"quarantine", native.Markers.Quarantine}, {"private", native.Markers.Private}, {"banned", native.Markers.Banned},
 			{"not found", native.Markers.NotFound},
 		} {

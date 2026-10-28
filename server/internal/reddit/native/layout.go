@@ -54,6 +54,7 @@ var Layout = struct {
 // Markers are texts that identify special pages when a page has no posts
 // (§5.4). They are matched case-insensitively.
 var Markers = struct {
+	Challenge  []string // a JavaScript check instead of the page
 	Blocked    []string
 	RateLimit  []string
 	Banned     []string
@@ -63,6 +64,7 @@ var Markers = struct {
 	AgeGate    []string
 	Empty      []string
 }{
+	Challenge:  []string{`name="js_challenge"`, `name="jsc_token"`},
 	Blocked:    []string{"blocked by network security", "you've been blocked"},
 	RateLimit:  []string{"you've been rate limited", "too many requests"},
 	Banned:     []string{"has been banned", "community is banned"},

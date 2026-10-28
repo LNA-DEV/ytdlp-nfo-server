@@ -17,6 +17,7 @@ import (
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/browser"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/jschallenge"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/testutil"
@@ -27,6 +28,9 @@ import (
 var fakeDir string
 
 func TestMain(m *testing.M) {
+	if os.Getenv(jschallenge.ChildEnv) != "" { // the Reddit check child of a test
+		os.Exit(jschallenge.ChildMain(os.Stdin, os.Stdout))
+	}
 	dir, err := testutil.FakeBin()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "building fake yt-dlp:", err)

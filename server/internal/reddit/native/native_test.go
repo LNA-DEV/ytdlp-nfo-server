@@ -2,8 +2,10 @@ package native
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,6 +156,7 @@ func TestErrors(t *testing.T) {
 		{200, "<html>r/x has been banned from Reddit</html>", ytdlp.ClassPermanent},
 		{200, "<html>This community has been quarantined</html>", ytdlp.ClassAuthRequired},
 		{200, string(fixture(t, "changed.html")), ytdlp.ClassExtractorBroken},
+		{200, string(fakereddit.ChallengePage("seed", "token", "/r/testsub/new/")), ytdlp.ClassBlocked},
 		{502, "", ytdlp.ClassTransient},
 	}
 	for _, c := range cases {
@@ -190,5 +193,44 @@ func TestErrors(t *testing.T) {
 	// Native can't list time ranges or anything that isn't a listing.
 	if _, err := newProvider(t, fake).List(context.Background(), reddit.Query{Target: tg, After: time.Now()}); !reddit.AsError(err).Unsupported {
 		t.Fatalf("time range: %v", err)
+	}
+}
+
+// A JavaScript check is blocked, with its own hint, unless Solve answers
+// it; the answer's URL is loaded next.
+func TestChallenge(t *testing.T) {
+	fake := fakereddit.New(t)
+	answered := false
+	fake.Handle("www.reddit.com", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("solution") == "ok" {
+			answered = true
+			w.Write(fixture(t, "listing.html"))
+			return
+		}
+		w.Write(fakereddit.ChallengePage("seed", "token", r.URL.Path))
+	})
+	tg, _ := reddit.Parse("https://www.reddit.com/r/testsub/")
+	p := newProvider(t, fake)
+	_, err := p.List(context.Background(), reddit.Query{Target: tg, Limit: 3})
+	if e := reddit.AsError(err); e.Class != ytdlp.ClassBlocked || e.Hint != reddit.HintChallenge {
+		t.Fatalf("unanswered: %+v", e)
+	}
+	p.Solve = func(context.Context, []byte, *url.URL) (string, error) { return "", ErrNoAnswer }
+	if _, err := p.List(context.Background(), reddit.Query{Target: tg, Limit: 3}); reddit.AsError(err).Hint != reddit.HintChallenge {
+		t.Fatalf("setting off: %v", err)
+	}
+	p.Solve = func(_ context.Context, page []byte, u *url.URL) (string, error) {
+		if !strings.Contains(string(page), "jsc_token") || u.Path != "/r/testsub/new/" {
+			t.Errorf("solver got %s", u)
+		}
+		return "https://www.reddit.com/r/testsub/new/?solution=ok", nil
+	}
+	pg, err := p.List(context.Background(), reddit.Query{Target: tg, Limit: 3})
+	if err != nil || !answered || len(pg.Posts) == 0 {
+		t.Fatalf("answered: %v %v", err, pg)
+	}
+	p.Solve = func(context.Context, []byte, *url.URL) (string, error) { return "", errors.New("time limit") }
+	if _, err := p.List(context.Background(), reddit.Query{Target: tg, Limit: 3}); !strings.Contains(reddit.AsError(err).Reason, "could not be answered: time limit") {
+		t.Fatalf("failed answer: %v", err)
 	}
 }

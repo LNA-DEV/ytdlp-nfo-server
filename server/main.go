@@ -21,12 +21,16 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/manager"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/privdrop"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/jschallenge"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/probe"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp/versions"
 	"github.com/LNA-DEV/ytdlp-nfo-server/web"
 )
 
 func main() {
+	if os.Getenv(jschallenge.ChildEnv) != "" { // answering one Reddit check, nothing else
+		os.Exit(jschallenge.ChildMain(os.Stdin, os.Stdout))
+	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "healthcheck":
