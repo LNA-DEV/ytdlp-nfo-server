@@ -128,10 +128,7 @@ func flatten(m map[string]any, out *[]Entry, depth int) {
 			flatten(e, out, depth+1)
 			continue
 		}
-		u := s(e, "url")
-		if !isHTTP(u) {
-			u = s(e, "webpage_url", "original_url")
-		}
+		u := EntryURL(e)
 		id := s(e, "id")
 		if n, ok := e["id"].(json.Number); ok && id == "" {
 			id = n.String()
