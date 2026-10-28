@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/browser"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/testutil/fakereddit"
@@ -148,10 +149,12 @@ func TestRedditSubscription(t *testing.T) {
 		t.Fatalf("entries: %d (duplicates?)", total)
 	}
 
-	// Both blocked: a classified error with the providers tried.
+	// Both failing: native's error with the providers tried, as temporary
+	// because Arctic Shift's error is.
 	site.SetArcticDown(true)
 	sub = w.checkNow(id)
-	if sub.ErrorClass != "blocked" || !strings.Contains(sub.Hint, "Tried: native, arcticshift") {
+	if sub.ErrorClass != "transient" || !strings.Contains(sub.Error, "blocked by Reddit's network security (arcticshift: ") ||
+		!strings.HasPrefix(sub.Hint, reddit.HintBlocked) || !strings.Contains(sub.Hint, "Tried: native, arcticshift") {
 		t.Fatalf("both failing: %s %s %s", sub.ErrorClass, sub.Error, sub.Hint)
 	}
 }

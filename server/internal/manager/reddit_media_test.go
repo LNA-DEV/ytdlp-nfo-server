@@ -262,6 +262,21 @@ func TestRedditDuplicates(t *testing.T) {
 	}
 }
 
+// Native can't serve the post and Arctic Shift is down for maintenance:
+// the item is retried, and gets the post once Arctic Shift is back.
+func TestRedditRetriesWhenArcticIsBack(t *testing.T) {
+	w, site := redditMediaWorld(t)
+	site.Add(&fakereddit.Post{ID: "rr", Subreddit: "pics", Title: "Later", Kind: "image", Media: []string{"r1"}, Created: time.Now()})
+	site.SetNativeBlocked(true)
+	site.ArcticMaintenance(1)
+	j := w.download(postURL("pics", "rr"), config.OptionsRequest{})
+	l := w.log(j.ID)
+	if j.State != store.JobCompleted || !strings.Contains(l, "Post rr via arcticshift") ||
+		!strings.Contains(l, "Attempt 1 failed (transient: blocked by Reddit's network security (arcticshift: Arctic Shift: HTTP 503") {
+		t.Fatalf("%s %s\n%s", j.State, j.Error, l)
+	}
+}
+
 func TestRedditBrokenMedia(t *testing.T) {
 	w, site := redditMediaWorld(t)
 	now := time.Now()

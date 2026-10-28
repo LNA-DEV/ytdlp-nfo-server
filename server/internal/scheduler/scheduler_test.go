@@ -256,6 +256,15 @@ func TestPolicy(t *testing.T) {
 	if d := p.Decide(rs, Situation{Class: cls(ytdlp.ClassPermanent, "private"), Failures: 1}); d.Retry {
 		t.Fatal("permanent retried")
 	}
+	// Errors of the server's own Reddit code get no yt-dlp escalation: no
+	// nightly for a changed page, no impersonation for a block.
+	for _, c := range []ytdlp.Class{ytdlp.ClassExtractorBroken, ytdlp.ClassBlocked} {
+		rs = &store.RetryState{}
+		c := ytdlp.Classification{Class: c, Reason: "x", Norm: "x", FromServer: true}
+		if d := p.Decide(rs, Situation{Class: c, Failures: 1, NightlyCanHelp: true, ImpersonationAvailable: true}); d.Retry || d.Escalate != "" {
+			t.Fatalf("%s from the server: %+v", c.Class, d)
+		}
+	}
 	// Transient: retried up to MaxRetries.
 	rs = &store.RetryState{}
 	for n := 1; n <= 3; n++ {

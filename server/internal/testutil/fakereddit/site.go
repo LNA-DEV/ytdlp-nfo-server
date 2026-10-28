@@ -64,6 +64,9 @@ type Site struct {
 	// only one Reddit renders a feed for.
 	names       map[string]string
 	quarantined map[string]bool
+	// arcticMaintenance counts the Arctic Shift requests still to answer
+	// with 503.
+	arcticMaintenance int
 }
 
 // NewSite starts a fake site.
@@ -128,6 +131,10 @@ func ShellPage(target string) []byte {
 
 // SetNativeBlocked makes native pages answer with the block page.
 func (s *Site) SetNativeBlocked(b bool) { s.mu.Lock(); s.nativeBlocked = b; s.mu.Unlock() }
+
+// ArcticMaintenance makes the next n Arctic Shift requests answer 503
+// "Under maintenance".
+func (s *Site) ArcticMaintenance(n int) { s.mu.Lock(); s.arcticMaintenance = n; s.mu.Unlock() }
 
 // SetArcticDown makes the Arctic Shift API answer 500.
 func (s *Site) SetArcticDown(b bool) { s.mu.Lock(); s.arcticDown = b; s.mu.Unlock() }
@@ -472,10 +479,18 @@ func apiPost(p *Post) map[string]any {
 
 func (s *Site) arctic(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	down := s.arcticDown
+	down, maintenance := s.arcticDown, s.arcticMaintenance > 0
+	if maintenance {
+		s.arcticMaintenance--
+	}
 	s.mu.Unlock()
 	if down {
 		w.WriteHeader(500)
+		return
+	}
+	if maintenance {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"data":null,"error":"Under maintenance"}`))
 		return
 	}
 	q := r.URL.Query()

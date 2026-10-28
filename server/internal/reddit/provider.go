@@ -63,6 +63,11 @@ func (e *Error) Classification() ytdlp.Classification {
 }
 
 // fallsThrough reports whether the next provider should be tried (R3).
+// temporary reports whether waiting may help: an outage or a rate limit.
+func (e *Error) temporary() bool {
+	return e.Class == ytdlp.ClassTransient || e.Class == ytdlp.ClassRateLimited
+}
+
 func (e *Error) fallsThrough() bool {
 	if e.Unsupported {
 		return true
@@ -143,6 +148,10 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 	}
 	var first *Error
 	var tried []string
+	// temp is the first error that may go away by waiting (an outage, a
+	// rate limit): the request is worth retrying whatever the others said.
+	var temp *Error
+	var tempName string
 	for _, p := range c.Providers {
 		if ctx.Err() != nil {
 			return "", AsError(ctx.Err())
@@ -159,6 +168,9 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 				c.logf("%s: skipped, %s", p.Name(), e.Reason)
 				if first == nil {
 					first = e
+				}
+				if temp == nil && e.temporary() {
+					temp, tempName = e, p.Name()
 				}
 				tried = append(tried, p.Name())
 				continue
@@ -200,6 +212,9 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 			if first == nil || first.Unsupported {
 				first = e
 			}
+			if temp == nil && e.temporary() {
+				temp, tempName = e, p.Name()
+			}
 		}
 		if !e.fallsThrough() {
 			return "", e
@@ -209,6 +224,12 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 		first = &Error{Class: ytdlp.ClassPermanent, Reason: "no provider can serve this request"}
 	}
 	out := *first
+	if temp != nil && temp != first && !first.temporary() {
+		// The first error stays the reason; the class says that a retry
+		// may get through the other provider.
+		out.Class, out.RetryAfter = temp.Class, temp.RetryAfter
+		out.Reason = fmt.Sprintf("%s (%s: %s)", first.Reason, tempName, temp.Reason)
+	}
 	if len(tried) > 1 {
 		out.Hint = strings.TrimSpace(out.Hint + " Tried: " + strings.Join(tried, ", ") + ".")
 	}

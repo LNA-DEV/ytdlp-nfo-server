@@ -58,7 +58,8 @@ func (p *Pipeline) redditChain(rc *runCtx) *reddit.Chain {
 }
 
 func redditFailure(e *reddit.Error) error {
-	return &attemptFailure{cls: ytdlp.Classification{Class: e.Class, Reason: e.Reason, Hint: e.Hint, Norm: ytdlp.Normalize(e.Reason)}}
+	return &attemptFailure{cls: ytdlp.Classification{Class: e.Class, Reason: e.Reason, Hint: e.Hint, Norm: ytdlp.Normalize(e.Reason),
+		FromServer: true}}
 }
 
 // attemptReddit runs one attempt of a Reddit item: fetch the post, re-key
