@@ -328,12 +328,12 @@ CREATE INDEX media_index_sha ON media_index(sha256);
 - **After the post is fetched:** the item is re-keyed to the media key (step 2 in [§7.2](#72-pipeline)), and the existing key lock and archive check skip it as "Already in library (crosspost of r/<sub>: <title>)". The existing re-keying of subscription entries (`rekeyEntries`) moves the entries to the media key and merges the ones that now share a key.
 - **Galleries:** besides the gallery key, each image's media key is looked up.
   - If all images are in the library (for example, posted one by one before), the item is skipped.
-  - If only some are, the whole gallery is downloaded so the album is complete, with the warning "3 of 5 images are already in the library". [§14](#14-decisions-and-open-questions) asks whether to skip those images instead.
+  - If only some are, the gallery is *partly known*. What happens to its known images is open question 6 in [§14](#14-decisions-and-open-questions). Until it is decided: the whole gallery is downloaded so the album is complete, with the warning "3 of 5 images are already in the library".
 
 **Level 2.** After verify, the SHA-256 of each image is looked up in the media index.
 
 - A single image that is identical to a library file: the item is *skipped* ("Identical to `<path>`") with an alias row, and its work dir is removed. Nothing is finalized.
-- A gallery whose images are all identical to library files is skipped the same way. A partly identical gallery is handled like a partial overlap in level 1.
+- A gallery whose images are all identical to library files is skipped the same way. A partly identical gallery is *partly known*, as in level 1. This is the common case: a gallery is usually a fresh upload with new media IDs, so its overlap with the library only shows up here, after the download.
 - Videos get no file hash: two downloads of the same stream give different merged files, so the hash would never match. The video key covers crossposts.
 
 **Level 3.** A 64-bit dHash per image: ffmpeg scales the first frame to 9 × 8 gray pixels, and each bit says whether a pixel is brighter than its right neighbour. This works the same way for every image type ffmpeg reads.
@@ -546,13 +546,21 @@ Decided on 2026-10-28:
 | 3 | Images and a movie-only library | **Warn, don't block.** The add dialog says that Jellyfin's movie libraries don't show images. | [§8](#8-library-layout) |
 | 4 | NSFW | **Included by default.** Native reads NSFW posts through the blur and the 18+ dialog, like the browser extensions that remove them. Only content that Reddit withholds on the server goes through Arctic Shift. | [§2](#2-access-situation), [§5.4](#54-errors) |
 | 5 | Links to other sites | **Designed in [§7.6](#76-links-to-other-sites)** and built in phase R-5: an allowlist, the target's own key, metadata and site rules, and one job per target site. | R9 |
+| 7 | Default of level 3 (similar images) | **`warn`**: a perceptual match can be wrong (screenshots, memes on the same template), and a skipped image is easy to miss. | [§7.5](#75-duplicates-and-crossposts) |
 
 Still open:
 
-| # | Question | Recommendation |
-|---|---|---|
-| 6 | A gallery partly in the library: download the whole gallery, or only the new images? | **Whole gallery**: an album with gaps is worse than a few duplicate files. |
-| 7 | Default of level 3: `warn` or `skip`? | **`warn`**: a perceptual match can be wrong (screenshots, memes on the same template), and a skipped image is easy to miss. |
+**6. A partly known gallery.** Example: the library has images A and B from single posts. A new gallery holds A, B, C, D and E. Most of the time this is found by the file hash after the download (level 2), because the gallery was uploaded fresh. What happens to A and B in the gallery's folder?
+
+| Option | Gallery folder | Disk | Jellyfin |
+|---|---|---|---|
+| **a. Keep everything** | complete (A–E) | A and B twice | A and B show up twice |
+| **b. Drop the known ones** | only C, D, E; the marker points to A and B elsewhere | no duplicates | an album with gaps |
+| **c. Hardlink the known ones** | complete (A–E); A and B are second names of the existing files | no extra space | A and B show up twice |
+
+Option c links the existing library file into the staging folder in place of the downloaded copy, before the usual atomic rename. The existing file isn't changed: a hardlink only adds a second name for the same data, and deleting one name leaves the other. If linking fails (another filesystem, a library on a share without hardlinks), the downloaded copy is kept as in option a. When level 1 already knows A and B before the download, option c doesn't download them at all.
+
+Recommendation: **c**, falling back to **a**. An album with gaps (b) is worse than a duplicate entry in Jellyfin, and c costs no disk space. The trade-offs of c: a backup tool that doesn't understand hardlinks stores the file twice, and editing one name in place (rare for media) changes both.
 
 ## 15. Rollout
 
