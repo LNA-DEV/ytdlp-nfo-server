@@ -94,6 +94,9 @@ type Response struct {
 // ErrNotAllowed is returned for URLs outside the allowlist.
 var ErrNotAllowed = errors.New("host not allowed")
 
+// ErrTooLarge is returned by Download for a file over its limit.
+var ErrTooLarge = errors.New("file too large")
+
 // New creates a client.
 func New(opts Options) (*Client, error) {
 	if opts.Timeout == 0 {
@@ -304,7 +307,7 @@ func (c *Client) get(ctx context.Context, k kind, raw, referer string, max int64
 		return nil, err
 	}
 	if int64(len(resp.Body)) > max {
-		return nil, fmt.Errorf("response larger than %d bytes", max)
+		return nil, fmt.Errorf("larger than %d MB: %w", max>>20, ErrTooLarge)
 	}
 	if c.opts.OnResponse != nil {
 		c.opts.OnResponse(resp.Url, resp.StatusCode, resp.Body)
@@ -356,7 +359,7 @@ func (c *Client) plainGet(ctx context.Context, k kind, raw string, max int64) (*
 		return nil, err
 	}
 	if int64(len(body)) > max {
-		return nil, fmt.Errorf("response larger than %d bytes", max)
+		return nil, fmt.Errorf("larger than %d MB: %w", max>>20, ErrTooLarge)
 	}
 	if c.opts.OnResponse != nil {
 		c.opts.OnResponse(resp.Request.URL.String(), resp.StatusCode, body)
@@ -418,7 +421,7 @@ func (c *Client) Download(ctx context.Context, raw, referer string, w io.Writer,
 		return nil, err
 	}
 	if n > max {
-		return nil, fmt.Errorf("file larger than %d bytes", max)
+		return nil, fmt.Errorf("larger than %d MB: %w", max>>20, ErrTooLarge)
 	}
 	return out, nil
 }
