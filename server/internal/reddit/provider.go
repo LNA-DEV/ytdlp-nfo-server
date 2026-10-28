@@ -165,6 +165,9 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 		}
 		if e.Unsupported {
 			c.logf("%s: %s", p.Name(), e.Reason)
+			if first == nil {
+				first = e
+			}
 		} else {
 			c.logf("%s: failed (%s: %s)", p.Name(), e.Class, e.Reason)
 			tried = append(tried, p.Name())
