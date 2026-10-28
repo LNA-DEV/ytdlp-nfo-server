@@ -52,9 +52,13 @@ func (m *Manager) initSubscriptions() error {
 	m.subs.loop = subscriptions.NewLoop(subscriptions.Deps{
 		Store: m.Store, Host: subHost{m}, Logs: logs, Logf: m.logf,
 		CacheDir: filepath.Join(m.dataDir, "ytdlp", "cache"), TmpDir: tmp,
+		ListerFor: m.listerFor,
 	})
 	return nil
 }
+
+// listerFor picks the lister of a subscription source or preview URL.
+func (m *Manager) listerFor(string) subscriptions.Lister { return subscriptions.YtdlpLister{} }
 
 // startSubscriptions recovers interrupted checks and starts the loops.
 func (m *Manager) startSubscriptions() error {

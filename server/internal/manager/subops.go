@@ -906,23 +906,16 @@ func (m *Manager) PreviewSubscription(ctx context.Context, raw string) (*Preview
 		}
 	}
 	list := func(u string) (*ytdlp.Listing, error) {
-		lctx, cancel := context.WithTimeout(ctx, subscriptions.PreviewTimeout)
-		defer cancel()
 		_, tab, _ := subscriptions.YouTubeChannel(u)
-		res := ytdlp.Run(lctx, ytdlp.Call{Bin: bin.Path, CaptureStdout: true,
-			Args: ytdlp.ListArgs(u, ytdlp.ListSpec{Window: 10, YouTubeTab: tab != ""}, call)})
-		if !res.OK() {
-			cls := subscriptions.ListingClass(ytdlp.Classify(res))
-			if lctx.Err() != nil && ctx.Err() == nil {
-				cls = ytdlp.Classification{Class: ytdlp.ClassTransient, Reason: "the preview timed out"}
+		res, cls := m.listerFor(u).List(ctx, subscriptions.ListRequest{URL: u, Tab: tab, Window: 10,
+			Timeout: subscriptions.PreviewTimeout, Bin: bin, Call: call})
+		if cls != nil {
+			if res.TimedOut {
+				cls = &ytdlp.Classification{Class: ytdlp.ClassTransient, Reason: "the preview timed out"}
 			}
-			return nil, &PreviewError{Class: cls}
+			return nil, &PreviewError{Class: *cls}
 		}
-		l, err := ytdlp.ParseListing(res.Stdout)
-		if err != nil {
-			return nil, &PreviewError{Class: ytdlp.Classification{Class: ytdlp.ClassUnknown, Reason: err.Error()}}
-		}
-		return l, nil
+		return res.Listing, nil
 	}
 	target := raw
 	if base, tab, ok := subscriptions.YouTubeChannel(raw); ok && tab == "" {

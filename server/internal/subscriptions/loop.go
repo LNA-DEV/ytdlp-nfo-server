@@ -59,6 +59,8 @@ type Deps struct {
 	TmpDir   string
 	Logf     func(format string, args ...any)
 	Now      func() time.Time
+	// ListerFor picks the lister of a URL; nil lists everything with yt-dlp.
+	ListerFor func(url string) Lister
 }
 
 type doneMsg struct {
@@ -88,6 +90,9 @@ func NewLoop(d Deps) *Loop {
 	}
 	if d.Logf == nil {
 		d.Logf = func(string, ...any) {}
+	}
+	if d.ListerFor == nil {
+		d.ListerFor = func(string) Lister { return YtdlpLister{} }
 	}
 	return &Loop{d: d, wake: make(chan struct{}, 1), done: make(chan doneMsg, 16),
 		running: map[int64]bool{}, nightlyTried: map[int64]bool{},
@@ -363,36 +368,22 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 			desc += ", impersonating"
 		}
 		log.Printf("Listing %s (%s)", src.Canonical, desc)
-		lctx, cancel := context.WithTimeout(ctx, timeout)
-		var out []string
-		res := ytdlp.Run(lctx, ytdlp.Call{Bin: bin.Path, CaptureStdout: true,
-			Args:   ytdlp.ListArgs(src.Canonical, ytdlp.ListSpec{Window: window, YouTubeTab: src.Tab != ""}, call),
-			OnLine: func(line string) { out = append(out, line) }})
-		timedOut := lctx.Err() != nil && ctx.Err() == nil
-		cancel()
+		res, cls := l.d.ListerFor(src.Canonical).List(ctx, ListRequest{URL: src.Canonical, Tab: src.Tab,
+			Window: window, Timeout: timeout, Bin: bin, Call: call})
 		if ctx.Err() != nil {
 			return r
 		}
-		if !res.OK() {
-			cls := ListingClass(ytdlp.Classify(res))
-			if timedOut {
-				cls = ytdlp.Classification{Class: ytdlp.ClassTransient, Reason: "listing timed out after " + timeout.String()}
-			}
-			for _, line := range tail(out, 20) {
+		if cls != nil {
+			for _, line := range tail(res.Output, 20) {
 				log.Line("  " + line)
 			}
 			log.Printf("--- Failed (%s: %s) ---", cls.Class, cls.Reason)
-			r.Err, r.Output = &cls, out
+			r.Err, r.Output = cls, res.Output
 			return r
 		}
-		listing, err := ytdlp.ParseListing(res.Stdout)
-		if err != nil {
-			log.Printf("--- Failed: %v ---", err)
-			r.Err = &ytdlp.Classification{Class: ytdlp.ClassUnknown, Reason: err.Error()}
-			return r
-		}
+		listing := res.Listing
 		r.Listing = listing
-		if window == 0 || len(listing.Entries) < window {
+		if res.Complete {
 			r.Complete = true
 			log.Printf("Listed %d entries", len(listing.Entries))
 			return r
@@ -404,7 +395,7 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 				break
 			}
 		}
-		if !gap {
+		if !gap || res.Exhausted {
 			log.Printf("Listed %d entries", len(listing.Entries))
 			return r
 		}
