@@ -332,3 +332,36 @@ func TestLogLine(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// A job enqueued again while its run is still returning (a retry right
+// after the job was marked completed) runs again once the run ends.
+func TestEnqueueWhileFinishing(t *testing.T) {
+	h := newHarness()
+	s := New(h.run(func(int64) string { return "x" }), 1, nil, nil)
+	s.Start(context.Background())
+	s.Enqueue(Job{ID: 1, Pos: 1})
+	waitFor(t, func() bool { return len(s.Status().Running) == 1 })
+	s.Enqueue(Job{ID: 1, Pos: 2})
+	if !s.IsActive(1) {
+		t.Fatal("job not active")
+	}
+	h.release <- struct{}{}
+	waitFor(t, func() bool { h.mu.Lock(); defer h.mu.Unlock(); return h.runs[1] == 2 })
+	close(h.release)
+	waitFor(t, func() bool { st := s.Status(); return len(st.Running) == 0 && st.Queued == 0 })
+
+	// Cancelled while running: the pending enqueue is dropped as well.
+	h2 := newHarness()
+	s2 := New(h2.run(func(int64) string { return "x" }), 1, nil, nil)
+	s2.Start(context.Background())
+	s2.Enqueue(Job{ID: 1, Pos: 1})
+	waitFor(t, func() bool { return len(s2.Status().Running) == 1 })
+	s2.Enqueue(Job{ID: 1, Pos: 2})
+	<-s2.Cancel(1, ErrCancelled)
+	time.Sleep(20 * time.Millisecond)
+	if st := s2.Status(); len(st.Running) != 0 || st.Queued != 0 || s2.IsActive(1) {
+		t.Fatalf("status after cancel: %+v", st)
+	}
+	s.Shutdown(context.Background())
+	s2.Shutdown(context.Background())
+}
