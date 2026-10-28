@@ -28,7 +28,7 @@ yt-dlp cannot list subreddits, and its Reddit extractor needs the JSON endpoints
 | R7 | **Images get their own verify and no NFO.** Images are checked by content (magic bytes plus a full decode), never by URL. Image items carry a hidden marker file instead of `movie.nfo`, so the library check and target selection still recognize them ([§8](#8-library-layout)). |
 | R8 | **Reddit listings are never complete.** Reddit lists at most about 1000 posts, and Arctic Shift has the full history, which is far too much to list. Reddit sources therefore never report a complete listing, and the subscription loop never marks their entries *gone*. If more posts appear between two checks than native can list, the gap is filled from Arctic Shift or reported ([§7.7](#77-history-top-lists-and-gaps)). |
 | R9 | **Reddit-hosted media first, links to other sites after.** Images, galleries, GIFs and `v.redd.it` videos come first. Link posts to an allowlist of sites (YouTube, Redgifs, Imgur, Streamable, …) become ordinary downloads of their target in a later phase ([§7.6](#76-links-to-other-sites), [§15](#15-rollout)). |
-| R10 | **Measure before building.** Phase R-0 ships a probe subcommand. It shows from the user's own network whether each provider works and records the HTML and JSON this concept assumes ([§13](#13-testing)). The parser details in [§5](#5-native-provider) are expectations until R-0 confirms them. |
+| R10 | **Build first, then check against the real Reddit.** The parser is built on the names third parties observed ([§5.2](#52-parsing)), with all of them in one table so they are quick to correct. R-2 ships the diagnostics subcommand `reddit-probe`. Run on the user's server, it shows what each provider really gets and saves real pages as test fixtures ([§13](#13-testing)). |
 | R11 | **Duplicates are caught as early as possible.** There are three levels. The media key catches crossposts before any media is downloaded. A SHA-256 of each image catches identical re-uploads before finalize. An optional perceptual hash flags reposts that were resized or recompressed, as a warning by default. A duplicate is *skipped*, never failed, and nothing in the library is changed for it ([§7.5](#75-duplicates-and-crossposts)). |
 | R12 | **History and top lists are extras the user asks for.** Subscriptions follow `/new`. Top lists come only from native (Arctic Shift can't rank by score); they can be a subscription source, a one-time backfill or a one-off job. Older posts by time range come from Arctic Shift as a backfill. Everything a backfill lists is backlog and is downloaded only when asked ([§7.7](#77-history-top-lists-and-gaps)). |
 
@@ -44,14 +44,14 @@ Status as of 2026-10-28. Most sources are secondary; dates are reported, not con
 | Official OAuth API | New tokens need approval since 2025-11. Reportedly no new applications after 2026-10-31, and the public Data API closes by 2027-03. | no |
 | **Logged-out HTML** (`www.reddit.com/r/<sub>/…`) | Reddit says logged-out browsing of `reddit.com` stays available. A "blocked by network security" page hits clients by IP reputation (VPN, datacenter), rate and missing browser signals. | **native** |
 | **Arctic Shift API** | Keyless and free, with no uptime guarantee. Posts are archived about when they are posted, and scores settle after about 36 h. | **arcticshift** |
-| `i.redd.it`, `v.redd.it`, `preview.redd.it` | No reported restrictions. To be confirmed by R-0. | media |
+| `i.redd.it`, `v.redd.it`, `preview.redd.it` | No reported restrictions. The reality check after R-3 confirms it. | media |
 
 **Why native needs no login.** The pages a logged-out browser shows are server-rendered: the HTML of a subreddit page already contains one `<shreddit-post>` element per post, with the post's data in its attributes. Further posts come from an HTML endpoint the page calls while scrolling. Native requests the same documents and reads them without running JavaScript. Three things limit it:
 
-1. **Reddit decides per client.** Whether a client gets the page or the block page depends on the IP address and on how the client looks. Native looks like a current Chrome as far as that is possible without running JavaScript (R4), but it can't change the IP address. A home connection is more likely to work than a VPS; the optional `proxy` setting can route Reddit requests through one ([§9](#9-settings)). R-0 measures this.
+1. **Reddit decides per client.** Whether a client gets the page or the block page depends on the IP address and on how the client looks. Native looks like a current Chrome as far as that is possible without running JavaScript (R4), but it can't change the IP address. A home connection is more likely to work than a VPS; the optional `proxy` setting can route Reddit requests through one ([§9](#9-settings)). `reddit-probe` shows it on the user's network.
 2. **The logged-out view is limited.**
    - In the default card view, logged-out pages render only the first few posts; the compact view (`feedViewType=compactView`) renders more (measured by a third party on 2026-10-16).
-   - **NSFW:** Reddit blurs NSFW posts or shows an 18+ dialog to logged-out visitors. Browser extensions remove both, which indicates that the posts are in the page anyway. Native sets Reddit's `over18` cookie, as yt-dlp does, and reads posts regardless of blur and dialog elements. R-0 checks this on an NSFW community.
+   - **NSFW:** Reddit blurs NSFW posts or shows an 18+ dialog to logged-out visitors. Browser extensions remove both, which indicates that the posts are in the page anyway. Native sets Reddit's `over18` cookie, as yt-dlp does, and reads posts regardless of blur and dialog elements. The reality check covers an NSFW community.
    - **Real gates:** where Reddit withholds content on the server (quarantined communities, or a legally required age verification in some countries), native reports `auth_required` and does not try to get around it. The chain falls through to Arctic Shift.
 3. **HTML changes more often than an API.** The parser keeps all element and attribute names in one place, and a page it can't read is a classified error, never an empty result ([§5.4](#54-errors)).
 
@@ -101,7 +101,7 @@ Both providers fill the same struct (`internal/reddit/post.go`). Fields a provid
 | User posts | `https://www.reddit.com/user/<name>/submitted/?feedViewType=compactView`, then its own more-posts endpoint |
 | One post (item metadata) | `https://www.reddit.com/r/<sub>/comments/<id>/`; without a subreddit, `https://www.reddit.com/comments/<id>/` (redirects to the full URL) |
 
-The next-page requests are what third parties observed for `/new`. R-0 records their exact form for every sort order and for user pages.
+The next-page requests are what third parties observed for `/new`. `reddit-probe` shows their real form for every sort order and for user pages.
 
 **Browser identity** (R4). Native presents itself as one current desktop Chrome, and every layer tells the same story:
 
@@ -114,7 +114,7 @@ The next-page requests are what third parties observed for `/new`. R-0 records t
 | Cookies | One persistent cookie jar, like a returning logged-out visitor: what Reddit sets itself (`loid`, `csv`, `edgebucket`, `session_tracker`, …) plus `over18=1`. Stored in `DATA_DIR/reddit/cookies.json` (0600). It is reset after a block, and by hand in the settings. |
 | Timing | Pages of one listing 2–5 s apart (random), about as fast as a person scrolls |
 
-- **Library**: [`Noooste/azuretls-client`](https://github.com/Noooste/azuretls-client) (MIT). It brings Chrome's TLS and HTTP/2 fingerprints and controls the header order, and it works with the Go version the image builds with today (1.26). [`bogdanfinn/tls-client`](https://github.com/bogdanfinn/tls-client) (BSD-3) has more profiles (Chrome up to 152, Firefox, Safari) but needs Go 1.27. R-0 compares both with a plain `net/http` client.
+- **Library**: [`Noooste/azuretls-client`](https://github.com/Noooste/azuretls-client) (MIT). It brings Chrome's TLS and HTTP/2 fingerprints and controls the header order, and it works with the Go version the image builds with today (1.26). [`bogdanfinn/tls-client`](https://github.com/bogdanfinn/tls-client) (BSD-3) has more profiles (Chrome up to 152, Firefox, Safari) but needs Go 1.27, so the implementation uses `azuretls-client`. `reddit-probe` compares it with a plain `net/http` client.
 - **Profile updates**: the browser profile comes with the library and is updated with it. User-Agent, client hints and TLS profile always come from the same profile: a Chrome 150 User-Agent on a Chrome 131 fingerprint is more conspicuous than either alone.
 - **Limits of the disguise**:
   - The IP address can't be faked. The optional `proxy` setting routes Reddit requests through a connection of the user's choice, for example the home connection when the server runs on a VPS. There are no proxy pools and no CAPTCHA services.
@@ -127,7 +127,7 @@ The next-page requests are what third parties observed for `/new`. R-0 records t
 
 ### 5.2 Parsing
 
-The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go project). It reads tags and attributes only, never scripts. Every name below lives in one table in `internal/reddit/native/layout.go`. The names are what third-party scrapers report; R-0 confirms them and saves real pages as test fixtures.
+The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go project). It reads tags and attributes only, never scripts. Every name below lives in one table in `internal/reddit/native/layout.go`. The names are what third-party scrapers report; `reddit-probe` checks them against real pages and saves those as test fixtures.
 
 | Post field | Expected source |
 |---|---|
@@ -170,7 +170,7 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
 | Preview | `/api/subreddits/search?subreddit=<sub>` for the title, NSFW flag and subscriber count |
 | Share links (`/r/<sub>/s/<code>`) | `/api/short_links?paths=<path>` |
 
-- `fields` is not set: posts come back as the full objects Arctic Shift stored, including `media_metadata`, `gallery_data`, `secure_media`, `is_video` and `preview`. The documented list of selectable fields doesn't mention these, so R-0 confirms that they are present.
+- `fields` is not set: posts come back as the full objects Arctic Shift stored, including `media_metadata`, `gallery_data`, `secure_media`, `is_video` and `preview`. The documented list of selectable fields doesn't mention these; the parser treats them as optional, and `reddit-probe` shows whether they are present.
 - **Freshness**: posts are archived about when they are posted. A video can be archived before Reddit has processed it, without `secure_media`. Item metadata is therefore fetched again at download time ([§7.2](#72-pipeline)), and the manifest can be derived from the `v.redd.it` ID in `url` either way. `score` and `num_comments` are 0 or 1 for about 36 h, so there are no score filters in this concept, and Arctic Shift never serves top lists of recent posts. Scores of older posts are final, which makes a local top list of a past time range possible ([§7.7](#77-history-top-lists-and-gaps)).
 - **Politeness**, as the operator asks ("a free service, be considerate"):
   - one request at a time per server;
@@ -582,7 +582,7 @@ Items need no new columns.
 
 ## 13. Testing
 
-**R-0 probe.**
+**Diagnostics: `reddit-probe`** (ships with R-2).
 
 ```bash
 ytdlp-nfo-server reddit-probe [--provider native|arcticshift|all] [--client browser|tlsclient|plain] [--proxy URL] [--fixtures DIR] <subreddit or post URL>
@@ -594,17 +594,17 @@ It runs the providers from the container's network and prints:
 - the number of posts parsed and which attributes were found;
 - for the first image and video, whether `i.redd.it` and the `v.redd.it` manifest answer.
 
-`--client` compares the browser identity on `azuretls-client` (`browser`, the default), the same on `tls-client`, and a plain `net/http` client. This shows whether the disguise makes a difference from that network. The R-0 runs include an NSFW community and an NSFW post page, to confirm that the posts are in the page behind the overlay ([§2](#2-access-situation)).
+`--client` compares the browser identity (`browser`, the default) with a plain `net/http` client (`plain`). This shows whether the disguise makes a difference from that network. The first real runs should include an NSFW community and an NSFW post page, to confirm that the posts are in the page behind the overlay ([§2](#2-access-situation)).
 
-With `--fixtures`, it stores the pages and JSON responses with usernames and titles replaced, as fixtures for the parser tests. It writes nothing else and needs no database. Run hourly for a few days with `--quiet` (one line per run), it shows how stable each provider is from that network.
+With `--fixtures`, it stores the pages and JSON responses with usernames and titles replaced, as fixtures for the parser tests. Until such real fixtures exist, the parser tests use hand-written pages built from the names in [§5.2](#52-parsing). It writes nothing else and needs no database. Run hourly for a few days with `--quiet` (one line per run), it shows how stable each provider is from that network.
 
 **Automated tests** never touch the network:
-- a fake Reddit and a fake Arctic Shift (`httptest`) serve the R-0 fixtures, block pages, 429 responses and gates;
+- a fake Reddit and a fake Arctic Shift (`httptest`) serve the fixtures (hand-written until real ones from `reddit-probe` exist), block pages, 429 responses and gates;
 - a fake media host serves images, broken images and HTML instead of images.
 
 | Scenario | Expected result |
 |---|---|
-| Parser on the R-0 fixtures | Golden posts, including gallery, video, crosspost and NSFW post |
+| Parser on the fixtures | Golden posts, including gallery, video, crosspost and NSFW post |
 | An NSFW page with blur and 18+ dialog | Posts parsed as usual, `NSFW` set |
 | A page whose posts are withheld (age verification or quarantine) | `auth_required`, chain falls through |
 | Requests of the browser client (captured by the fake Reddit) | Header names and order, client hints, `Sec-Fetch-*` and `Referer` as in [§5.1](#51-requests); User-Agent and client hints of the same version |
@@ -674,6 +674,7 @@ Decided on 2026-10-28:
 | 10 | Older posts | **Backfill by time range from Arctic Shift**, with a count first, filters on the server, `backfillMax` per run and *Continue*. Everything becomes backlog and is downloaded only when asked. | R12, [§7.7](#77-history-top-lists-and-gaps) |
 | 11 | Sort order of a pasted URL | **Kept** for one-off jobs; items run in the order of the list. | [§7.7](#77-history-top-lists-and-gaps) |
 | 12 | File dates | **Post time** as the modification time of every media file. | [§8](#8-library-layout) |
+| 13 | Probe before building | **No.** R-1 to R-3 are built first, against hand-written fixtures. The probe ships as the diagnostics command `reddit-probe`, and the reality check on the user's server follows R-3. | R10, [§15](#15-rollout) |
 
 No questions are open.
 
@@ -681,10 +682,9 @@ No questions are open.
 
 | Phase | Content | Exit criteria |
 |---|---|---|
-| **R-0 Probe** | `reddit-probe` subcommand with the browser identity, fixtures | Run on the user's server for a few days. For each provider and client: works / works with limits / blocked, including NSFW. The parser table in [§5.2](#52-parsing) is confirmed or corrected, and the library for the browser identity is chosen. **Go/no-go per provider.** |
 | **R-1 Lister** | `Lister` interface, `ytdlpLister` | No behavior change. All tests pass, including the integrity tests |
-| **R-2 Listing** | Providers (the ones that passed R-0), Reddit sources, canonical URLs, preview, errors, chain, filters, settings, OPML import of Reddit RSS, gap warning and gap fill from Arctic Shift | A subreddit can be subscribed, checked and previewed. Entries appear in the feed with thumbnails. A gap is filled or reported |
-| **R-3 Media** | `attemptReddit`: images, GIFs, galleries, `v.redd.it` videos, verify, marker, post time as file date, library scan and check, single-post jobs and one-off subreddit jobs (`/new`). Media keys, media index, duplicate levels 1 and 2 | All tests from [§13](#13-testing) pass except level 3. A real subreddit with images, galleries, videos and crossposts lands complete and without duplicates in a *Home videos and photos* library |
+| **R-2 Listing** | Both providers with the browser identity, Reddit sources, canonical URLs, preview, errors, chain, filters, settings, OPML import of Reddit RSS, gap warning and gap fill from Arctic Shift, the `reddit-probe` diagnostics | Against the fake Reddit and fake Arctic Shift: a subreddit can be subscribed, checked and previewed, and a gap is filled or reported |
+| **R-3 Media** | `attemptReddit`: images, GIFs, galleries, `v.redd.it` videos, verify, marker, post time as file date, library scan and check, single-post jobs and one-off subreddit jobs (`/new`). Media keys, media index, duplicate levels 1 and 2 | All tests from [§13](#13-testing) pass except level 3. Then the **reality check** on the user's server: `reddit-probe` on a normal and an NSFW subreddit, the parser table corrected where needed, and a real subreddit with images, galleries, videos and crossposts lands complete and without duplicates in a *Home videos and photos* library. R-4 to R-6 start after that. |
 | **R-4 Similar images** | Level 3 (dHash), settings, warning and link in the UI | Level 3 tests pass. On a real subreddit with known reposts, the warnings were checked by hand for false positives |
 | **R-5 Links** | [§7.6](#76-links-to-other-sites): allowlist and known URL forms, `linked` entries, one job per target site, Imgur still images, settings and filter | The link tests from [§13](#13-testing) pass. A subreddit with YouTube and Redgifs links downloads them as ordinary items of those sites, and videos already in the library are not downloaded again |
 | **R-6 History and top lists** | [§7.7](#77-history-top-lists-and-gaps): top sources, backfills (`top`, `range`, `rangeTop`) with counts, *Continue* and server-side filters, sort orders of one-off jobs, UI for *Load older…* | The history and top-list tests from [§13](#13-testing) pass. A real subreddit's top 100 of the year and its posts of one month land in the backlog and download through *Download backlog…*. Posts from before 2016 need R-5 |
