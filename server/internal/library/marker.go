@@ -34,17 +34,20 @@ type MarkerFile struct {
 	Name   string `json:"name"`
 	Media  string `json:"media"` // media key
 	SHA256 string `json:"sha256,omitempty"`
+	DHash  string `json:"dhash,omitempty"` // hex, for the similarity check
 }
 
 // MarkerKnown is an image of a gallery that was already in the library
 // and was not stored again: Path is the file that has it, relative to the
 // library root. SHA256 is set when the image was found identical after
-// the download (a new media key, recorded as an alias).
+// the download, Similar when it looked like Path (level 3 in skip mode);
+// both record the new media key as an alias.
 type MarkerKnown struct {
 	Position int    `json:"position"`
 	Media    string `json:"media"`
 	Path     string `json:"path"`
 	SHA256   string `json:"sha256,omitempty"`
+	Similar  bool   `json:"similar,omitempty"`
 }
 
 // ID returns the id part of the marker's key.

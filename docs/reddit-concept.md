@@ -352,15 +352,15 @@ CREATE INDEX media_index_sha ON media_index(sha256);
 - A gallery whose images are all identical to library files is skipped the same way. A partly identical gallery is *partly known*, as in level 1: the identical files are removed from the work dir before finalize, and their media keys get alias rows. This is the common case: a gallery is usually a fresh upload with new media IDs, so its overlap with the library only shows up here, after the download.
 - Videos get no file hash: two downloads of the same stream give different merged files, so the hash would never match. The video key covers crossposts.
 
-**Level 3.** A 64-bit dHash per image: ffmpeg scales the first frame to 9 × 8 gray pixels, and each bit says whether a pixel is brighter than its right neighbour. This works the same way for every image type ffmpeg reads.
+**Level 3.** A 64-bit dHash per image: the first frame is scaled to 9 × 8 gray cells by averaging, and each bit says whether a cell is brighter than its right neighbour. JPEG, PNG and GIF are hashed from the decode that verify does anyway; WebP and AVIF, which the standard library can't decode, go through ffmpeg (`scale=9:8:flags=area,format=gray`).
 
 - Two images are *similar* if their hashes differ in at most `similarDistance` bits (default 6).
 - **Modes** (setting `similar`):
   - `warn` (default): the item is finalized as usual, with the warning "Looks like `<path>`" and a link in the UI;
-  - `skip`: treated like level 2;
+  - `skip`: treated like level 2, with an alias row pointing at the similar file (in a gallery: a `known` entry with `"similar": true`);
   - `off`: no hash.
 - Images under 64 × 64 pixels and almost uniform images (low variance) get no hash, because such hashes match too easily.
-- The hashes are kept in memory as a list of 64-bit values and compared linearly. A million images take 8 MB and a few milliseconds per lookup, so no special index is needed.
+- The hashes are stored in `media_index.dhash` and kept in memory as a list of hash and row id, compared linearly. A million images take 16 MB and a few milliseconds per lookup, so no special index is needed. The list is extended by finalize and reloaded after archive entries are removed.
 - Videos are not hashed in this concept. A later version can hash frames at 10, 50 and 90 % of the duration, together with the duration.
 
 **Force re-download** skips levels 1 to 3 for that item, as it skips the archive check today: the user asked for the post again, with all its images.

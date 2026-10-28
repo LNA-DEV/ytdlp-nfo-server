@@ -26,6 +26,7 @@ type Store struct {
 	db     *sql.DB
 	path   string
 	memory bool
+	hashes hashList // dHashes of the media index
 }
 
 // Open opens (and migrates) the database at path. An empty path opens a

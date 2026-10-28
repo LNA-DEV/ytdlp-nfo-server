@@ -5,13 +5,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"html"
 	"image"
 	"image/color"
 	"image/color/palette"
 	"image/draw"
 	"image/gif"
+	"image/jpeg"
 	"image/png"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strconv"
@@ -107,16 +110,53 @@ func picture(seed int, tag string) *image.RGBA {
 }
 
 // MediaBytes returns what the fake i.redd.it serves for a media id: a PNG,
-// or a GIF for a .gif name, unless SetImage set other bytes.
+// or a GIF for a .gif name, unless SetImage set other bytes. Every id gets
+// its own picture (random color blocks), so different ids are neither
+// identical nor similar.
 func MediaBytes(id string, gifImage bool) []byte {
 	var b bytes.Buffer
+	img := mediaPicture(id)
 	if gifImage {
-		pal := image.NewPaletted(image.Rect(0, 0, 40, 30), palette.Plan9)
-		draw.Draw(pal, pal.Bounds(), picture(len(id), id), image.Point{}, draw.Src)
+		pal := image.NewPaletted(img.Bounds(), palette.Plan9)
+		draw.Draw(pal, pal.Bounds(), img, image.Point{}, draw.Src)
 		gif.EncodeAll(&b, &gif.GIF{Image: []*image.Paletted{pal, pal}, Delay: []int{10, 10}})
 		return b.Bytes()
 	}
-	png.Encode(&b, picture(len(id), id))
+	png.Encode(&b, img)
+	return b.Bytes()
+}
+
+func mediaPicture(id string) *image.RGBA {
+	h := fnv.New64a()
+	h.Write([]byte(id))
+	r := rand.New(rand.NewPCG(h.Sum64(), 7))
+	var grid [9][12]color.RGBA
+	for y := range grid {
+		for x := range grid[y] {
+			grid[y][x] = color.RGBA{uint8(r.IntN(256)), uint8(r.IntN(256)), uint8(r.IntN(256)), 255}
+		}
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 120, 90))
+	for y := 0; y < 90; y++ {
+		for x := 0; x < 120; x++ {
+			img.Set(x, y, grid[y/10][x/10])
+		}
+	}
+	return img
+}
+
+// Repost returns the picture of a media id resized to w × h and saved as
+// a JPEG: a repost that is similar, not identical.
+func Repost(id string, w, h, quality int) []byte {
+	src := mediaPicture(id)
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dst.Set(x, y, src.At(x*120/w, y*90/h))
+		}
+	}
+	var b bytes.Buffer
+	jpeg.Encode(&b, dst, &jpeg.Options{Quality: quality})
 	return b.Bytes()
 }
 

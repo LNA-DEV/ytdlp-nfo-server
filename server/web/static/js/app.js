@@ -97,7 +97,7 @@ events.on('connection', (ok) => {
 const routes = [
   { re: /^#\/settings(?:\/(\w+))?$/, nav: 'settings', make: (m) => new SettingsView(m[1]) },
   { re: /^#\/diagnostics$/, nav: 'diagnostics', make: () => new DiagnosticsView() },
-  { re: /^#\/archive$/, nav: 'archive', make: () => new ArchiveView() },
+  { re: /^#\/archive(?:\?q=(.*))?$/, nav: 'archive', make: (m) => new ArchiveView({ q: m[1] ? decodeURIComponent(m[1]) : '' }) },
   { re: /^#\/subscriptions\/(\d+)$/, nav: 'subscriptions', make: (m) => new SubscriptionsView({ id: m[1] }) },
   { re: /^#\/subscriptions(?:\/(feed|list))?$/, nav: 'subscriptions', make: (m) => new SubscriptionsView({ tab: m[1] }) },
   { re: /^#\/jobs\/(\d+)$/, nav: 'jobs', make: (m) => new JobsView({ focus: m[1] }) },

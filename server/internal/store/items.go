@@ -191,8 +191,10 @@ func (s *Store) FinalizeItem(ctx context.Context, it *Item, e ArchiveEntry, medi
 			return err
 		}
 	}
+	var changed mediaChange
 	if len(media) > 0 {
-		if err := putMedia(ctx, tx, e.Key, media); err != nil {
+		var err error
+		if changed, err = putMedia(ctx, tx, e.Key, media); err != nil {
 			return err
 		}
 	}
@@ -214,7 +216,11 @@ func (s *Store) FinalizeItem(ctx context.Context, it *Item, e ArchiveEntry, medi
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.hashes.apply(changed)
+	return nil
 }
 
 // URLsByArchiveKey returns the most recent item URL per archive key.

@@ -11,10 +11,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/artwork"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/library"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/nfo"
@@ -171,12 +173,14 @@ func (p *Pipeline) fetchPost(ctx context.Context, rc *runCtx, it *store.Item, di
 
 // redditFile is a verified media file in the work dir.
 type redditFile struct {
-	pos   int    // position in the gallery (1-based), 0 for a single file
-	name  string // file name in the work dir
-	ext   string
-	media string // media key
-	sha   string
-	size  int64
+	pos    int    // position in the gallery (1-based), 0 for a single file
+	name   string // file name in the work dir
+	ext    string
+	media  string // media key
+	sha    string
+	size   int64
+	dhash  uint64
+	hashed bool
 }
 
 // knownImage is an image of a gallery that is already in the library.
@@ -186,9 +190,10 @@ type knownImage struct {
 }
 
 // redditImages downloads an image, a GIF or a gallery (Reddit concept
-// §7.2 steps 3 and 4) with the duplicate levels 1 and 2 (§7.5).
+// §7.2 steps 3 and 4) with the duplicate levels 1 to 3 (§7.5).
 func (p *Pipeline) redditImages(ctx context.Context, rc *runCtx, it *store.Item, post *reddit.Post, dir string) error {
 	force := rc.job.Options.Force
+	dup := rc.settings.Reddit.Duplicates
 	gallery := post.Kind == reddit.KindGallery
 	if len(post.Media) == 0 {
 		return failure(ytdlp.ClassUnknown, "the post lists no images")
@@ -243,7 +248,7 @@ func (p *Pipeline) redditImages(ctx context.Context, rc *runCtx, it *store.Item,
 			return failure(ytdlp.ClassPermanent, fmt.Sprintf("the gallery is larger than %d GB", maxGalleryBytes>>30))
 		}
 		// Level 2: an identical file is already in the library.
-		if !force {
+		if !force && dup.ContentHash {
 			if row, err := p.d.Store.MediaBySHA(bg, f.sha); err == nil && row != nil {
 				if !gallery {
 					return p.skipDuplicate(rc, it, "Identical to "+row.Path,
@@ -253,6 +258,26 @@ func (p *Pipeline) redditImages(ctx context.Context, rc *runCtx, it *store.Item,
 				known = append(known, knownImage{library.MarkerKnown{Position: pos, Media: mediaKey, Path: row.Path, SHA256: f.sha}, row.ArchiveKey})
 				os.Remove(filepath.Join(dir, f.name))
 				continue
+			}
+		}
+		// Level 3: a similar image (resized, recompressed) is in the library.
+		if !force && f.hashed && dup.Similar != config.SimilarOff {
+			if row, dist, err := p.d.Store.SimilarMedia(bg, f.dhash, dup.SimilarDistance); err == nil && row != nil {
+				switch {
+				case dup.Similar == config.SimilarWarn && gallery:
+					it.AddWarning(fmt.Sprintf("Image %d looks like %s", pos, row.Path))
+				case dup.Similar == config.SimilarWarn:
+					it.AddWarning("Looks like " + row.Path)
+				case !gallery:
+					return p.skipDuplicate(rc, it, "Looks like "+row.Path,
+						[]store.MediaRow{{MediaKey: mediaKey, ArchiveKey: row.ArchiveKey, Path: row.Path, Alias: true}})
+				}
+				rc.log.Printf("Image %d of %d looks like %s (dHash distance %d)", i+1, n, row.Path, dist)
+				if dup.Similar == config.SimilarSkip {
+					known = append(known, knownImage{library.MarkerKnown{Position: pos, Media: mediaKey, Path: row.Path, Similar: true}, row.ArchiveKey})
+					os.Remove(filepath.Join(dir, f.name))
+					continue
+				}
 			}
 		}
 		files = append(files, f)
@@ -271,8 +296,11 @@ func (p *Pipeline) redditImages(ctx context.Context, rc *runCtx, it *store.Item,
 		// show as in library.
 		aliases := []store.MediaRow{{MediaKey: it.ArchiveKey, ArchiveKey: known[0].archiveKey, Path: known[0].Path, Alias: true}}
 		for _, k := range known {
-			if k.SHA256 != "" {
+			switch {
+			case k.SHA256 != "":
 				aliases = append(aliases, store.MediaRow{MediaKey: k.Media, SHA256: k.SHA256, Alias: true})
+			case k.Similar:
+				aliases = append(aliases, store.MediaRow{MediaKey: k.Media, ArchiveKey: k.archiveKey, Path: k.Path, Alias: true})
 			}
 		}
 		return p.skipDuplicate(rc, it, fmt.Sprintf("All %d images are already in the library", len(known)), aliases)
@@ -310,7 +338,9 @@ func (p *Pipeline) redditImage(ctx context.Context, rc *runCtx, dir, base, url s
 			sha, size, herr := hashFile(m)
 			if herr == nil {
 				rc.log.Printf("Reusing verified %s", filepath.Base(m))
-				return redditFile{name: filepath.Base(m), ext: info.Ext(), sha: sha, size: size}, false, nil
+				f := redditFile{name: filepath.Base(m), ext: info.Ext(), sha: sha, size: size}
+				p.imageHash(ctx, rc, m, info, &f)
+				return f, false, nil
 			}
 		}
 		os.Remove(m)
@@ -369,7 +399,25 @@ func (p *Pipeline) redditImage(ctx context.Context, rc *runCtx, dir, base, url s
 	}
 	rc.log.Printf("Verified %s: %s %d×%d, %s", filepath.Base(final), info.Type, info.Width, info.Height, humanBytes(size))
 	_ = failpoint.Check("reddit:image-saved")
-	return redditFile{name: filepath.Base(final), ext: info.Ext(), sha: sha, size: size}, false, nil
+	f = redditFile{name: filepath.Base(final), ext: info.Ext(), sha: sha, size: size}
+	p.imageHash(ctx, rc, final, info, &f)
+	return f, false, nil
+}
+
+// imageHash sets the dHash of a verified image: from its decode, or from
+// ffmpeg for WebP and AVIF. Without level 3 nothing is hashed.
+func (p *Pipeline) imageHash(ctx context.Context, rc *runCtx, path string, info artwork.ImageInfo, f *redditFile) {
+	if rc.settings.Reddit.Duplicates.Similar == config.SimilarOff {
+		return
+	}
+	f.dhash, f.hashed = info.DHash, info.Hashed
+	if !info.Hashed && (info.Type == artwork.TypeWebP || info.Type == artwork.TypeAVIF) {
+		h, ok, err := p.d.Artwork.DHashFile(ctx, path, info)
+		if err != nil {
+			rc.log.Printf("No similarity hash for %s: %v", filepath.Base(path), err)
+		}
+		f.dhash, f.hashed = h, ok
+	}
 }
 
 func hostOf(u string) string {
@@ -590,8 +638,14 @@ func (p *Pipeline) finalizeReddit(rc *runCtx, it *store.Item, post *reddit.Post,
 		if f.pos > 0 {
 			dst = fmt.Sprintf("%s - %02d.%s", target.Base, f.pos, f.ext)
 		}
-		moves = append(moves, store.FileMove{Src: f.name, Dst: dst, Size: f.size, Media: f.media, SHA256: f.sha})
-		marker.Files = append(marker.Files, library.MarkerFile{Name: dst, Media: f.media, SHA256: f.sha})
+		mv := store.FileMove{Src: f.name, Dst: dst, Size: f.size, Media: f.media, SHA256: f.sha}
+		mf := library.MarkerFile{Name: dst, Media: f.media, SHA256: f.sha}
+		if f.hashed {
+			h := f.dhash
+			mv.DHash, mf.DHash = &h, strconv.FormatUint(h, 16)
+		}
+		moves = append(moves, mv)
+		marker.Files = append(marker.Files, mf)
 	}
 	moves = append(moves, extra...)
 	data, err := marker.Encode()
@@ -619,7 +673,7 @@ func mediaRows(it *store.Item, root string) []store.MediaRow {
 	var rows []store.MediaRow
 	for _, f := range it.Files {
 		if f.Media != "" {
-			rows = append(rows, store.MediaRow{MediaKey: f.Media, Path: it.FinalPath + "/" + f.Dst, SHA256: f.SHA256})
+			rows = append(rows, store.MediaRow{MediaKey: f.Media, Path: it.FinalPath + "/" + f.Dst, SHA256: f.SHA256, DHash: f.DHash})
 		}
 	}
 	if len(rows) == 0 {
@@ -627,8 +681,11 @@ func mediaRows(it *store.Item, root string) []store.MediaRow {
 	}
 	if m := library.ReadMarker(filepath.Join(root, filepath.FromSlash(it.FinalPath))); m != nil {
 		for _, k := range m.Known {
-			if k.SHA256 != "" {
+			switch {
+			case k.SHA256 != "":
 				rows = append(rows, store.MediaRow{MediaKey: k.Media, SHA256: k.SHA256, Alias: true})
+			case k.Similar:
+				rows = append(rows, store.MediaRow{MediaKey: k.Media, Path: k.Path, Alias: true})
 			}
 		}
 	}

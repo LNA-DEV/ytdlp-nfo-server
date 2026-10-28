@@ -36,10 +36,10 @@ func TestVerifyImage(t *testing.T) {
 		want ImageInfo
 		err  string
 	}{
-		{"a.jpg", encode(t, TypeJPEG), ImageInfo{TypeJPEG, 16, 9}, ""},
-		{"a.png", png, ImageInfo{TypePNG, 16, 9}, ""},
-		{"anim.gif", anim.Bytes(), ImageInfo{TypeGIF, 10, 6}, ""},
-		{"a.webp", []byte("RIFF\x00\x00\x00\x00WEBPVP8 data"), ImageInfo{TypeWebP, 640, 480}, ""},
+		{"a.jpg", encode(t, TypeJPEG), ImageInfo{Type: TypeJPEG, Width: 16, Height: 9}, ""},
+		{"a.png", png, ImageInfo{Type: TypePNG, Width: 16, Height: 9}, ""},
+		{"anim.gif", anim.Bytes(), ImageInfo{Type: TypeGIF, Width: 10, Height: 6}, ""},
+		{"a.webp", []byte("RIFF\x00\x00\x00\x00WEBPVP8 data"), ImageInfo{Type: TypeWebP, Width: 640, Height: 480}, ""},
 		{"page.png", []byte("<!doctype html><title>Imgur</title>"), ImageInfo{}, "not an image"},
 		{"cut.png", png[:len(png)/2], ImageInfo{}, "broken png"},
 		{"cut.gif", anim.Bytes()[:40], ImageInfo{}, "broken GIF"},

@@ -343,3 +343,69 @@ func TestRedditSubscriptionDownloads(t *testing.T) {
 		t.Fatalf("crosspost: in library %q, %d jobs", got, len(w.subJobs(pics)))
 	}
 }
+
+// Level 3: a resized, recompressed repost looks like a library image.
+func TestRedditSimilarImages(t *testing.T) {
+	w, site := redditMediaWorld(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+	site.Add(&fakereddit.Post{ID: "o1", Subreddit: "pics", Title: "Original", Kind: "image", Media: []string{"img1"}, Created: now},
+		&fakereddit.Post{ID: "g1", Subreddit: "pics", Title: "Gallery", Kind: "gallery", Media: []string{"a1", "a2"}, Created: now})
+	for _, id := range []string{"o1", "g1"} {
+		if j := w.download(postURL("pics", id), config.OptionsRequest{}); j.State != store.JobCompleted {
+			t.Fatalf("%s: %s\n%s", id, j.State, w.log(j.ID))
+		}
+	}
+	setSimilar := func(mode string) {
+		t.Helper()
+		if _, err := w.m.Settings.Update(ctx, func(s *config.Settings) error { s.Reddit.Duplicates.Similar = mode; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// warn (default): finalized, with a warning.
+	site.SetImage("rs1", fakereddit.Repost("img1", 100, 75, 70))
+	site.Add(&fakereddit.Post{ID: "r1", Subreddit: "pics", Title: "Repost", Kind: "image", Media: []string{"rs1"}, Created: now})
+	j := w.download(postURL("pics", "r1"), config.OptionsRequest{})
+	it := w.items(j.ID)[0]
+	if it.State != store.ItemDone || !slices.Equal(it.Warnings, []string{"Looks like Original [o1]/Original [o1].png"}) {
+		t.Fatalf("warn: %s %v\n%s", it.State, it.Warnings, w.log(j.ID))
+	}
+
+	// skip: skipped with an alias to the similar file.
+	setSimilar(config.SimilarSkip)
+	site.SetImage("rs2", fakereddit.Repost("a2", 90, 80, 60))
+	site.Add(&fakereddit.Post{ID: "r2", Subreddit: "pics", Title: "Again", Kind: "image", Media: []string{"rs2"}, Created: now})
+	j = w.download(postURL("pics", "r2"), config.OptionsRequest{})
+	it = w.items(j.ID)[0]
+	if it.State != store.ItemSkipped || it.Error != "Looks like Gallery [g1]/Gallery [g1] - 02.png" {
+		t.Fatalf("skip: %+v\n%s", it, w.log(j.ID))
+	}
+	if row, _ := w.m.Store.MediaByKey(ctx, "redditmedia rs2"); row == nil || !row.Alias || row.Path != "Gallery [g1]/Gallery [g1] - 02.png" {
+		t.Fatalf("alias: %+v", row)
+	}
+
+	// A gallery with a similar image stores only the other one.
+	site.SetImage("gs1", fakereddit.Repost("a1", 110, 80, 65))
+	site.Add(&fakereddit.Post{ID: "g2", Subreddit: "pics", Title: "Mixed", Kind: "gallery", Media: []string{"gs1", "new1"}, Created: now})
+	j = w.download(postURL("pics", "g2"), config.OptionsRequest{})
+	if got := w.lib("Mixed [g2]"); j.State != store.JobCompleted || !slices.Equal(got, []string{library.MarkerName, "Mixed [g2] - 02.png"}) {
+		t.Fatalf("gallery: %v\n%s", got, w.log(j.ID))
+	}
+	m := library.ReadMarker(filepath.Join(w.env.LibraryRoot(), "Mixed [g2]"))
+	if m == nil || len(m.Known) != 1 || !m.Known[0].Similar || m.Known[0].Path != "Gallery [g1]/Gallery [g1] - 01.png" || m.Files[0].DHash == "" {
+		t.Fatalf("marker: %+v", m)
+	}
+	if row, _ := w.m.Store.MediaByKey(ctx, "redditmedia gs1"); row == nil || !row.Alias {
+		t.Fatalf("gallery alias: %+v", row)
+	}
+
+	// off: no hash, no warning.
+	setSimilar(config.SimilarOff)
+	site.SetImage("rs3", fakereddit.Repost("img1", 96, 72, 50))
+	site.Add(&fakereddit.Post{ID: "r3", Subreddit: "pics", Title: "Third", Kind: "image", Media: []string{"rs3"}, Created: now})
+	j = w.download(postURL("pics", "r3"), config.OptionsRequest{})
+	if it = w.items(j.ID)[0]; it.State != store.ItemDone || len(it.Warnings) != 0 {
+		t.Fatalf("off: %s %v", it.State, it.Warnings)
+	}
+}

@@ -106,3 +106,40 @@ func TestMediaIndex(t *testing.T) {
 		t.Fatal("crosspost entry still in library")
 	}
 }
+
+func TestSimilarMedia(t *testing.T) {
+	s := openTest(t, true)
+	ctx := context.Background()
+	job := &Job{URL: "https://www.reddit.com/r/pics/new", State: JobRunning}
+	s.CreateJob(ctx, job)
+	a := &Item{JobID: job.ID, State: ItemDone, ArchiveKey: "redditmedia a"}
+	b := &Item{JobID: job.ID, Index: 1, State: ItemDone, ArchiveKey: "redditmedia b"}
+	s.CreateItems(ctx, []*Item{a, b})
+	h := func(v uint64) *uint64 { return &v }
+	finalize := func(it *Item, hash *uint64) {
+		t.Helper()
+		if err := s.FinalizeItem(ctx, it, ArchiveEntry{Key: it.ArchiveKey, Extractor: "redditmedia", VideoID: "x", FinalizedAt: time.Now()},
+			MediaRow{MediaKey: it.ArchiveKey, Path: it.ArchiveKey + ".png", DHash: hash}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finalize(a, h(0xF0F0F0F0F0F0F0F0))
+	if m, d, _ := s.SimilarMedia(ctx, 0xF0F0F0F0F0F0F0F1, 6); m == nil || m.MediaKey != "redditmedia a" || d != 1 {
+		t.Fatalf("similar: %+v %d", m, d)
+	}
+	// The loaded list learns new files without a reload.
+	finalize(b, h(0x0F0F0F0F0F0F0F0F))
+	if m, d, _ := s.SimilarMedia(ctx, 0x0F0F0F0F0F0F0F0E, 6); m == nil || m.MediaKey != "redditmedia b" || d != 1 {
+		t.Fatalf("new file: %+v %d", m, d)
+	}
+	if m, _, _ := s.SimilarMedia(ctx, 0x00000000FFFFFFFF, 6); m != nil {
+		t.Fatalf("distant hash matched %+v", m)
+	}
+	// A removed archive entry takes its hash along.
+	if err := s.RemoveArchive(ctx, "redditmedia a"); err != nil {
+		t.Fatal(err)
+	}
+	if m, _, _ := s.SimilarMedia(ctx, 0xF0F0F0F0F0F0F0F0, 6); m != nil {
+		t.Fatalf("removed file matched %+v", m)
+	}
+}

@@ -25,6 +25,10 @@ type ImageInfo struct {
 	Type   string // jpeg, png, gif, webp or avif
 	Width  int
 	Height int
+	// DHash is the difference hash if Hashed (JPEG, PNG and GIF; WebP and
+	// AVIF are hashed with Maker.DHashFile).
+	DHash  uint64
+	Hashed bool
 }
 
 // Ext returns the file extension of the image type.
@@ -73,6 +77,7 @@ func VerifyImage(ctx context.Context, path, ffprobe string) (ImageInfo, error) {
 			if len(g.Image) == 0 {
 				return info, errors.New("GIF without frames")
 			}
+			info.DHash, info.Hashed = DHash(g.Image[0])
 			break
 		}
 		fallthrough
@@ -82,6 +87,7 @@ func VerifyImage(ctx context.Context, path, ffprobe string) (ImageInfo, error) {
 			return info, fmt.Errorf("broken %s: %w", info.Type, err)
 		}
 		info.Width, info.Height = img.Bounds().Dx(), img.Bounds().Dy()
+		info.DHash, info.Hashed = DHash(img)
 	default:
 		if err := probeImage(ctx, path, ffprobe, &info); err != nil {
 			return info, err

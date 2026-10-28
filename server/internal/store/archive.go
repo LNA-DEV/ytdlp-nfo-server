@@ -66,6 +66,7 @@ func (s *Store) RemoveArchive(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
+	s.hashes.reset() // its media index rows went with it
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
@@ -154,5 +155,9 @@ func (s *Store) RemoveArchiveKeys(ctx context.Context, keys []string) (int, erro
 			n++
 		}
 	}
-	return n, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	s.hashes.reset() // their media index rows went with them
+	return n, nil
 }

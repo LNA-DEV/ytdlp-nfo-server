@@ -331,6 +331,13 @@ export class SettingsView {
           field('Library for new Reddit subscriptions', bindSelect(r, 'defaultLibrary', libs), 'Use a Jellyfin library of the type "Home videos and photos": movie libraries don\'t show images')),
         h('div', { class: 'btn-row', style: 'margin-top:.8rem' }, bindCheck(r, 'gapFill', 'Fill gaps from Arctic Shift when more posts appeared than native can list')),
         h('div', { class: 'grid' }, field('Posts per gap fill', num('backfillMax', 100, 50000)))),
+      h('div', { class: 'section' }, h('h2', {}, 'Duplicates'),
+        h('p', { class: 'muted' }, 'Crossposts and images already in the library are always recognized by their media id. These checks look at the downloaded file; Force re-download skips them.'),
+        h('div', { class: 'btn-row', style: 'margin-bottom:.8rem' }, bindCheck(r.duplicates, 'contentHash', 'Skip files identical to a library file (re-uploads under a new id)')),
+        h('div', { class: 'grid' },
+          field('Similar images', bindSelect(r.duplicates, 'similar', [['warn', 'Warn'], ['skip', 'Skip'], ['off', 'Off']]),
+            'Resized or recompressed reposts. A match can be wrong (memes on the same template), so the default only warns'),
+          field('Similarity (bits)', bindText(r.duplicates, 'similarDistance', { type: 'number', min: 0, max: 16 }), 'How far two image hashes may differ; 0–16, default 6'))),
       this.saveBtn());
   }
 

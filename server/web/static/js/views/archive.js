@@ -2,10 +2,12 @@ import { get, post, del, api } from '../api.js';
 import { h, clear, time, toast, confirmDialog, debounce } from '../util.js';
 
 export class ArchiveView {
+  constructor({ q } = {}) { this.initialQuery = q || ''; }
+
   render() {
     this.offset = 0;
-    this.q = '';
-    const search = h('input', { type: 'text', placeholder: 'Search key or path…', style: 'flex:1;min-width:0', oninput: debounce((e) => { this.q = e.target.value.trim(); this.offset = 0; this.load(); }, 300) });
+    this.q = this.initialQuery;
+    const search = h('input', { type: 'text', placeholder: 'Search key or path…', value: this.q, style: 'flex:1;min-width:0', oninput: debounce((e) => { this.q = e.target.value.trim(); this.offset = 0; this.load(); }, 300) });
     const file = h('input', { type: 'file', accept: '.txt,text/plain', class: 'hidden', onchange: async (e) => {
       const f = e.target.files[0];
       if (!f) return;
