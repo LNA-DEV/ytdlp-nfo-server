@@ -409,3 +409,127 @@ func TestRedditSimilarImages(t *testing.T) {
 		t.Fatalf("off: %s %v", it.State, it.Warnings)
 	}
 }
+
+// linkWorld is a fake Reddit plus fake yt-dlp videos behind YouTube and
+// Redgifs links (Reddit concept §7.6).
+func linkWorld(t *testing.T) (*world, *fakereddit.Site) {
+	t.Helper()
+	site := fakereddit.NewSite(t)
+	sc := &scenario.Scenario{Videos: map[string]scenario.Video{}, Aliases: map[string]string{}}
+	for _, v := range []struct{ id, extractor, url string }{
+		{"dQw4w9WgXcQ", "Youtube", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+		{"zzzzzzzzzzz", "Youtube", "https://www.youtube.com/watch?v=zzzzzzzzzzz"},
+		{"happyloudfox", "RedGifs", "https://www.redgifs.com/watch/happyloudfox"},
+	} {
+		sv := vid(v.id, "Target "+v.id)
+		sv.ExtractorKey = v.extractor
+		sc.Videos[v.id] = sv
+		sc.Aliases[v.url] = scenario.VideoPrefix + v.id
+	}
+	w := newWorld(t, sc)
+	w.reddit = &browser.Options{RootCAs: site.Roots, Dial: site.Dial}
+	w.startSubs()
+	return w, site
+}
+
+func TestRedditLinks(t *testing.T) {
+	w, site := linkWorld(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+	link := func(id, title, target string, minutes int) *fakereddit.Post {
+		return &fakereddit.Post{ID: id, Subreddit: "mixed", Title: title, Kind: "link", Link: target, Created: now.Add(-time.Duration(minutes) * time.Minute)}
+	}
+	site.Add(
+		&fakereddit.Post{ID: "p1", Subreddit: "mixed", Title: "Photo", Kind: "image", Media: []string{"img1"}, Created: now},
+		link("y1", "A song", "https://youtu.be/dQw4w9WgXcQ?si=share", 1),
+		link("y2", "Known song", "https://www.youtube.com/watch?v=abcdefghijk", 2),
+		link("rg", "A clip", "https://www.redgifs.com/watch/HappyLoudFox", 3),
+		link("im", "A picture", "https://i.imgur.com/AbCdE12.jpg", 4),
+		link("vm", "Elsewhere", "https://vimeo.com/123456", 5),
+	)
+	// A video already downloaded from YouTube itself.
+	w.m.Store.ImportArchiveKeys(ctx, []string{"youtube abcdefghijk"}, "test")
+
+	start := time.Now()
+	v := w.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/mixed/"}}, Mode: strp(store.ModeAuto),
+		Backlog: &store.BacklogChoice{Mode: store.BacklogAll}})
+	id := sid(v)
+	w.waitChecked(id, start)
+	all := map[string]EntryView{}
+	for _, e := range w.entries(id, "") {
+		all[e.Key] = e
+	}
+	if e := all["youtube dQw4w9WgXcQ"]; e.MediaKind != "linked" || e.URL != "https://www.youtube.com/watch?v=dQw4w9WgXcQ" || e.Title != "A song" {
+		t.Fatalf("YouTube entry: %+v (all: %v)", e, keysOf(w.entries(id, "")))
+	}
+	if e := all["youtube abcdefghijk"]; e.Status != store.EntryLibrary {
+		t.Fatalf("known video: %+v", e)
+	}
+	if e := all["imgur AbCdE12"]; e.MediaKind != "linked" || !strings.Contains(e.URL, "/comments/im/") {
+		t.Fatalf("Imgur entry: %+v", e)
+	}
+	if e := all["redditpost vm"]; e.Status != store.EntryIgnored || e.IgnoreReason != "link to vimeo.com" {
+		t.Fatalf("Vimeo entry: %+v", e)
+	}
+
+	// One job per site: Reddit (the photo and the Imgur image), YouTube,
+	// Redgifs; the known video gets none.
+	jobs := w.subJobs(id)
+	sites := map[string]*store.Job{}
+	for _, j := range jobs {
+		sites[j.Site] = w.wait(j.ID, store.JobCompleted, store.JobPartial, store.JobFailed)
+	}
+	if len(jobs) != 3 || sites["reddit.com"] == nil || sites["youtube.com"] == nil || sites["redgifs.com"] == nil {
+		t.Fatalf("jobs: %d %v", len(jobs), sites)
+	}
+	for site, j := range sites {
+		if j.State != store.JobCompleted {
+			t.Fatalf("%s job: %s %s\n%s", site, j.State, j.Error, w.log(j.ID))
+		}
+	}
+	yt := w.items(sites["youtube.com"].ID)
+	if len(yt) != 1 || yt[0].ArchiveKey != "youtube dQw4w9WgXcQ" || !strings.HasPrefix(yt[0].FinalPath, "mixed/Target dQw4w9WgXcQ [dQw4w9WgXcQ]") {
+		t.Fatalf("YouTube item: %+v", yt)
+	}
+	if rg := w.items(sites["redgifs.com"].ID); rg[0].ArchiveKey != "redgifs happyloudfox" {
+		t.Fatalf("Redgifs item: %+v", rg[0])
+	}
+	if got := w.lib("mixed/A picture [im]"); !slices.Equal(got, []string{library.MarkerName, "A picture [im].png"}) {
+		t.Fatalf("Imgur image: %v", got)
+	}
+	// yt-dlp-compatible tools learn the linked videos and the Imgur key.
+	if a := w.archiveFile(); !strings.Contains(a, "youtube dQw4w9WgXcQ") || !strings.Contains(a, "redgifs happyloudfox") {
+		t.Fatalf("archive file:\n%s", a)
+	}
+
+	// Adding a host follows its link posts that were left out.
+	if _, err := w.m.Settings.Update(ctx, func(s *config.Settings) error {
+		s.Reddit.ExternalHosts = append(s.Reddit.ExternalHosts, "vimeo.com")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.checkNow(id)
+	for _, e := range w.entries(id, "") {
+		if strings.HasSuffix(e.URL, "vimeo.com/123456") && e.Status == store.EntryIgnored {
+			t.Fatalf("vimeo entry still ignored: %+v", e)
+		}
+	}
+}
+
+// A pasted link post downloads its target; a link to a site off the list
+// fails with a reason.
+func TestRedditPastedLinkPost(t *testing.T) {
+	w, site := linkWorld(t)
+	site.Add(&fakereddit.Post{ID: "lp", Subreddit: "music", Title: "Listen", Kind: "link", Link: "https://www.youtube.com/watch?v=zzzzzzzzzzz", Created: time.Now()},
+		&fakereddit.Post{ID: "lv", Subreddit: "music", Title: "Vimeo", Kind: "link", Link: "https://vimeo.com/1", Created: time.Now()})
+	j := w.download(postURL("music", "lp"), config.OptionsRequest{})
+	its := w.items(j.ID)
+	if j.State != store.JobCompleted || its[0].ArchiveKey != "youtube zzzzzzzzzzz" || its[0].URL != "https://www.youtube.com/watch?v=zzzzzzzzzzz" {
+		t.Fatalf("link post: %s %+v\n%s", j.State, its[0], w.log(j.ID))
+	}
+	j = w.download(postURL("music", "lv"), config.OptionsRequest{})
+	if j.State != store.JobFailed || !strings.Contains(j.Error, "not on the list of followed sites") {
+		t.Fatalf("vimeo: %s %s", j.State, j.Error)
+	}
+}

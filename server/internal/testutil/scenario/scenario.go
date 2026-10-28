@@ -30,15 +30,18 @@ type Behavior struct {
 
 // Video is a fake video.
 type Video struct {
-	ID         string           `json:"id"`
-	Title      string           `json:"title"`
-	Uploader   string           `json:"uploader,omitempty"`
-	Duration   float64          `json:"duration"`
-	Thumbnail  string           `json:"thumbnail,omitempty"`
-	Thumbnails []map[string]any `json:"thumbnails,omitempty"`
-	Subtitles  []string         `json:"subtitles,omitempty"`
-	Languages  []string         `json:"languages,omitempty"` // audio tracks
-	AudioOnly  bool             `json:"audioOnly,omitempty"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// ExtractorKey is reported instead of "Fake" (a YouTube or Redgifs
+	// video behind a Reddit link post).
+	ExtractorKey string           `json:"extractorKey,omitempty"`
+	Uploader     string           `json:"uploader,omitempty"`
+	Duration     float64          `json:"duration"`
+	Thumbnail    string           `json:"thumbnail,omitempty"`
+	Thumbnails   []map[string]any `json:"thumbnails,omitempty"`
+	Subtitles    []string         `json:"subtitles,omitempty"`
+	Languages    []string         `json:"languages,omitempty"` // audio tracks
+	AudioOnly    bool             `json:"audioOnly,omitempty"`
 	// Single is the extension of a single-file format: it is downloaded
 	// without a merge, so --merge-output-format does not apply.
 	Single     string `json:"single,omitempty"`

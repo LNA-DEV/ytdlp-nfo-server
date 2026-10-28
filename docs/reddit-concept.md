@@ -373,7 +373,7 @@ Many posts link to media elsewhere: YouTube videos, Redgifs clips, Imgur images 
 
 **Principle: a link post becomes an ordinary download of its target.** The entry's URL is the target URL, not the permalink. Its item runs through the existing yt-dlp pipeline with the target's metadata, NFO, archive key and site rules. The same video is then the same library item, whether it came from Reddit, from a YouTube subscription or from a pasted URL.
 
-**Allowlist.** Posts are written by strangers, so only hosts on `externalHosts` ([§9](#9-settings)) are followed. The default list:
+**Allowlist.** Posts are written by strangers, so only hosts on `externalHosts` ([§9](#9-settings)) are followed. The default setting is `*.youtube.com`, `youtu.be`, `*.redgifs.com`, `streamable.com`, `*.imgur.com` (`*.domain` covers the domain and its subdomains), with these URL forms:
 
 | Site | URL forms | Key at listing time | Downloaded by |
 |---|---|---|---|
@@ -383,7 +383,8 @@ Many posts link to media elsewhere: YouTube videos, Redgifs clips, Imgur images 
 | Imgur video or GIF | `imgur.com/<id>`, `i.imgur.com/<id>.gifv`, `.mp4`, `.gif` | `imgur <id>` | yt-dlp |
 | Imgur still image | `i.imgur.com/<id>.jpg`, `.jpeg`, `.png`, `.webp` | `imgur <id>` | The image path of [§7.2](#72-pipeline): yt-dlp's Imgur extractor rejects still images ("not a video or animated image") |
 
-- **More hosts**: the user can add hosts (an exact host or `*.example.com`). A host without a known URL form gets the key `url <normalized URL>`, which the subscription system already uses for entries without an ID. After the metadata is fetched, the item is re-keyed to yt-dlp's key as usual.
+- **More hosts**: the user can add hosts (an exact host or `*.example.com`). A host without a known URL form gets the key `url <normalized URL>`, which the subscription system already uses for entries without an ID. After the metadata is fetched, the item is re-keyed to yt-dlp's key as usual. Adding a host also follows the link posts to it that earlier checks left out.
+- **Imgur still images** keep the post's URL as their entry URL: the Reddit pipeline fetches the post and downloads the image from `i.imgur.com` like a Reddit image (key `imgur <id>`, verify, levels 2 and 3, marker). A removed Imgur image (a redirect to `removed.png`) fails as removed.
 - **Keys**: the known keys are the ones yt-dlp writes (`<extractor key, lowercase> <id>`), and tests pin them against yt-dlp's URL patterns. A wrong guess costs nothing: the re-keying after fetch meta corrects it, and the key lock prevents a double download.
 - **Not followed**:
   - hosts not on the list;
@@ -394,7 +395,7 @@ Many posts link to media elsewhere: YouTube videos, Redgifs clips, Imgur images 
 - Reddit-hosted media in one job;
 - each target site in a job of its own (`"r/videos: 3 linked videos (youtube.com)"`), with the subscription's band and options resolved for the target URL (subscription option > site rule of the target > default).
 
-The exception is a single post URL pasted by hand that turns out to be a link post: its item switches to the target URL inside its job, and the target's site limits don't apply to that one job.
+The exceptions are pasted URLs: a single post URL that turns out to be a link post switches its item to the target URL inside its job, and a pasted subreddit or user URL keeps its linked items in its one job. The target's site limits don't apply to those jobs.
 
 **Duplicates.** Level 1 works through the target keys. A YouTube video that is already in the library, from anywhere, shows as *in library* at listing time, and a link to it in another subreddit is skipped without a download. Levels 2 and 3 apply to Imgur still images as to Reddit images.
 
@@ -405,7 +406,7 @@ The exception is a single post URL pasted by hand that turns out to be a link po
 
 **Filters.** `mediaKinds` has `linked` for these posts. The NSFW filter uses the post's flag, so it applies to links as well; most Redgifs links are NSFW.
 
-**Security.** Before a target URL reaches yt-dlp, it must pass all of these: `https` only, host on the allowlist, `config.ValidateURL`, and an address that isn't private (the check from [§10](#10-security)). yt-dlp can still follow redirects within the target site; the allowlist limits that to well-known sites.
+**Security.** For the known URL forms, the target URL is rebuilt from the validated id on the site's own host (`https://www.youtube.com/watch?v=<id>`), so nothing else from the post reaches yt-dlp. A target on a host the user added must pass all of these: `https` on the default port, no credentials, host on the allowlist, `config.ValidateURL`, and only public addresses (the check from [§10](#10-security), when the post is listed or followed). yt-dlp can still follow redirects within the target site; the allowlist limits that to well-known sites.
 
 ### 7.7 History, top lists and gaps
 

@@ -96,6 +96,18 @@ func (a redditAccess) Chain(providers string, logf func(string, ...any)) *reddit
 	return a.m.redditChain(providers, logf)
 }
 
+func (a redditAccess) Links() reddit.Links { return a.m.redditLinks() }
+
+// redditLinks returns the allowlist of link targets (Reddit concept §7.6).
+// With a fake Reddit, hosts are not resolved.
+func (m *Manager) redditLinks() reddit.Links {
+	l := reddit.Links{Hosts: m.Settings.Settings().Reddit.ExternalHosts, Public: browser.PublicHost}
+	if m.reddit.testOpts != nil {
+		l.Public = nil
+	}
+	return l
+}
+
 func (a redditAccess) Client() *browser.Client {
 	a.m.redditProviders()
 	a.m.reddit.mu.Lock()
@@ -106,7 +118,7 @@ func (a redditAccess) Client() *browser.Client {
 // listerFor picks the lister of a subscription source or preview URL.
 func (m *Manager) listerFor(u string) subscriptions.Lister {
 	if _, ok := reddit.Parse(u); ok {
-		return &subscriptions.RedditLister{Chain: m.redditChain,
+		return &subscriptions.RedditLister{Chain: m.redditChain, Links: m.redditLinks,
 			Settings: func() config.RedditSettings { return m.Settings.Settings().Reddit }}
 	}
 	return subscriptions.YtdlpLister{}

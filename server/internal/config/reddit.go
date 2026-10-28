@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
+	"strings"
 )
 
 // Reddit providers (Reddit concept §5, §6).
@@ -28,7 +30,21 @@ type RedditSettings struct {
 	BackfillMax      int    `json:"backfillMax"`      // posts per gap fill or backfill run
 	// Duplicates are the levels 2 and 3 of the duplicate check (§7.5).
 	Duplicates RedditDuplicates `json:"duplicates"`
+	// ExternalHosts are the sites whose link posts are downloaded (§7.6):
+	// hosts or "*.domain" (the domain and its subdomains).
+	ExternalHosts []string `json:"externalHosts"`
 }
+
+// DefaultRedditExternalHosts returns the sites followed by default.
+func DefaultRedditExternalHosts() []string {
+	return []string{"*.youtube.com", "youtu.be", "*.redgifs.com", "streamable.com", "*.imgur.com"}
+}
+
+var hostPatternRe = regexp.MustCompile(`^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
+
+// ValidHostPattern reports whether p is an allowlist entry: a host name
+// with a dot, or "*." and a domain.
+func ValidHostPattern(p string) bool { return hostPatternRe.MatchString(p) }
 
 // Modes of level 3 (similar images).
 const (
@@ -48,7 +64,8 @@ type RedditDuplicates struct {
 func DefaultRedditSettings() RedditSettings {
 	return RedditSettings{Providers: []string{RedditNative, RedditArcticShift}, FirstListing: 100, JobListLimit: 25,
 		PageDelaySeconds: 2, GapFill: true, BackfillMax: 5000,
-		Duplicates: RedditDuplicates{ContentHash: true, Similar: SimilarWarn, SimilarDistance: 6}}
+		Duplicates:    RedditDuplicates{ContentHash: true, Similar: SimilarWarn, SimilarDistance: 6},
+		ExternalHosts: DefaultRedditExternalHosts()}
 }
 
 // normalize fills settings stored before Reddit support existed.
@@ -60,6 +77,12 @@ func (r *RedditSettings) normalize() {
 	}
 	if r.Duplicates.Similar == "" { // stored before level 3 existed
 		r.Duplicates = d.Duplicates
+	}
+	if r.ExternalHosts == nil { // stored before links were followed
+		r.ExternalHosts = d.ExternalHosts
+	}
+	for i, h := range r.ExternalHosts {
+		r.ExternalHosts[i] = strings.ToLower(strings.TrimSpace(h))
 	}
 	for _, f := range []struct{ v, d *int }{
 		{&r.FirstListing, &d.FirstListing}, {&r.JobListLimit, &d.JobListLimit},
@@ -118,6 +141,11 @@ func (r RedditSettings) Validate(libraries map[string]bool) error {
 	}
 	if d := r.Duplicates.SimilarDistance; d < 0 || d > 16 {
 		return fmt.Errorf("reddit.duplicates.similarDistance must be between 0 and 16")
+	}
+	for _, h := range r.ExternalHosts {
+		if !ValidHostPattern(h) {
+			return fmt.Errorf("reddit.externalHosts: %q is not a host or *.domain", h)
+		}
 	}
 	if r.DefaultLibrary != "" && !libraries[r.DefaultLibrary] {
 		return fmt.Errorf("reddit.defaultLibrary %q does not exist", r.DefaultLibrary)

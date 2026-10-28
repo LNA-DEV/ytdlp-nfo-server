@@ -809,7 +809,7 @@ func (m *Manager) DownloadEntries(ctx context.Context, req DownloadEntriesReques
 			groups[e.SubscriptionID] = append(groups[e.SubscriptionID], e)
 		}
 		for _, sid := range order {
-			j, err := m.subJobTx(ctx, tx, subs[sid], opts[sid], band, groups[sid], nil)
+			js, err := m.subJobsTx(ctx, tx, subs[sid], opts[sid], band, groups[sid], nil)
 			if err != nil {
 				return err
 			}
@@ -818,7 +818,7 @@ func (m *Manager) DownloadEntries(ctx context.Context, req DownloadEntriesReques
 					return err
 				}
 			}
-			jobs = append(jobs, j)
+			jobs = append(jobs, js...)
 			res.Queued += len(groups[sid])
 		}
 		return nil

@@ -32,6 +32,7 @@ import (
 type RedditAccess interface {
 	Chain(providers string, logf func(format string, args ...any)) *reddit.Chain
 	Client() *browser.Client
+	Links() reddit.Links // the allowlist of link targets (§7.6)
 }
 
 // PostFile is the post as fetched for a Reddit item; it replaces
@@ -82,11 +83,20 @@ func (p *Pipeline) attemptReddit(ctx context.Context, rc *runCtx, it *store.Item
 		job.Thumbnail = post.Thumbnail
 		p.saveJob(job)
 	}
+	if post.Kind == reddit.KindLink {
+		t, ok := p.d.Reddit.Links().Resolve(ctx, post.Link)
+		if !ok {
+			return failure(ytdlp.ClassPermanent, "a link to "+post.LinkHost()+", which is not on the list of followed sites")
+		}
+		if !t.Image {
+			return p.followLink(ctx, rc, it, t, refetch, unlock)
+		}
+		// An Imgur still image goes through the image path (§7.6).
+		post.Kind, post.Media = reddit.KindImage, []reddit.Media{{URL: t.URL, MediaID: t.ID, Key: t.Key}}
+	}
 	switch post.Kind {
 	case reddit.KindText:
 		return failure(ytdlp.ClassPermanent, "a text post without media")
-	case reddit.KindLink:
-		return failure(ytdlp.ClassPermanent, "a link to "+post.LinkHost()+"; links to other sites are not downloaded yet")
 	case reddit.KindImage, reddit.KindGIF, reddit.KindGallery, reddit.KindVideo:
 	default:
 		return failure(ytdlp.ClassUnknown, "the post's media could not be read")
@@ -116,6 +126,32 @@ func (p *Pipeline) attemptReddit(ctx context.Context, rc *runCtx, it *store.Item
 		return p.redditVideo(ctx, rc, it, post, dir)
 	}
 	return p.redditImages(ctx, rc, it, post, dir)
+}
+
+// followLink switches an item from a link post to its target, which then
+// runs through the yt-dlp pipeline like a pasted URL (Reddit concept §7.6).
+// The target's site limits don't apply to this one job.
+func (p *Pipeline) followLink(ctx context.Context, rc *runCtx, it *store.Item, t reddit.LinkTarget, refetch bool, unlock *func()) error {
+	rc.log.Printf("Link post: following %s", t.URL)
+	keyBefore := it.ArchiveKey
+	it.URL, it.ArchiveKey, it.Extractor, it.VideoID = t.URL, "", "", ""
+	if !strings.HasPrefix(t.Key, "url ") { // a known form; else yt-dlp names the key
+		it.ArchiveKey = t.Key
+		it.Extractor, it.VideoID, _ = strings.Cut(t.Key, " ")
+	}
+	if it.ArchiveKey != keyBefore {
+		(*unlock)()
+		u, err := p.keys.lock(ctx, it.ArchiveKey, func() { rc.log.Line("Waiting: the same video is being processed by another job") })
+		if err != nil {
+			return errStop
+		}
+		*unlock = u
+		if p.skipIfArchived(rc, it) {
+			return errSkipped
+		}
+	}
+	p.saveItem(it)
+	return p.attempt(ctx, rc, it, refetch, unlock)
 }
 
 // fetchPost returns the post of an item, from a fresh post.json or
@@ -220,7 +256,7 @@ func (p *Pipeline) redditImages(ctx context.Context, rc *runCtx, it *store.Item,
 		if gallery {
 			pos, base = i+1, fmt.Sprintf("media-%02d", i+1)
 		}
-		mediaKey := reddit.ImageMediaKey(m.MediaID)
+		mediaKey := m.MediaKey()
 		// Level 1: an image of the gallery that is already somewhere in the
 		// library is not stored again (decision 6).
 		if gallery && !force {
@@ -369,7 +405,7 @@ func (p *Pipeline) redditImage(ctx context.Context, rc *runCtx, dir, base, url s
 		return fail(ytdlp.ClassPermanent, "the image is on a host that is not allowed: "+url)
 	case err != nil:
 		return fail(ytdlp.ClassTransient, "image download failed: "+err.Error())
-	case resp.Status == 404 || resp.Status == 410:
+	case resp.Status == 404 || resp.Status == 410, strings.HasSuffix(resp.URL, "i.imgur.com/removed.png"):
 		os.Remove(part)
 		return f, true, nil
 	case resp.Status == 429:
@@ -737,30 +773,46 @@ func (p *Pipeline) redditPlan(ctx context.Context, rc *runCtx, t reddit.Target) 
 		}
 		seen := map[string]bool{}
 		ignored, skipped := 0, 0
+		links := p.d.Reddit.Links()
 		for i := range page.Posts {
 			post := &page.Posts[i]
 			if len(items) >= limit {
 				break
 			}
-			if post.Kind == reddit.KindText || post.Kind == reddit.KindLink {
+			if post.Kind == reddit.KindText {
 				ignored++
 				continue
 			}
 			ext, id := post.ListingKey()
-			key := strings.ToLower(ext) + " " + id
+			key, u := strings.ToLower(ext)+" "+id, postPermalink(post)
+			if post.Kind == reddit.KindLink {
+				target, ok := links.Resolve(ctx, post.Link)
+				if !ok {
+					ignored++
+					continue
+				}
+				key = target.Key
+				if !target.Image {
+					u = target.URL
+				}
+			}
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			it := &store.Item{JobID: job.ID, Index: len(items), URL: postPermalink(post), Extractor: ext, VideoID: id,
-				ArchiveKey: key, Title: firstNonEmpty(post.Title, post.ID), PlaylistTitle: t.Folder(), State: store.ItemPending}
-			if !job.Options.Force && p.inArchive(key) {
+			it := &store.Item{JobID: job.ID, Index: len(items), URL: u, Title: firstNonEmpty(post.Title, post.ID),
+				PlaylistTitle: t.Folder(), State: store.ItemPending}
+			if !strings.HasPrefix(key, "url ") {
+				it.ArchiveKey = key
+				it.Extractor, it.VideoID, _ = strings.Cut(key, " ")
+			}
+			if !job.Options.Force && p.inArchive(it.ArchiveKey) {
 				it.State, it.Error, it.FinishedAt = store.ItemSkipped, "Already in library", p.d.Now()
 				skipped++
 			}
 			items = append(items, it)
 		}
-		rc.log.Printf("Found %d posts with media in %s via %s (%d without media left out, %d already in library)",
+		rc.log.Printf("Found %d posts with media in %s via %s (%d without media or with links to other sites left out, %d already in library)",
 			len(items), t.Name(), provider, ignored, skipped)
 		if len(items) == 0 {
 			return fail(ytdlp.ClassPermanent, "no posts with images or videos found")

@@ -396,6 +396,12 @@ func Apply(in Input) *Output {
 			if le.MediaKind != "" {
 				e.MediaKind = le.MediaKind
 			}
+			// A link post that was left out is followed now (a host was
+			// added to the allowlist).
+			if le.MediaKind == MediaLinked && e.Ignored && strings.HasPrefix(e.IgnoreReason, ReasonLinkPrefix) {
+				e.Ignored, e.IgnoreReason = false, ""
+				changed[e] = true
+			}
 			e.NSFW = e.NSFW || le.NSFW
 		}
 		// Where new entries appeared in a complete listing confirms the

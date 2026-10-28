@@ -17,7 +17,7 @@ const DETAIL_TABS = [
 ];
 const PAGE = 50;
 // Reddit (Reddit concept §7.1, §9).
-const MEDIA_KINDS = [['image', 'Images'], ['gif', 'GIFs'], ['gallery', 'Galleries'], ['video', 'Videos']];
+const MEDIA_KINDS = [['image', 'Images'], ['gif', 'GIFs'], ['gallery', 'Galleries'], ['video', 'Videos'], ['linked', 'Links (YouTube, Redgifs, …)']];
 const PROVIDERS = [['', 'Default (settings)'], ['native,arcticshift', 'Native, then Arctic Shift'], ['native', 'Native only'],
   ['arcticshift,native', 'Arctic Shift, then native'], ['arcticshift', 'Arctic Shift only']];
 

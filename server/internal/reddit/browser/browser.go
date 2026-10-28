@@ -50,6 +50,7 @@ type Profile struct {
 var DefaultHosts = []string{
 	"www.reddit.com", "reddit.com",
 	"i.redd.it", "preview.redd.it", "external-preview.redd.it", "v.redd.it",
+	"i.imgur.com", // still images of link posts (§7.6)
 	"arctic-shift.photon-reddit.com",
 }
 
@@ -460,6 +461,23 @@ func PublicAddr(a netip.Addr) bool {
 	return a.IsValid() && !a.IsLoopback() && !a.IsPrivate() && !a.IsLinkLocalUnicast() &&
 		!a.IsLinkLocalMulticast() && !a.IsMulticast() && !a.IsUnspecified() && !a.IsInterfaceLocalMulticast() &&
 		!netip.MustParsePrefix("100.64.0.0/10").Contains(a) // carrier-grade NAT
+}
+
+// PublicHost reports whether every address of a host is public (the
+// check for link targets on hosts the user added, Reddit concept §7.6).
+func PublicHost(ctx context.Context, host string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		return false
+	}
+	for _, ip := range ips {
+		if !PublicAddr(ip) {
+			return false
+		}
+	}
+	return true
 }
 
 // checkedDial resolves the host and dials the first public address. It

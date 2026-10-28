@@ -20,6 +20,8 @@ const (
 	ReasonNeedsCookie = "needs cookies"
 	ReasonNoMedia     = "no media"
 	ReasonLinkPrefix  = "link to "
+	// MediaLinked is the media kind of a link post to a followed site.
+	MediaLinked = "linked"
 )
 
 // linkHost returns the host of a link post's target, for its ignore reason.

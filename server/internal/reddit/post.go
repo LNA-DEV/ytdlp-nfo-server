@@ -36,6 +36,17 @@ type Media struct {
 	Width   int    `json:"width,omitempty"`
 	Height  int    `json:"height,omitempty"`
 	Caption string `json:"caption,omitempty"`
+	// Key is the media key if it isn't "redditmedia <MediaID>" (an Imgur
+	// image of a link post, §7.6).
+	Key string `json:"key,omitempty"`
+}
+
+// MediaKey returns the media key of one image.
+func (m Media) MediaKey() string {
+	if m.Key != "" {
+		return m.Key
+	}
+	return ImageMediaKey(m.MediaID)
 }
 
 // Post is the normalized record of one post (§4). Fields a provider can't
@@ -84,6 +95,10 @@ func (p *Post) MediaKeyParts() (extractor, id string) {
 			return ExtractorVideo, p.VideoID
 		}
 	case KindImage, KindGIF:
+		if len(p.Media) == 1 && p.Media[0].Key != "" {
+			ext, id, _ := strings.Cut(p.Media[0].Key, " ")
+			return ext, id
+		}
 		if len(p.Media) == 1 && p.Media[0].MediaID != "" {
 			return ExtractorMedia, p.Media[0].MediaID
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/joblog"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/notify"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/subscriptions"
@@ -257,25 +258,25 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 			Result: res, Settings: settings.Subscriptions, HasCookies: opts.CookieProfile != ""})
 		if res.OptionsErr == nil {
 			if len(out.Auto) > 0 {
-				j, err := m.subJobTx(ctx, tx, sub, opts, store.BandAuto, out.Auto, archived)
+				js, err := m.subJobsTx(ctx, tx, sub, opts, store.BandAuto, out.Auto, archived)
 				if err != nil {
 					return err
 				}
-				jobs = append(jobs, j)
+				jobs = append(jobs, js...)
 			}
 			for _, e := range out.Requeue {
-				j, err := m.subJobTx(ctx, tx, sub, opts, store.BandAuto, []*store.Entry{e}, archived)
+				js, err := m.subJobsTx(ctx, tx, sub, opts, store.BandAuto, []*store.Entry{e}, archived)
 				if err != nil {
 					return err
 				}
-				jobs = append(jobs, j)
+				jobs = append(jobs, js...)
 			}
 			if len(out.Backlog) > 0 {
-				j, err := m.subJobTx(ctx, tx, sub, opts, store.BandBacklog, out.Backlog, archived)
+				js, err := m.subJobsTx(ctx, tx, sub, opts, store.BandBacklog, out.Backlog, archived)
 				if err != nil {
 					return err
 				}
-				jobs = append(jobs, j)
+				jobs = append(jobs, js...)
 			}
 		}
 		for _, e := range out.Insert {
@@ -454,17 +455,66 @@ func removeSource(srcs []*store.Source, id int64) []*store.Source {
 // subJobTx creates one job with pre-planned items for entries of a
 // subscription and links the entries to the items (§4.3). Items run oldest
 // first; items whose key is in the archive are created as skipped.
+// subJobsTx queues entries as jobs. A Reddit subscription gets one job
+// per site (Reddit concept §7.6): Reddit-hosted media in one job, the link
+// posts of each other site in a job of their own, with the options
+// resolved for that site (subscription option > site rule of the target >
+// default), so its site rule, limits and cooldowns apply. Other
+// subscriptions keep one job: their videos may be served from another
+// host than the subscribed URL.
+func (m *Manager) subJobsTx(ctx context.Context, tx *store.Tx, sub *store.Subscription, opts config.Options, band store.Band,
+	entries []*store.Entry, archived map[string]bool) ([]*store.Job, error) {
+	_, isReddit := reddit.Parse(firstURL(sub))
+	own := config.SiteKey(config.Host(firstURL(sub)))
+	groups := map[string][]*store.Entry{}
+	var order []string
+	for _, e := range entries {
+		site := config.SiteKey(config.Host(e.URL))
+		if !isReddit || site == "" || site == own {
+			site = ""
+		}
+		if groups[site] == nil {
+			order = append(order, site)
+		}
+		groups[site] = append(groups[site], e)
+	}
+	settings := m.Settings.Settings()
+	var jobs []*store.Job
+	for _, site := range order {
+		o, u := opts, ""
+		if site != "" {
+			u = groups[site][0].URL
+			if r, err := config.Resolve(sub.Requested, &settings, m.siteRules(), u); err == nil {
+				o = r
+			}
+		}
+		j, err := m.subJobTx(ctx, tx, sub, o, band, groups[site], archived, u)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, nil
+}
+
+// subJobTx queues entries as one job; u is the job's URL if they are on
+// another site than the subscription ("" for its own site).
 func (m *Manager) subJobTx(ctx context.Context, tx *store.Tx, sub *store.Subscription, opts config.Options, band store.Band,
-	entries []*store.Entry, archived map[string]bool) (*store.Job, error) {
+	entries []*store.Entry, archived map[string]bool, u string) (*store.Job, error) {
 	srcByID := map[int64]*store.Source{}
 	for _, src := range sub.Sources {
 		srcByID[src.ID] = src
 	}
 	entries = append([]*store.Entry(nil), entries...)
 	subscriptions.SortOldestFirst(entries, srcByID)
-	u := firstURL(sub)
+	linkedSite := ""
+	if u != "" {
+		linkedSite = config.SiteKey(config.Host(u))
+	} else {
+		u = firstURL(sub)
+	}
 	j := &store.Job{URL: u, Site: m.siteGroup(u, opts), State: store.JobQueued, Requested: sub.Requested, Options: opts,
-		SubscriptionID: sub.ID, Band: band, Title: subJobTitle(sub.Name, band, entries), Uploader: sub.Uploader,
+		SubscriptionID: sub.ID, Band: band, Title: subJobTitle(sub.Name, band, entries, linkedSite), Uploader: sub.Uploader,
 		Thumbnail: sub.Thumbnail, IsPlaylist: len(entries) > 1}
 	if len(entries) == 1 && entries[0].Thumbnail != "" {
 		j.Thumbnail = entries[0].Thumbnail
@@ -501,14 +551,18 @@ func (m *Manager) subJobTx(ctx context.Context, tx *store.Tx, sub *store.Subscri
 	return j, nil
 }
 
-// subJobTitle names a subscription job (§4.3).
-func subJobTitle(name string, band store.Band, entries []*store.Entry) string {
+// subJobTitle names a subscription job (§4.3); linkedSite is the site of
+// the link posts it downloads, if any.
+func subJobTitle(name string, band store.Band, entries []*store.Entry, linkedSite string) string {
 	if len(entries) == 1 {
 		t := entries[0].Title
 		if t == "" {
 			t = entries[0].URL
 		}
 		return name + ": " + t
+	}
+	if linkedSite != "" {
+		return fmt.Sprintf("%s: %d linked videos (%s)", name, len(entries), linkedSite)
 	}
 	switch band {
 	case store.BandAuto:

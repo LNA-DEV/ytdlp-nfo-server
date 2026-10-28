@@ -57,6 +57,7 @@ func NewSite(t testing.TB) *Site {
 	s.Handle("reddit.com", s.native)
 	s.Handle("arctic-shift.photon-reddit.com", s.arctic)
 	s.Handle("i.redd.it", s.media)
+	s.Handle("i.imgur.com", s.media)
 	return s
 }
 

@@ -19,6 +19,15 @@ type RedditLister struct {
 	// the global chain); logf receives the chain's log lines.
 	Chain    func(providers string, logf func(string, ...any)) *reddit.Chain
 	Settings func() config.RedditSettings
+	// Links resolves link posts (§7.6); nil follows none.
+	Links func() reddit.Links
+}
+
+func (r *RedditLister) links() reddit.Links {
+	if r.Links == nil {
+		return reddit.Links{}
+	}
+	return r.Links()
 }
 
 // GapFiller lists the posts of a time range, to fill a gap (§7.7).
@@ -64,7 +73,7 @@ func (r *RedditLister) List(ctx context.Context, req ListRequest) (*ListResult, 
 			c := err.Classification()
 			return res, &c
 		}
-		l := &ytdlp.Listing{ID: p.ID, Title: p.Title, Entries: []ytdlp.ListEntry{PostEntry(p)}}
+		l := &ytdlp.Listing{ID: p.ID, Title: p.Title, Entries: []ytdlp.ListEntry{PostEntry(ctx, p, r.links())}}
 		if p.Subreddit != "" {
 			l.ChannelURL, l.Channel = "https://www.reddit.com/r/"+p.Subreddit+"/", "r/"+p.Subreddit
 		}
@@ -89,7 +98,7 @@ func (r *RedditLister) List(ctx context.Context, req ListRequest) (*ListResult, 
 		}
 		return res, &c
 	}
-	res.Listing = toListing(t, page)
+	res.Listing = toListing(ctx, t, page, r.links())
 	res.Provider = name
 	res.Truncated = !page.End && len(page.Posts) >= limit && limit >= reddit.MaxListing
 	res.Exhausted = page.End || limit >= reddit.MaxListing
@@ -114,14 +123,14 @@ func (r *RedditLister) FillGap(ctx context.Context, req ListRequest, after, befo
 		c := err.Classification()
 		return res, &c
 	}
-	res.Listing, res.Provider = toListing(t, page), name
+	res.Listing, res.Provider = toListing(ctx, t, page, r.links()), name
 	res.Truncated = !page.End && len(page.Posts) >= s.BackfillMax
 	res.Exhausted = true
 	return res, nil
 }
 
 // toListing maps a page to a flat listing.
-func toListing(t reddit.Target, page *reddit.Page) *ytdlp.Listing {
+func toListing(ctx context.Context, t reddit.Target, page *reddit.Page, links reddit.Links) *ytdlp.Listing {
 	l := &ytdlp.Listing{ID: t.Name(), Title: page.Title, Channel: t.Name(), ExtractorKey: "Reddit", WebpageURL: t.Canonical(),
 		Thumbnail: page.Icon, IsPlaylist: true}
 	// The page knows the name's case; the canonical URL doesn't.
@@ -136,22 +145,37 @@ func toListing(t reddit.Target, page *reddit.Page) *ytdlp.Listing {
 	l.Channel = l.Title
 	l.ChannelID = l.ID // a subreddit or user counts as a channel
 	for i := range page.Posts {
-		l.Entries = append(l.Entries, PostEntry(&page.Posts[i]))
+		l.Entries = append(l.Entries, PostEntry(ctx, &page.Posts[i], links))
 	}
 	return l
 }
 
 // PostEntry maps a post to a listing entry: keyed by its media key if the
-// listing shows the media, else by the post key (R2, §7.5).
-func PostEntry(p *reddit.Post) ytdlp.ListEntry {
+// listing shows the media, else by the post key (R2, §7.5). A link post
+// to a followed site becomes an entry of its target (§7.6): its key is the
+// target's key, and its URL the target's, except for an Imgur still image,
+// which the Reddit pipeline downloads from the post.
+func PostEntry(ctx context.Context, p *reddit.Post, links reddit.Links) ytdlp.ListEntry {
 	ext, id := p.ListingKey()
 	le := ytdlp.ListEntry{URL: p.Permalink, ExtractorKey: ext, ID: id, Title: p.Title, Duration: p.Duration,
 		Thumbnail: p.Thumbnail, MediaKind: p.Kind, NSFW: p.NSFW, Link: p.Link}
-	if ext != reddit.ExtractorPost {
-		le.AltKey = reddit.PostKey(p.ID)
-	}
 	if le.URL == "" {
 		le.URL = reddit.PostURL(p.Subreddit, p.ID)
+	}
+	if p.Kind == reddit.KindLink {
+		if t, ok := links.Resolve(ctx, p.Link); ok {
+			le.MediaKind, le.Link = MediaLinked, ""
+			le.ExtractorKey, le.ID, _ = strings.Cut(t.Key, " ")
+			if !t.Image {
+				le.URL = t.URL
+			}
+			if strings.HasPrefix(t.Key, "url ") { // no known form: keyed by URL
+				le.ExtractorKey, le.ID = "", ""
+			}
+		}
+	}
+	if le.ExtractorKey != reddit.ExtractorPost {
+		le.AltKey = reddit.PostKey(p.ID)
 	}
 	if le.Title == "" {
 		le.Title = p.ID
