@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 )
@@ -305,11 +306,18 @@ func TestFinalizeEXDEVFallsBackToCopy(t *testing.T) {
 		return nil
 	}}
 	p := e.plan(e.writeWork(t, map[string]string{"media.mkv": "MEDIA", "movie.nfo": nfoV1}))
+	// The copy keeps the modification time, as a rename does (a Reddit
+	// post's time, Reddit concept §8).
+	posted := time.Date(2026, 10, 27, 18, 3, 11, 0, time.UTC)
+	os.Chtimes(filepath.Join(e.work, "media.mkv"), posted, posted)
 	if err := e.f.Finalize(p); err != nil {
 		t.Fatal(err)
 	}
 	if got := readDir(t, filepath.Join(e.root, "PL/Video [v1]")); got["Video [v1].mkv"] != "MEDIA" {
 		t.Fatalf("got %v", got)
+	}
+	if fi, err := os.Stat(filepath.Join(e.root, "PL/Video [v1]", "Video [v1].mkv")); err != nil || !fi.ModTime().Equal(posted) {
+		t.Fatalf("mtime after copy: %v %v", fi.ModTime(), err)
 	}
 }
 
