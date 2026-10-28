@@ -26,10 +26,11 @@ yt-dlp cannot list subreddits, and its Reddit extractor needs the JSON endpoints
 | R5 | **Arctic Shift is on by default, as the fallback.** The default chain is `native, arcticshift`. Arctic Shift is a volunteer-run third-party service that learns which subreddits and posts the server asks for; *Settings → Reddit* says so and can switch it off. |
 | R6 | **A post is one item and one folder**, including galleries. A gallery reaches the library through one atomic rename like any other item, so invariant 2 holds unchanged. |
 | R7 | **Images get their own verify and no NFO.** Images are checked by content (magic bytes plus a full decode), never by URL. Image items carry a hidden marker file instead of `movie.nfo`, so the library check and target selection still recognize them ([§8](#8-library-layout)). |
-| R8 | **Reddit listings are never complete.** Reddit lists at most about 1000 posts, and Arctic Shift has the full history, which is far too much to list. Reddit sources therefore never report a complete listing, and the subscription loop never marks their entries *gone*. |
+| R8 | **Reddit listings are never complete.** Reddit lists at most about 1000 posts, and Arctic Shift has the full history, which is far too much to list. Reddit sources therefore never report a complete listing, and the subscription loop never marks their entries *gone*. If more posts appear between two checks than native can list, the gap is filled from Arctic Shift or reported ([§7.7](#77-history-top-lists-and-gaps)). |
 | R9 | **Reddit-hosted media first, links to other sites after.** Images, galleries, GIFs and `v.redd.it` videos come first. Link posts to an allowlist of sites (YouTube, Redgifs, Imgur, Streamable, …) become ordinary downloads of their target in a later phase ([§7.6](#76-links-to-other-sites), [§15](#15-rollout)). |
 | R10 | **Measure before building.** Phase R-0 ships a probe subcommand. It shows from the user's own network whether each provider works and records the HTML and JSON this concept assumes ([§13](#13-testing)). The parser details in [§5](#5-native-provider) are expectations until R-0 confirms them. |
 | R11 | **Duplicates are caught as early as possible.** There are three levels. The media key catches crossposts before any media is downloaded. A SHA-256 of each image catches identical re-uploads before finalize. An optional perceptual hash flags reposts that were resized or recompressed, as a warning by default. A duplicate is *skipped*, never failed, and nothing in the library is changed for it ([§7.5](#75-duplicates-and-crossposts)). |
+| R12 | **History and top lists are extras the user asks for.** Subscriptions follow `/new`. Top lists come only from native (Arctic Shift can't rank by score); they can be a subscription source, a one-time backfill or a one-off job. Older posts by time range come from Arctic Shift as a backfill. Everything a backfill lists is backlog and is downloaded only when asked ([§7.7](#77-history-top-lists-and-gaps)). |
 
 ## 2. Access situation
 
@@ -60,7 +61,9 @@ Status as of 2026-10-28. Most sources are secondary; dates are reported, not con
 |---|---|
 | **Provider** | A way to read Reddit data: `native` or `arcticshift`. |
 | **Post** | The normalized record of one Reddit post ([§4](#4-post-model)), produced by any provider. |
-| **Reddit source** | A subscription source whose canonical URL is a subreddit (`https://www.reddit.com/r/<name>/new`) or a user's posts (`https://www.reddit.com/user/<name>/submitted`). |
+| **Reddit source** | A subscription source whose canonical URL is a subreddit (`https://www.reddit.com/r/<name>/new`), a subreddit's top list (`https://www.reddit.com/r/<name>/top?t=<period>`) or a user's posts (`https://www.reddit.com/user/<name>/submitted`). |
+| **Gap** | Posts between two checks that native couldn't reach, because more appeared than its listing limit of about 1000 ([§7.7](#77-history-top-lists-and-gaps)). |
+| **Backfill** | A one-time listing of older posts or of a top list for a subscription, recorded as backlog ([§7.7](#77-history-top-lists-and-gaps)). |
 | **Media kind** | What a post contains: `image`, `gallery`, `video`, `gif`, `link` (another site) or `text`. |
 
 ## 4. Post model
@@ -93,8 +96,12 @@ Both providers fill the same struct (`internal/reddit/post.go`). Fields a provid
 |---|---|
 | Subreddit, first page | `https://www.reddit.com/r/<sub>/new/?feedViewType=compactView` |
 | Next page | `https://www.reddit.com/svc/shreddit/community-more-posts/new/?after=<cursor>&name=<sub>&feedViewType=compactView` |
-| User posts | `https://www.reddit.com/user/<name>/submitted/?feedViewType=compactView`, then its own more-posts endpoint (R-0 records it) |
+| Top of a period | `https://www.reddit.com/r/<sub>/top/?t=<period>&feedViewType=compactView`, then `…/community-more-posts/top/?t=<period>&after=<cursor>&name=<sub>&feedViewType=compactView`. `<period>` is `hour`, `day`, `week`, `month`, `year` or `all`. |
+| Hot, rising, controversial (one-off jobs only) | The same with the sort order's name (`controversial` with `t=`) |
+| User posts | `https://www.reddit.com/user/<name>/submitted/?feedViewType=compactView`, then its own more-posts endpoint |
 | One post (item metadata) | `https://www.reddit.com/r/<sub>/comments/<id>/`; without a subreddit, `https://www.reddit.com/comments/<id>/` (redirects to the full URL) |
+
+The next-page requests are what third parties observed for `/new`. R-0 records their exact form for every sort order and for user pages.
 
 **Browser identity** (R4). Native presents itself as one current desktop Chrome, and every layer tells the same story:
 
@@ -157,17 +164,19 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
 |---|---|
 | Subreddit, newest first | `/api/posts/search?subreddit=<sub>&sort=desc&limit=100[&before=<created_utc of the oldest post so far>]` |
 | User posts | the same with `author=<name>` |
+| A time range (gap fill, backfill) | `/api/posts/search?subreddit=<sub>&after=<time>&before=<time>&sort=desc&limit=100`, optionally with `url=<prefix>` and `over_18=<bool>` ([§7.7](#77-history-top-lists-and-gaps)) |
+| Posts per year or month (backfill preview) | `/api/posts/search/aggregate?aggregate=created_utc&frequency=year&subreddit=<sub>[&after=…&before=…]` |
 | One post (item metadata) | `/api/posts/ids?ids=<id>`. Up to 500 IDs per request, so a check can refresh many entries at once if needed. |
 | Preview | `/api/subreddits/search?subreddit=<sub>` for the title, NSFW flag and subscriber count |
 | Share links (`/r/<sub>/s/<code>`) | `/api/short_links?paths=<path>` |
 
 - `fields` is not set: posts come back as the full objects Arctic Shift stored, including `media_metadata`, `gallery_data`, `secure_media`, `is_video` and `preview`. The documented list of selectable fields doesn't mention these, so R-0 confirms that they are present.
-- **Freshness**: posts are archived about when they are posted. A video can be archived before Reddit has processed it, without `secure_media`. Item metadata is therefore fetched again at download time ([§7.2](#72-pipeline)), and the manifest can be derived from the `v.redd.it` ID in `url` either way. `score` and `num_comments` are 0 or 1 for about 36 h, so there are no score filters in this concept.
+- **Freshness**: posts are archived about when they are posted. A video can be archived before Reddit has processed it, without `secure_media`. Item metadata is therefore fetched again at download time ([§7.2](#72-pipeline)), and the manifest can be derived from the `v.redd.it` ID in `url` either way. `score` and `num_comments` are 0 or 1 for about 36 h, so there are no score filters in this concept, and Arctic Shift never serves top lists of recent posts. Scores of older posts are final, which makes a local top list of a past time range possible ([§7.7](#77-history-top-lists-and-gaps)).
 - **Politeness**, as the operator asks ("a free service, be considerate"):
   - one request at a time per server;
   - at least 1 s between requests;
   - pages of 100;
-  - never a crawl of a subreddit's whole history: the deepest listing is `firstListing` posts ([§9](#9-settings)).
+  - a normal check lists at most `firstListing` posts ([§9](#9-settings)). Only gap fills and backfills go deeper, at most `backfillMax` posts per run, and never through a subreddit's whole history in one go ([§7.7](#77-history-top-lists-and-gaps)).
 - **Errors**:
   - 429 sets a site cooldown for `arctic-shift.photon-reddit.com` until `X-RateLimit-Reset` and falls through;
   - "Query timed out" is retried once with half the page size, then `transient`;
@@ -183,22 +192,29 @@ Today the subscription loop always lists with yt-dlp (`listSource` in `internal/
 ```go
 // Lister lists one source. window 0 = the deepest listing the lister allows.
 type Lister interface {
-	List(ctx context.Context, src *store.Source, window int, call ytdlp.CallOptions) (l *ytdlp.Listing, complete bool, err *ytdlp.Classification)
+	List(ctx context.Context, src *store.Source, window int, call ytdlp.CallOptions) (*ListResult, *ytdlp.Classification)
+}
+
+type ListResult struct {
+	Listing   *ytdlp.Listing
+	Complete  bool // every entry of the source is in the listing
+	Exhausted bool // the lister can't list deeper (Reddit's limit of about 1000 posts)
 }
 ```
 
-`ytdlpLister` is today's code. `redditLister` runs the provider chain and maps posts to `ytdlp.ListEntry`. The lister is chosen by the host of the canonical URL. The window doubling, the merge, `Apply` and `commitCheck` stay as they are, because they only see `ytdlp.Listing`.
+`ytdlpLister` is today's code. `redditLister` runs the provider chain and maps posts to `ytdlp.ListEntry`. The lister is chosen by the host of the canonical URL. `listSource` stops doubling the window when the lister is exhausted; for yt-dlp that is a full listing, as today. The merge, `Apply` and `commitCheck` stay as they are, because they only see `ytdlp.Listing`.
 
 | Subscription concept | For Reddit sources |
 |---|---|
-| Canonical URL | `https://www.reddit.com/r/<name lowercase>/new` and `https://www.reddit.com/user/<name>/submitted`. `old.`, `new.`, `np.` and `m.` hosts, `redd.it` and share links resolve to these. The uniqueness constraint prevents duplicate subscriptions. |
-| Order | Newest first, known up front: a new Reddit source is stored with `newest_first = 1, order_known = 1`, so checks use the window from the start. (`tab` is not used, because `ListArgs` derives YouTube arguments from it.) |
-| Window and gaps | Window `window` (default 50), doubled while it holds no known entry, up to 1000 |
-| First listing | The newest `firstListing` posts (default 100) become the backlog. The backlog choice *all* means these posts. |
+| Canonical URL | `https://www.reddit.com/r/<name lowercase>/new`, `https://www.reddit.com/r/<name lowercase>/top?t=<period>` and `https://www.reddit.com/user/<name>/submitted`. `old.`, `new.`, `np.` and `m.` hosts, `redd.it` and share links resolve to these. The uniqueness constraint prevents duplicate subscriptions. |
+| Order | Newest first, known up front: a new Reddit source is stored with `newest_first = 1, order_known = 1`, so checks use the window from the start. (`tab` is not used, because `ListArgs` derives YouTube arguments from it.) Top sources have a fixed order of their own ([§7.7](#77-history-top-lists-and-gaps)). |
+| Window and gaps | Window `window` (default 50), doubled while it holds no known entry, until the lister is exhausted (native: about 1000 posts). An exhausted listing without a known entry is a gap ([§7.7](#77-history-top-lists-and-gaps)). |
+| Top sources | Always the top N (`list_limit`), whatever the window. Native only ([§7.7](#77-history-top-lists-and-gaps)). |
+| First listing | The newest `firstListing` posts (default 100) become the backlog. The backlog choice *all* means these posts. Older posts and top lists come in through a backfill ([§7.7](#77-history-top-lists-and-gaps)). |
 | Full rescan | Lists `firstListing` posts and never reports `complete` (R8), so nothing is marked *gone* |
 | Entry | `ListEntry{ExtractorKey, ID, URL: permalink, Title, Timestamp, Thumbnail, Duration}` plus two new optional fields, `MediaKind` and `NSFW`. The key is the media key if the listing shows the media, else `redditpost <post id>`. Both providers show it for images, GIFs and videos; only Arctic Shift shows it for galleries ([§7.5](#75-duplicates-and-crossposts)). |
 | Not media | `text` posts are stored as ignored with the reason `no media`, like `not a video`. Link posts to a host on `externalHosts` become entries for their target ([§7.6](#76-links-to-other-sites)); other link posts are ignored with the reason `link to <host>`. |
-| Preview | A subreddit or user URL previews its newest 10 posts. A post URL switches to its subreddit, as a video URL switches to its channel (subscriptions decision 20). The preview names the provider that answered. |
+| Preview | A subreddit or user URL previews its newest 10 posts; a top URL (`/top/?t=week`) previews that top list and preselects a top source. A post URL switches to its subreddit, as a video URL switches to its channel (subscriptions decision 20). The preview names the provider that answered. |
 | Errors | The classes from [§5.4](#54-errors). Each provider sets the cooldown of its own site, and a provider whose site is in a cooldown is skipped. After the whole chain fails, the error of the first provider is recorded, with a hint that names all providers that were tried. |
 
 **Filters.** `store.Filters` gets `mediaKinds` (a subset of `image`, `gallery`, `video`, `gif`, `linked`; empty = all) and `nsfw` (`include`, `exclude` or `only`; default `include`). Both only use listing data and leave non-Reddit entries alone. As with all filters, entries that don't match are ignored with a reason such as `filter: video`.
@@ -258,11 +274,11 @@ flowchart TD
    With 18, the existing age rules can map it to an MPAA rating.
 
    Images get no NFO (R7).
-7. **Finalize** as today: plan in the DB, staging, one rename, archive entry. The same transaction writes the item's rows in the media index ([§7.5](#75-duplicates-and-crossposts)). Video keys (`reddit <id>`) are appended to `.ytdlp-archive.txt` as today, because yt-dlp writes the same key. Image and gallery keys are not, because yt-dlp-compatible tools don't know them.
+7. **Finalize** as today: plan in the DB, staging, one rename, archive entry. Before the staging folder is fsynced, every media file gets the post time as its modification time ([§8](#8-library-layout)). The same transaction as the archive entry writes the item's rows in the media index ([§7.5](#75-duplicates-and-crossposts)). Video keys (`reddit <id>`) are appended to `.ytdlp-archive.txt` as today, because yt-dlp writes the same key. Image and gallery keys are not, because yt-dlp-compatible tools don't know them.
 
 **Single posts outside subscriptions.**
 - A pasted or add-on-sent post URL (`/r/<sub>/comments/<id>/…`, `redd.it/<id>`, `reddit.com/gallery/<id>`, share links) skips the yt-dlp probe and becomes a job with one Reddit item.
-- A pasted subreddit or user URL becomes a one-off job with the newest `jobListLimit` posts (default 25), listed through the same chain.
+- A pasted subreddit or user URL becomes a one-off job with `jobListLimit` posts (default 25), in the sort order of the URL ([§7.7](#77-history-top-lists-and-gaps)).
 - `POST /api/download` keeps returning 201/409.
 
 ### 7.3 Verify
@@ -279,7 +295,7 @@ Size limits: 50 MB per image and 2 GB per gallery. A file over the limit fails t
 ### 7.4 What stays unchanged
 
 - The integrity invariants, finalize, crash recovery, the scheduler bands and yielding, the archive semantics (`archive` table), the retry policy and the error classes.
-- Subscription checks, entries, auto mode, backlog, cap, notifications and the feed.
+- Subscription entries, auto mode, backlog, cap, notifications and the feed. Checks only gain what Reddit sources need: the lister interface, top sources, gap fills and backfills ([§7.7](#77-history-top-lists-and-gaps)). Checks of other sources behave as today.
 - yt-dlp calls for all other sites, and `POST /api/download` → 201/409.
 
 ### 7.5 Duplicates and crossposts
@@ -391,6 +407,80 @@ The exception is a single post URL pasted by hand that turns out to be a link po
 
 **Security.** Before a target URL reaches yt-dlp, it must pass all of these: `https` only, host on the allowlist, `config.ValidateURL`, and an address that isn't private (the check from [§10](#10-security)). yt-dlp can still follow redirects within the target site; the allowlist limits that to well-known sites.
 
+### 7.7 History, top lists and gaps
+
+Reddit has several sort orders, and no provider lists a subreddit's whole history from Reddit itself. What can be listed, and by whom:
+
+| What | Provider | How far | Order |
+|---|---|---|---|
+| New posts (`/new`) | native, Arctic Shift | native: the newest ~1000; Arctic Shift: everything, by time | post time, newest first |
+| Top of an hour, day, week, month, year or all time | native only | ~1000 per period | score |
+| Hot, rising, controversial | native only | ~1000 | Reddit's ranking |
+| Any time range | Arctic Shift only | everything in the range | post time |
+| Top of a past time range | Arctic Shift, sorted locally | the whole range is listed | score (final after ~36 h) |
+
+Arctic Shift can't sort by score, and its scores are 0 or 1 for the first 36 hours. Native reaches no further back than about 1000 posts per sort order. Several sort orders give different slices, but never a complete history.
+
+**Subscriptions follow `/new`, or a top list.** Only `/new` has a stable order: new posts appear at the top, which the window and the gap detection of the subscription loop rely on. Hot, rising and controversial reorder all the time, so they are offered for one-off jobs only.
+
+#### Gaps
+
+A subscription only needs the posts since its last check. Native doubles the window while it holds no known post, up to its limit of about 1000 posts. If it reaches the limit without a known post, more posts appeared since the last check than native can see. The ones in between are a *gap*:
+
+- **Fill from Arctic Shift.** With Arctic Shift in the chain (the default) and `gapFill` on, the check lists the gap from Arctic Shift by time:
+  - `after` = the newest known post of the source, `before` = the oldest post native listed;
+  - paged until done, at most `backfillMax` posts;
+  - the posts become normal new entries, so the cap of auto mode applies (subscriptions S8).
+- **Warning.** The subscription gets the warning "More than 1000 new posts since the last check", plus either "the gap was filled from Arctic Shift" or "N posts could not be listed". The warning suggests the interval at which about 500 posts appear, computed from the posting rate the listing showed. It is replaced by the next check that has no gap.
+- **No gaps through Arctic Shift.** When Arctic Shift lists a source (native blocked), it pages by time without a limit, so there is no gap.
+
+#### Top lists as a source
+
+A Reddit subscription can follow a top list: "the top N of the day, week, month or year". It is a source with the canonical URL `https://www.reddit.com/r/<name>/top?t=<period>` and N in the new source column `list_limit` (1–1000, default `topDefault` = 10).
+
+- **Checks:** every check lists the top N, whatever the window. A post that enters the top N and isn't known yet is a new entry, and auto mode downloads it. That keeps big subreddits manageable: only what makes it to the top.
+- **Order:** the order of a top source is fixed (`order_known = 1`, `newest_first = 0`). `listingOrder` (`internal/subscriptions/order.go`) leaves sources with a `list_limit` alone, because the dates in a top list say nothing about its order. Entries still sort by post time.
+- **Backlog:** the first listing is the backlog, as for any source (S4).
+- **Native only.** If native fails, the check fails with the hint "Top lists need native: Arctic Shift can't rank by score". It doesn't fall through.
+- **Never complete and never a gap:** a top list has no "since the last check".
+
+A subscription can hold a `/new` source and a top source of the same subreddit; entries merge by key as for any two sources. Usually it is one or the other.
+
+#### Loading older posts (backfill)
+
+Reddit subscriptions get the action *Load older…*, which the add dialog offers as well. It lists posts once and records them as **backlog** entries; nothing is downloaded unless asked (S4). Then *Download backlog…* (latest N or all, with the filters) works as for any subscription. The dialog's option *Download them* queues them at once in the backlog band.
+
+| Backfill | Provider | Example |
+|---|---|---|
+| `top`: top of a period | native | "Top 1000 of all time", "Top 100 of the year" |
+| `range`: a time range | Arctic Shift | "Everything from 2024", "Everything since 2022-01-01" |
+| `rangeTop`: top of a time range | Arctic Shift, sorted locally | "The 50 best posts of 2023" |
+
+- **Count first.** For a time range, the dialog shows the number of posts per year before anything starts, from Arctic Shift's aggregation. The documentation warns that it can time out for very large subreddits; the dialog then shows no number.
+- **Filter on the server.** The subscription's media kinds become `url` prefixes: `https://i.redd.it/` for images and GIFs, `https://v.redd.it/` for videos, `https://www.reddit.com/gallery/` for galleries, one query each. The NSFW filter becomes `over_18`. Text and link posts are then never transferred. Links to other sites (R-5) need a query without a prefix.
+- **Cap.** At most `backfillMax` posts per run (default 5000: about 50 requests, a minute or two at 1 s apart). If a range holds more, the run stops at the cap, and the subscription shows "5 000 of about 12 300 posts loaded" with *Continue*, which resumes from the oldest post loaded. For more than that, the Arctic Shift operator points to the monthly dumps.
+- **Top of a time range** lists the whole range and sorts it by score, so it is offered only if the count is at most `backfillMax`. Scores of posts older than 36 hours are final.
+- **Running it.**
+  - The request is stored on the subscription (new column `backfill`, like `full_requested`), so it survives a restart.
+  - The next check runs it after its normal listing, under the same rules (one check per site, pacing), and commits its entries in the same transaction. That transaction also clears the request, or stores the position for *Continue*.
+  - The entries belong to the subscription's subreddit source and have `backlog = 1`, so auto mode never queues them (S3).
+- **API:**
+  - `POST /api/v1/subscriptions/{id}/backfill` with `{kind: "top" | "range" | "rangeTop", period, n, from, to, download}`;
+  - `POST /api/v1/subscriptions/{id}/backfill/preview` for the counts.
+
+**What to expect from old posts.**
+- `i.redd.it` exists since 2016, `v.redd.it` since 2017, galleries since 2020. Before that, almost all media are links to Imgur, which need phase R-5 ([§7.6](#76-links-to-other-sites)).
+- Imgur deleted large amounts of anonymous and NSFW uploads in May 2023, so many old Imgur links are dead. They fail as removed (`permanent`) and are not queued again.
+- Arctic Shift keeps posts that were deleted on Reddit, but their media are often gone ([§6](#6-arctic-shift-provider)).
+
+#### One-off jobs
+
+A pasted subreddit or user URL keeps its sort order:
+- `/r/<sub>/` and `/r/<sub>/new` → the newest `jobListLimit` posts, through the provider chain;
+- `/hot`, `/rising`, `/top/?t=…` and `/controversial/?t=…` → the first `jobListLimit` posts of that list, native only.
+
+The items run in the order of the list (rank 1 first), not oldest first as in subscription jobs.
+
 ## 8. Library layout
 
 - **Folder per subscription (S9)**: `<library>/<folder>/<item folder>/`. The item folder comes from the naming template like any item: `title` = post title, `id` = post ID, `uploader` = author, `channel` = `r/<sub>`, `upload_date` = post date.
@@ -400,6 +490,7 @@ The exception is a single post URL pasted by hand that turns out to be a link po
   - a video: as today (`<base>.mkv`, `folder.jpg`, `movie.nfo`, subtitles).
 
   `<base>` is the rendered file name without extension. Galleries don't need a new template syntax.
+- **Dates**: every media file of a Reddit item gets the post time as its modification time (`os.Chtimes`, before the staging folder is fsynced). File managers and Jellyfin then sort by when it was posted. Jellyfin uses the file date for photos without an EXIF date; R-3 confirms that. Videos also carry the date in `movie.nfo`. Nothing in the server reads the modification time of library files; only `info.json` and `post.json` in the work dir are checked for freshness, and they keep theirs.
 - **Marker**: every Reddit item folder holds a hidden `.ytdlp-nfo.json`:
 
   ```json
@@ -434,10 +525,20 @@ The exception is a single post URL pasted by hand that turns out to be a link po
 | `duplicates.contentHash` | `true` | – | Level 2 of the duplicate check ([§7.5](#75-duplicates-and-crossposts)) |
 | `duplicates.similar` | `warn` | `off`, `warn`, `skip` | Level 3 |
 | `duplicates.similarDistance` | `6` | 0–16 | Bits two dHashes may differ in to count as similar |
+| `gapFill` | `true` | – | Fill gaps from Arctic Shift if it is in the chain ([§7.7](#77-history-top-lists-and-gaps)) |
+| `backfillMax` | `5000` | 100–50000 | Posts per backfill or gap fill run |
+| `topDefault` | `10` | 1–1000 | N of a new top source |
 
 A subscription can override the chain (`provider`: `""` = global, `native`, `arcticshift`, `native,arcticshift`, `arcticshift,native`). The resolved chain is stored on its jobs with the other effective options, so a retry uses the same chain.
 
-**Schema**: one migration adds `subscriptions.provider TEXT NOT NULL DEFAULT ''`, `subscription_entries.media_kind TEXT NOT NULL DEFAULT ''` and `subscription_entries.nsfw INTEGER NOT NULL DEFAULT 0`. The two entry columns stay empty for other sources. The same migration creates `media_index` ([§7.5](#75-duplicates-and-crossposts)). Sources and items need no new columns.
+**Schema**: one migration adds:
+- `subscriptions.provider TEXT NOT NULL DEFAULT ''`;
+- `subscriptions.backfill TEXT NOT NULL DEFAULT ''`: the pending backfill request as JSON, with its position for *Continue* ([§7.7](#77-history-top-lists-and-gaps));
+- `subscription_sources.list_limit INTEGER NOT NULL DEFAULT 0`: N of a top source, 0 for all other sources;
+- `subscription_entries.media_kind TEXT NOT NULL DEFAULT ''` and `subscription_entries.nsfw INTEGER NOT NULL DEFAULT 0`, which stay empty for other sources;
+- the table `media_index` ([§7.5](#75-duplicates-and-crossposts)).
+
+Items need no new columns.
 
 ## 10. Security
 
@@ -471,8 +572,8 @@ A subscription can override the chain (`provider`: `""` = global, `native`, `arc
 | `internal/reddit/browser` | The browser identity of [§5.1](#51-requests) on top of `azuretls-client` (new dependency): profile, header order, navigation headers, persistent cookie jar, proxy |
 | `internal/reddit/native` | Requests, HTML parser, layout table |
 | `internal/reddit/links.go` | Allowlist, known URL forms and their keys ([§7.6](#76-links-to-other-sites)) |
-| `internal/reddit/arcticshift` | API client |
-| `internal/subscriptions` | `Lister` interface, `ytdlpLister` (moved code), `redditLister` |
+| `internal/reddit/arcticshift` | API client: listings by time, aggregation, posts by ID |
+| `internal/subscriptions` | `Lister` interface with `ListResult`, `ytdlpLister` (moved code), `redditLister`; top sources, gap fill and backfill runs in the check |
 | `internal/pipeline/reddit.go` | `attemptReddit`, gallery handling, verify of images |
 | `internal/library` | Marker fallback in `FolderVideoID` and `ScanFolders`, image extensions |
 | `internal/store` | `media_index`: rows in `FinalizeItem`, alias rows on a duplicate skip, lookups by media key and SHA-256; the media index in the entry status query |
@@ -514,6 +615,18 @@ With `--fixtures`, it stores the pages and JSON responses with usernames and tit
 | First check of a subreddit, `firstListing` 100 | 100 backlog entries, no job |
 | Windowed check, 70 new posts, window 50 | Paging by cursor (native) or `before` (Arctic Shift), all 70 found |
 | Full rescan | Never marks entries *gone* |
+| Native reaches its limit without a known post, Arctic Shift in the chain | The gap is listed from Arctic Shift by time. Its posts are new entries, the auto-mode cap applies, and the warning says the gap was filled |
+| The same without Arctic Shift | Warning with the number of posts that could not be listed and a suggested interval |
+| Top source with N = 10, window 50 | Every check lists exactly the top 10. The order is not learned from the dates. A post entering the top 10 is queued in auto mode |
+| Top source, native blocked | Check fails with the top-list hint, no fall-through |
+| Backfill `top` (all time, 1000) | 1000 backlog entries, no job. With *Download them*: one backlog-band job |
+| Backfill `range` over 12 000 posts, `backfillMax` 5000 | 5000 backlog entries and *Continue*. *Continue* resumes from the oldest post loaded, without duplicate entries |
+| SIGKILL during a backfill run | After the restart the request is still stored, the run is repeated, and no entry exists twice |
+| Backfill with media kinds `image` and `gallery` | Two Arctic Shift queries with the `url` prefixes, no text or link posts transferred |
+| Backfill `rangeTop` over a range with more than `backfillMax` posts | Refused with a message to narrow the range |
+| Aggregation times out | Backfill preview without counts, the backfill still works |
+| Pasted `/r/x/top/?t=week` | One-off job with the top `jobListLimit` posts, items in rank order. `/hot` and `/rising` likewise, native only |
+| Media file of a finalized Reddit item | Modification time = post time |
 | Text posts, link posts to hosts not on the allowlist | Ignored with a reason, never queued |
 | A link post to YouTube, the video already in the library from a YouTube subscription | Entry *in library* at listing time, no job |
 | A check finds 2 Reddit images and 3 YouTube links | Two jobs: one for `reddit.com`, one for `youtube.com` with the YouTube site rule's options |
@@ -556,6 +669,11 @@ Decided on 2026-10-28:
 | 5 | Links to other sites | **Designed in [§7.6](#76-links-to-other-sites)** and built in phase R-5: an allowlist, the target's own key, metadata and site rules, and one job per target site. | R9 |
 | 6 | A gallery whose images are partly in the library | **Store only the new images.** A file that is somewhere in the library is enough. The gallery's folder holds the new images, numbered by their position in the gallery; the marker lists the known ones with their paths. Rejected: keeping every image (duplicates on disk) and hardlinks (no extra space, but duplicates in Jellyfin and in backups that don't understand hardlinks). | [§7.5](#75-duplicates-and-crossposts), [§8](#8-library-layout) |
 | 7 | Default of level 3 (similar images) | **`warn`**: a perceptual match can be wrong (screenshots, memes on the same template), and a skipped image is easy to miss. | [§7.5](#75-duplicates-and-crossposts) |
+| 8 | Gaps between two checks | **Warn, and fill from Arctic Shift by time** when it is in the chain. | R8, [§7.7](#77-history-top-lists-and-gaps) |
+| 9 | Top lists | **Native only**, as a subscription source (top N per period), as a backfill and in one-off jobs. Subscriptions otherwise follow `/new`; hot, rising and controversial only in one-off jobs. | R12, [§7.7](#77-history-top-lists-and-gaps) |
+| 10 | Older posts | **Backfill by time range from Arctic Shift**, with a count first, filters on the server, `backfillMax` per run and *Continue*. Everything becomes backlog and is downloaded only when asked. | R12, [§7.7](#77-history-top-lists-and-gaps) |
+| 11 | Sort order of a pasted URL | **Kept** for one-off jobs; items run in the order of the list. | [§7.7](#77-history-top-lists-and-gaps) |
+| 12 | File dates | **Post time** as the modification time of every media file. | [§8](#8-library-layout) |
 
 No questions are open.
 
@@ -565,8 +683,9 @@ No questions are open.
 |---|---|---|
 | **R-0 Probe** | `reddit-probe` subcommand with the browser identity, fixtures | Run on the user's server for a few days. For each provider and client: works / works with limits / blocked, including NSFW. The parser table in [§5.2](#52-parsing) is confirmed or corrected, and the library for the browser identity is chosen. **Go/no-go per provider.** |
 | **R-1 Lister** | `Lister` interface, `ytdlpLister` | No behavior change. All tests pass, including the integrity tests |
-| **R-2 Listing** | Providers (the ones that passed R-0), Reddit sources, canonical URLs, preview, errors, chain, filters, settings, OPML import of Reddit RSS | A subreddit can be subscribed, checked and previewed. Entries appear in the feed with thumbnails |
-| **R-3 Media** | `attemptReddit`: images, GIFs, galleries, `v.redd.it` videos, verify, marker, library scan and check, single-post jobs and one-off subreddit jobs. Media keys, media index, duplicate levels 1 and 2 | All tests from [§13](#13-testing) pass except level 3. A real subreddit with images, galleries, videos and crossposts lands complete and without duplicates in a *Home videos and photos* library |
+| **R-2 Listing** | Providers (the ones that passed R-0), Reddit sources, canonical URLs, preview, errors, chain, filters, settings, OPML import of Reddit RSS, gap warning and gap fill from Arctic Shift | A subreddit can be subscribed, checked and previewed. Entries appear in the feed with thumbnails. A gap is filled or reported |
+| **R-3 Media** | `attemptReddit`: images, GIFs, galleries, `v.redd.it` videos, verify, marker, post time as file date, library scan and check, single-post jobs and one-off subreddit jobs (`/new`). Media keys, media index, duplicate levels 1 and 2 | All tests from [§13](#13-testing) pass except level 3. A real subreddit with images, galleries, videos and crossposts lands complete and without duplicates in a *Home videos and photos* library |
 | **R-4 Similar images** | Level 3 (dHash), settings, warning and link in the UI | Level 3 tests pass. On a real subreddit with known reposts, the warnings were checked by hand for false positives |
 | **R-5 Links** | [§7.6](#76-links-to-other-sites): allowlist and known URL forms, `linked` entries, one job per target site, Imgur still images, settings and filter | The link tests from [§13](#13-testing) pass. A subreddit with YouTube and Redgifs links downloads them as ordinary items of those sites, and videos already in the library are not downloaded again |
+| **R-6 History and top lists** | [§7.7](#77-history-top-lists-and-gaps): top sources, backfills (`top`, `range`, `rangeTop`) with counts, *Continue* and server-side filters, sort orders of one-off jobs, UI for *Load older…* | The history and top-list tests from [§13](#13-testing) pass. A real subreddit's top 100 of the year and its posts of one month land in the backlog and download through *Download backlog…*. Posts from before 2016 need R-5 |
 | Later | A real browser in a sidecar container if Reddit starts to require JavaScript challenges, perceptual hashes for videos, Imgur albums, score filters (once scores settle), a logged-in provider if one becomes necessary | – |
