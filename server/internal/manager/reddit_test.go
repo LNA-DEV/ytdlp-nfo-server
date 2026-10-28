@@ -236,3 +236,21 @@ func TestRedditRSSImport(t *testing.T) {
 		t.Fatalf("import: %v skipped %+v", got, res.Skipped)
 	}
 }
+
+// The first check of a subreddit with more posts than firstListing lists
+// once and ends (it used to repeat the listing without end).
+func TestRedditFirstCheckListsOnce(t *testing.T) {
+	w, site := redditWorld(t)
+	site.Add(mixedPosts("example", time.Now().Truncate(time.Second), 0, 300)...)
+	created := time.Now()
+	v := w.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/example/"}}})
+	id := sid(v)
+	sub := w.waitChecked(id, created)
+	if n := site.Count("www.reddit.com", "/r/example/new"); n != 1 || sub.Error != "" {
+		log, _ := w.m.subs.logs.Read(id)
+		t.Fatalf("%d listings, error %q\n%s", n, sub.Error, log)
+	}
+	if n := len(w.entries(id, "")); n != 100 {
+		t.Fatalf("%d entries, want firstListing = 100", n)
+	}
+}

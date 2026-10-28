@@ -425,7 +425,9 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 				break
 			}
 		}
-		if !gap || res.Exhausted {
+		// A listing without a window can't grow: it ends the source, even
+		// if a lister didn't say so.
+		if !gap || res.Exhausted || window == 0 {
 			log.Printf("Listed %d entries%s", len(listing.Entries), via)
 			if gap && res.Truncated && !src.LastOKAt.IsZero() {
 				l.fillGap(ctx, lister, req, src, &r, log)

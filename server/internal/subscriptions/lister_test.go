@@ -54,3 +54,34 @@ func TestListSourceStopsWhenListerIsExhausted(t *testing.T) {
 		t.Fatalf("windows %v, urls %v", stub.windows, stub.urls)
 	}
 }
+
+// A lister that is never exhausted (the first check of a Reddit source
+// before the fix) can't make a listing without a window repeat itself.
+type endlessLister struct{ calls int }
+
+func (s *endlessLister) List(_ context.Context, req ListRequest) (*ListResult, *ytdlp.Classification) {
+	s.calls++
+	l := &ytdlp.Listing{IsPlaylist: true}
+	for i := range 100 {
+		l.Entries = append(l.Entries, ytdlp.ListEntry{ExtractorKey: "Stub", ID: fmt.Sprint(s.calls*1000 + i)})
+	}
+	return &ListResult{Listing: l}, nil
+}
+
+func TestListSourceWithoutWindowListsOnce(t *testing.T) {
+	logs, err := joblog.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &endlessLister{}
+	l := NewLoop(Deps{Logs: logs, ListerFor: func(string) Lister { return stub }})
+	src := &store.Source{ID: 1, Canonical: "https://example.com/list"} // never listed: no window
+	sub := &store.Subscription{ID: 1, Listing: store.ListingAuto, Sources: []*store.Source{src}}
+	settings := config.Settings{Subscriptions: config.DefaultSubscriptionSettings()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r := l.listSource(ctx, sub, src, versions.Binary{}, ytdlp.CallOptions{}, settings, map[string]bool{}, false, logs.Get(1))
+	if stub.calls != 1 || r.Err != nil || r.Listing == nil || len(r.Listing.Entries) != 100 {
+		t.Fatalf("%d listings, result %+v", stub.calls, r)
+	}
+}

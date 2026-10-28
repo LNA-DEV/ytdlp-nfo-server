@@ -100,8 +100,12 @@ func (r *RedditLister) List(ctx context.Context, req ListRequest) (*ListResult, 
 	}
 	res.Listing = toListing(ctx, t, page, r.links())
 	res.Provider = name
-	res.Truncated = !page.End && len(page.Posts) >= limit && limit >= reddit.MaxListing
-	res.Exhausted = page.End || limit >= reddit.MaxListing
+	// Reddit listings never end (R8): a listing without a window goes as
+	// deep as firstListing says, a window at most MaxListing deep. Either
+	// way the lister can't list more, and a gap behind it is filled by
+	// time (§7.7).
+	res.Truncated = !page.End && len(page.Posts) >= limit
+	res.Exhausted = page.End || req.Window <= 0 || limit >= reddit.MaxListing
 	return res, nil
 }
 
