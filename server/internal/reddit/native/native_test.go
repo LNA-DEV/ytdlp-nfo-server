@@ -1,0 +1,194 @@
+package native
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/browser"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/testutil/fakereddit"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
+)
+
+func fixture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func newProvider(t *testing.T, fake *fakereddit.Server) *Provider {
+	t.Helper()
+	c, err := browser.New(browser.Options{RootCAs: fake.Roots, Dial: fake.Dial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	p := New(c)
+	p.PageDelay = nil
+	return p
+}
+
+func summary(posts []reddit.Post) string {
+	var out []string
+	for _, p := range posts {
+		out = append(out, fmt.Sprintf("%s:%s:%s", p.ID, p.Kind, p.MediaKey()))
+	}
+	return strings.Join(out, " ")
+}
+
+func TestListingAndPaging(t *testing.T) {
+	fake := fakereddit.New(t)
+	fake.Handle("www.reddit.com", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/r/EarthPorn/new/" && r.URL.Query().Get("feedViewType") == "compactView":
+			w.Write(fixture(t, "listing.html"))
+		case strings.HasPrefix(r.URL.Path, "/svc/shreddit/community-more-posts/new/") && r.URL.Query().Get("after") == "dDNfbG5rMQ==":
+			w.Write(fixture(t, "more.html"))
+		case strings.HasPrefix(r.URL.Path, "/svc/shreddit/community-more-posts/new/"):
+			w.Write([]byte("")) // the end
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	p := newProvider(t, fake)
+	tg, _ := reddit.Parse("https://www.reddit.com/r/EarthPorn/")
+	pg, err := p.List(context.Background(), reddit.Query{Target: tg, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "img1:image:redditmedia q8x2v0f3k1 gal1:gallery: vid1:video:reddit abcvid9 xp1:image:redditmedia origimg " +
+		"txt1:text: nsfw1:image:redditmedia nsfwimg lnk1:link: old1:image:redditmedia oldimg"
+	if got := summary(pg.Posts); got != want {
+		t.Fatalf("posts:\n%s\nwant\n%s", got, want)
+	}
+	img := pg.Posts[0]
+	if img.Title != "A lake & mountains" || img.Author != "alice" || img.Subreddit != "EarthPorn" || img.Score != 120 ||
+		img.Created.Format("2006-01-02T15:04:05") != "2026-10-27T18:03:11" ||
+		img.Permalink != "https://www.reddit.com/r/EarthPorn/comments/img1/a_lake/" ||
+		!strings.HasPrefix(img.Thumbnail, "https://preview.redd.it/q8x2v0f3k1.jpeg") {
+		t.Fatalf("image post: %+v", img)
+	}
+	if xp := pg.Posts[3]; xp.CrosspostParent != "orig1" || xp.Subreddit != "EarthPorn" {
+		t.Fatalf("crosspost: %+v", xp)
+	}
+	if !pg.Posts[5].NSFW || pg.Posts[0].NSFW {
+		t.Fatal("NSFW flags")
+	}
+	if pg.Posts[6].LinkHost() != "youtube.com" || pg.Title != "EarthPorn" || !pg.End {
+		t.Fatalf("link %+v, title %q, end %v", pg.Posts[6], pg.Title, pg.End)
+	}
+	// The more-posts request looks like the page's own fetch.
+	var more fakereddit.Request
+	for _, r := range fake.Requests() {
+		if strings.HasPrefix(r.Path, "/svc/") {
+			more = r
+			break
+		}
+	}
+	if more.Header.Get("Sec-Fetch-Mode") != "cors" || !strings.HasPrefix(more.Header.Get("Referer"), "https://www.reddit.com/r/EarthPorn/new/") {
+		t.Fatalf("more-posts headers: %v", more.Header)
+	}
+	// A limit stops paging.
+	pg, err = p.List(context.Background(), reddit.Query{Target: tg, Limit: 3})
+	if err != nil || len(pg.Posts) != 3 || pg.End {
+		t.Fatalf("limited: %v %d %v", err, len(pg.Posts), pg.End)
+	}
+}
+
+func TestPostPages(t *testing.T) {
+	fake := fakereddit.New(t)
+	fake.Handle("www.reddit.com", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/r/EarthPorn/comments/gal1/":
+			w.Write(fixture(t, "post_gallery.html"))
+		case "/comments/vid2/":
+			http.Redirect(w, r, "/r/videos/comments/vid2/clip/", http.StatusMovedPermanently)
+		case "/r/videos/comments/vid2/clip/":
+			w.Write(fixture(t, "post_video.html"))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	p := newProvider(t, fake)
+	ctx := context.Background()
+	gal, err := p.Post(ctx, "gal1", "EarthPorn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, m := range gal.Media {
+		ids = append(ids, m.MediaID+"="+m.URL)
+	}
+	if gal.Kind != reddit.KindGallery || strings.Join(ids, " ") != "aaa111=https://i.redd.it/aaa111.jpg bbb222=https://i.redd.it/bbb222.png ccc333=https://i.redd.it/ccc333.jpg" ||
+		gal.Media[0].Caption != "first" || !strings.HasPrefix(gal.MediaKey(), "redditgallery ") {
+		t.Fatalf("gallery: %+v", gal)
+	}
+	vid, err := p.Post(ctx, "vid2", "")
+	if err != nil || vid.Kind != reddit.KindVideo || vid.VideoID != "xyz789" || vid.MediaKey() != "reddit xyz789" {
+		t.Fatalf("video: %v %+v", err, vid)
+	}
+	if _, err := p.Post(ctx, "gone1", "EarthPorn"); reddit.AsError(err).Class != ytdlp.ClassPermanent {
+		t.Fatalf("missing post: %v", err)
+	}
+}
+
+func TestErrors(t *testing.T) {
+	cases := []struct {
+		status int
+		body   string
+		class  ytdlp.Class
+	}{
+		{200, string(fixture(t, "blocked.html")), ytdlp.ClassBlocked},
+		{403, "<html>Forbidden</html>", ytdlp.ClassBlocked},
+		{429, "", ytdlp.ClassRateLimited},
+		{404, "<html>Sorry, nobody on Reddit goes by that name.</html>", ytdlp.ClassPermanent},
+		{200, "<html>r/x has been banned from Reddit</html>", ytdlp.ClassPermanent},
+		{200, "<html>This community has been quarantined</html>", ytdlp.ClassAuthRequired},
+		{200, string(fixture(t, "changed.html")), ytdlp.ClassExtractorBroken},
+		{502, "", ytdlp.ClassTransient},
+	}
+	for _, c := range cases {
+		fake := fakereddit.New(t)
+		fake.Handle("www.reddit.com", func(w http.ResponseWriter, r *http.Request) {
+			if c.status == 429 {
+				w.Header().Set("Retry-After", "120")
+			}
+			w.WriteHeader(c.status)
+			w.Write([]byte(c.body))
+		})
+		p := newProvider(t, fake)
+		tg, _ := reddit.Parse("https://www.reddit.com/r/testsub/")
+		_, err := p.List(context.Background(), reddit.Query{Target: tg, Limit: 10})
+		e := reddit.AsError(err)
+		if e == nil || e.Class != c.class {
+			t.Errorf("%d %.40q: %+v", c.status, c.body, e)
+			continue
+		}
+		if c.status == 429 && e.RetryAfter.Seconds() != 120 {
+			t.Errorf("retry after %v", e.RetryAfter)
+		}
+	}
+	// An empty subreddit is no error.
+	fake := fakereddit.New(t)
+	fake.Handle("www.reddit.com", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<html><shreddit-feed></shreddit-feed></html>"))
+	})
+	tg, _ := reddit.Parse("https://www.reddit.com/r/empty/")
+	pg, err := newProvider(t, fake).List(context.Background(), reddit.Query{Target: tg, Limit: 10})
+	if err != nil || len(pg.Posts) != 0 || !pg.End {
+		t.Fatalf("empty: %v %+v", err, pg)
+	}
+	// Native can't list time ranges or anything that isn't a listing.
+	if _, err := newProvider(t, fake).List(context.Background(), reddit.Query{Target: tg, After: time.Now()}); !reddit.AsError(err).Unsupported {
+		t.Fatalf("time range: %v", err)
+	}
+}
