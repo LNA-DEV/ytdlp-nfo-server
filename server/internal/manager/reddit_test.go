@@ -255,10 +255,11 @@ func TestRedditFirstCheckListsOnce(t *testing.T) {
 	}
 }
 
-// Reddit answers native with a JavaScript check. Without the setting it
+// Reddit answers native with a JavaScript check. With the setting off it
 // counts as blocked: Arctic Shift answers, and native is paused, so the
-// posts of a job don't ask native again. With the setting the check is
-// answered once and its cookie kept.
+// posts of a job don't ask native again; resetting the Reddit session ends
+// the pause. With the setting on (the default) the check is answered once
+// and its cookie kept.
 func TestRedditChallenge(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Second)
@@ -269,6 +270,9 @@ func TestRedditChallenge(t *testing.T) {
 	w, site := redditMediaWorld(t, "vid1", "vid6")
 	site.Add(mixedPosts("example", now, 0, 10)...)
 	site.SetChallenge(true)
+	if _, err := w.m.Settings.Update(ctx, func(s *config.Settings) error { s.Reddit.SolveChallenge = false; return nil }); err != nil {
+		t.Fatal(err)
+	}
 	created := time.Now()
 	v := w.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/example/"}}})
 	id := sid(v)
@@ -297,13 +301,27 @@ func TestRedditChallenge(t *testing.T) {
 		t.Fatalf("%d requests to the paused native", n)
 	}
 
-	// With the setting on, a new server answers the check and keeps the cookie.
+	// Turned on, the setting applies once the session is reset: native is
+	// asked again at once and answers the check.
+	if _, err := w.m.Settings.Update(ctx, func(s *config.Settings) error { s.Reddit.SolveChallenge = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.m.ResetReddit(); err != nil {
+		t.Fatal(err)
+	}
+	if w.m.Sched.Status().Cooldowns["reddit-native"].After(time.Now()) {
+		t.Fatal("native still paused after the reset")
+	}
+	site.Add(mixedPosts("example", now.Add(time.Hour), 10, 1)...)
+	w.checkNow(id)
+	if log, _ := w.m.subs.logs.Read(id); site.Solved != 1 || !strings.Contains(string(log), "Listed 11 entries via native") {
+		t.Fatalf("after the reset: %d solved\n%s", site.Solved, log)
+	}
+
+	// By default, a new server answers the check and keeps the cookie.
 	w2, site2 := redditWorld(t)
 	site2.Add(mixedPosts("example", now, 0, 10)...)
 	site2.SetChallenge(true)
-	if _, err := w2.m.Settings.Update(ctx, func(s *config.Settings) error { s.Reddit.SolveChallenge = true; return nil }); err != nil {
-		t.Fatal(err)
-	}
 	created = time.Now()
 	v = w2.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/example/"}}})
 	id = sid(v)

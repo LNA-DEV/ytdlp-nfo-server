@@ -157,7 +157,7 @@ Paste a post, share link, subreddit or user URL as a download, or subscribe to a
 - **native** reads the pages Reddit shows a logged-out browser, with a browser's TLS and HTTP/2 fingerprint and headers; NSFW posts are read through the blur.
 - **Arctic Shift** is a third-party archive (no guarantees; it sees which subreddits and posts the server asks for). It answers when native is blocked and fills gaps when more posts appeared between two checks than native can list.
 
-Reddit sometimes shows a JavaScript check instead of the page, especially to VPN and datacenter addresses. Native then pauses for 30 minutes and Arctic Shift answers. **Answer Reddit's JavaScript check** (off by default) runs the check's script in a sandbox: an embedded JavaScript engine in a child process, without network or file access, with time and memory limits. It still runs code from Reddit on your server, and Reddit's terms don't allow automated access.
+Reddit shows logged-out visitors a JavaScript check instead of the page. **Answer Reddit's JavaScript check** (on by default) runs the check's script in a sandbox: an embedded JavaScript engine in a child process, without network or file access, with time and memory limits. It still runs code from Reddit on your server, and Reddit's terms don't allow automated access. Turned off, native pauses for 30 minutes whenever it meets the check, and Arctic Shift answers. **Reset Reddit session** forgets Reddit's cookies and ends such a pause.
 
 Link posts to YouTube, Redgifs, Streamable and Imgur (more sites in **Settings → Reddit**) are downloaded from the site they link to, in a job of their own with that site's rule, and a video already in the library is not downloaded again; other link posts are left out.
 

@@ -325,7 +325,14 @@ export class SettingsView {
           field('Proxy', bindText(r, 'proxy', { placeholder: 'socks5://host:1080' }), 'Reddit, Arctic Shift and media downloads go through it (http://, https:// or socks5://)'),
           field('Pause between native pages (s)', num('pageDelaySeconds', 1, 60), '±20 % jitter')),
         h('div', { class: 'btn-row', style: 'margin-top:.8rem' }, bindCheck(r, 'solveChallenge', "Answer Reddit's JavaScript check")),
-        h('p', { class: 'muted small' }, 'Some networks (VPNs, data centers) get a JavaScript check instead of the page. With this on, its script runs in a sandbox without network or file access, in a separate process with time and memory limits, and the answer is sent like a browser would. Reddit uses the check to keep automated clients out, so answering it may go against its terms. Off: Arctic Shift takes over while native is blocked.')),
+        h('p', { class: 'muted small' }, 'Reddit shows logged-out visitors a JavaScript check instead of the page; without an answer, native gets nothing. With this on (the default), its script runs in a sandbox without network or file access, in a separate process with time and memory limits, and the answer is sent like a browser would. Reddit uses the check to keep automated clients out, so answering it may go against its terms. Off: Arctic Shift takes over while native is blocked.'),
+        h('div', { class: 'btn-row', style: 'margin-top:.8rem' },
+          h('button', { class: 'btn small', onclick: async (e) => {
+            e.target.disabled = true;
+            try { await post('/reddit/reset'); toast('Reddit session reset', 'ok'); } catch (ex) { toast(ex.message, 'err'); }
+            e.target.disabled = false;
+          } }, 'Reset Reddit session')),
+        h('p', { class: 'muted small' }, 'Forgets the cookies Reddit set (including an answered check) and ends the pause of native after a block, so the next check starts like a new visitor.')),
       h('div', { class: 'section' }, h('h2', {}, 'Listings'),
         h('div', { class: 'grid' },
           field('First listing (posts)', num('firstListing', 25, 1000), 'Depth of the first check and of a full rescan; native lists at most 1000'),

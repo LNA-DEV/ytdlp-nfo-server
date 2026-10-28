@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestNormalizeURL(t *testing.T) {
 	same := [][]string{
@@ -136,5 +139,28 @@ func TestSubscriptionSettings(t *testing.T) {
 	s.Subscriptions.IntervalMinutes = 14
 	if err := s.Subscriptions.Validate(); err == nil {
 		t.Fatal("interval below 15 minutes accepted")
+	}
+}
+
+// solveChallenge is on by default, also for settings stored before it
+// existed; turned off, it stays off.
+func TestRedditSolveChallengeDefault(t *testing.T) {
+	if !DefaultSettings(false).Reddit.SolveChallenge {
+		t.Fatal("default off")
+	}
+	for raw, want := range map[string]bool{
+		`{"reddit":{"providers":["native"]}}`:                        true,
+		`{"reddit":{"providers":["native"],"solveChallenge":false}}`: false,
+		`{"reddit":{"providers":["native"],"solveChallenge":true}}`:  true,
+		`{}`: true,
+	} {
+		var s Settings
+		if err := json.Unmarshal([]byte(raw), &s); err != nil {
+			t.Fatal(err)
+		}
+		s.Normalize()
+		if s.Reddit.SolveChallenge != want {
+			t.Errorf("%s: %v", raw, s.Reddit.SolveChallenge)
+		}
 	}
 }

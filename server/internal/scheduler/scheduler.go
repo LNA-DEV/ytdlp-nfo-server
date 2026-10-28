@@ -481,6 +481,16 @@ func (s *Scheduler) SetCooldown(site string, until time.Time) {
 	})
 }
 
+// ClearCooldown ends the cooldown of a site.
+func (s *Scheduler) ClearCooldown(site string) {
+	s.do(func() {
+		if _, ok := s.cooldown[site]; ok {
+			delete(s.cooldown, site)
+			s.onChange()
+		}
+	})
+}
+
 // Pause stops starting new jobs until Resume or until (if non-zero).
 func (s *Scheduler) Pause(reason string, until time.Time) {
 	s.do(func() {

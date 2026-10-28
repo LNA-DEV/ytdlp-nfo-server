@@ -92,12 +92,16 @@ func AsError(err error) *Error {
 // Hints shown with provider errors (§5.4).
 const (
 	HintBlocked     = "Reddit blocks this server's network (VPN or datacenter addresses are often blocked). Use Arctic Shift, or route Reddit through another connection (setting proxy)."
-	HintChallenge   = "Reddit answered with a JavaScript check instead of the page, usually because of the network (VPN or datacenter addresses). Arctic Shift takes over meanwhile. Turn on \"Answer Reddit's JavaScript check\" in Settings → Reddit, or route Reddit through another connection (setting proxy)."
+	HintChallenge   = "Reddit answered with a JavaScript check instead of the page, as it does for logged-out visitors. Arctic Shift takes over meanwhile. Turn on \"Answer Reddit's JavaScript check\" in Settings → Reddit."
 	HintAuth        = "Reddit shows this community only to logged-in or verified users. Arctic Shift has it if it is enabled."
 	HintLayout      = "Reddit's page layout changed; the server needs an update. Run reddit-probe to see the page."
 	HintNotFound    = "The subreddit or user does not exist, was banned or is private."
 	HintTopNative   = "Top lists need native: Arctic Shift can't rank by score."
 	HintNoProviders = "No Reddit provider is enabled. Enable native or Arctic Shift in Settings → Reddit."
+
+	// HintChallengeFailed: the check was answered, but Reddit did not
+	// accept the answer, or the check changed.
+	HintChallengeFailed = "Reddit's JavaScript check could not be answered; Reddit may have changed it. Arctic Shift takes over meanwhile. reddit-probe --solve shows the page."
 )
 
 // Chain tries providers in order (R3). A provider whose site is in a

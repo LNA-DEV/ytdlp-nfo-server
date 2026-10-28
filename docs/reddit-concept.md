@@ -113,20 +113,20 @@ The next-page requests are what third parties observed for `/new`. `reddit-probe
 | HTTP/2 | Chrome's SETTINGS, window update, stream priorities and pseudo-header order |
 | Headers | In Chrome's order: `User-Agent`, `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform`, `Accept`, `Accept-Encoding`, `Accept-Language`, `Sec-Fetch-Site`, `Sec-Fetch-Mode`, `Sec-Fetch-Dest`, `Sec-Fetch-User`, `Upgrade-Insecure-Requests`, `Priority`. All of them belong to the same Chrome version as the TLS profile. |
 | Navigation | The listing page as a top-level navigation (`Sec-Fetch-Mode: navigate`). Further pages as the page's script requests them (`Sec-Fetch-Mode: cors`, `Referer` = the listing page). Post pages as navigations from the listing. |
-| Cookies | One persistent cookie jar, like a returning logged-out visitor: what Reddit sets itself (`loid`, `csv`, `edgebucket`, `session_tracker`, …) plus `over18=1`. Stored in `DATA_DIR/reddit/cookies.json` (0600). It is reset after a block, and by hand in the settings. |
+| Cookies | One persistent cookie jar, like a returning logged-out visitor: what Reddit sets itself (`loid`, `csv`, `edgebucket`, `session_tracker`, …) plus `over18=1`. Stored in `DATA_DIR/reddit/cookies.json` (0600). It is reset after a block, and by hand with *Reset Reddit session* in Settings → Reddit (`POST /api/v1/reddit/reset`), which also ends a pause of native after a block or check. A jar that holds an answered check lets native in without answering again until Reddit lets the cookies expire. |
 | Timing | Pages of one listing 2–5 s apart (random), about as fast as a person scrolls |
 
 - **Library**: [`Noooste/azuretls-client`](https://github.com/Noooste/azuretls-client) (MIT). It brings Chrome's TLS and HTTP/2 fingerprints and controls the header order, and it works with the Go version the image builds with today (1.26). [`bogdanfinn/tls-client`](https://github.com/bogdanfinn/tls-client) (BSD-3) has more profiles (Chrome up to 152, Firefox, Safari) but needs Go 1.27, so the implementation uses `azuretls-client`. `reddit-probe` compares it with a plain `net/http` client.
 - **Profile updates**: the browser profile comes with the library and is updated with it. User-Agent, client hints and TLS profile always come from the same profile: a Chrome 150 User-Agent on a Chrome 131 fingerprint is more conspicuous than either alone.
 - **Limits of the disguise**:
   - The IP address can't be faked. The optional `proxy` setting routes Reddit requests through a connection of the user's choice, for example the home connection when the server runs on a VPS. There are no proxy pools and no CAPTCHA services.
-  - **JavaScript check.** Reddit sometimes answers with a check instead of the page: an HTTP 200 page with a hidden GET form (`solution`, `js_challenge`, `jsc_token`, …) whose inline script computes a field and submits the form. Native recognizes it ([§5.4](#54-errors)). Only with the setting `solveChallenge` ([§9](#9-settings), default off) does it answer the check, once per page:
+  - **JavaScript check.** Reddit answers logged-out visitors with a check instead of the page: an HTTP 200 page with a hidden GET form (`solution`, `js_challenge`, `jsc_token`, …) whose inline script computes a field and submits the form. The second reality check got it on a home connection as well as through a VPN, so it is not a matter of the network. Native recognizes it ([§5.4](#54-errors)). With the setting `solveChallenge` ([§9](#9-settings), on by default) it answers the check, once per page:
     - the page's inline scripts (at most 64 KB) run in [goja](https://github.com/dop251/goja), a JavaScript engine in pure Go, against a minimal stand-in for `document`, the form, `location`, `navigator`, `URLSearchParams`, timers, `TextEncoder` and `crypto.subtle.digest`. Nothing else of the page runs, and nothing is loaded;
     - goja runs in a child process: the server binary itself, started with an empty environment, a 3 s limit for the script, 10 s for the process and 256 MB of heap;
     - native follows the form's submission only if it is a GET to `https://` on the page's own host, with the page as `Referer`;
     - if the answer doesn't lead to the page, native is `blocked` as without the setting.
 
-    This runs code from Reddit on the server, which is why it is off by default; Reddit's terms don't allow automated access either. It does not help against real browser fingerprinting (canvas, WebGL, …). If Reddit starts to require that, native stays blocked, and the next step would be a real browser in a sidecar container ([§15](#15-rollout)).
+    This runs code from Reddit on the server, and Reddit's terms don't allow automated access either. It is on by default all the same, because without it native gets no page at all (decision 17). If Reddit rejects the answer, native is `blocked` with a hint that the check may have changed. It does not help against real browser fingerprinting (canvas, WebGL, …). If Reddit starts to require that, native stays blocked, and the next step would be a real browser in a sidecar container ([§15](#15-rollout)).
 - **Media**:
   - Images from `i.redd.it` use the same client and identity, with `Sec-Fetch-Dest: image` and `Referer: https://www.reddit.com/`.
   - Videos go through yt-dlp, which gets `--impersonate chrome` for `v.redd.it` from the first try when the yt-dlp build has a target (`v.redd.it` answers plain clients with 403).
@@ -532,7 +532,7 @@ The items run in the order of the list (rank 1 first), not oldest first as in su
 |---|---|---|---|
 | `providers` | `["native", "arcticshift"]` | ordered subset of `native`, `arcticshift` | Global chain (R3, R5). The settings page says that Arctic Shift is a third-party service without guarantees that sees the subreddits and posts the server asks for. |
 | `nativeProfile` | `chrome` | `chrome`, `firefox`, `safari` | Browser identity of native (R4). Always the newest profile of that browser in the library. *Later*: `azuretls-client` brings a usable Chrome profile only, so native is always Chrome until a library with consistent Firefox and Safari profiles is usable. |
-| `solveChallenge` | `false` | – | Answer Reddit's JavaScript check in the sandbox of [§5.1](#51-requests). Off by default, because it runs code from Reddit on the server. |
+| `solveChallenge` | `true` | – | Answer Reddit's JavaScript check in the sandbox of [§5.1](#51-requests). Settings stored before it existed get it on; turned off, it stays off. |
 | `proxy` | `""` | `http://`, `https://` or `socks5://` URL | Route all Reddit and Arctic Shift requests and media downloads through this proxy, for example the home connection. Credentials in it are never logged. |
 | `externalHosts` | see [§7.6](#76-links-to-other-sites) | hosts or `*.domain` | Link posts to these hosts are downloaded |
 | `firstListing` | `100` | 25–1000 | Depth of the first listing and of a full rescan |
@@ -712,6 +712,12 @@ Decided after the first reality check (2026-10-28):
 | 14 | Reddit's JavaScript check | **Answer it in a sandbox, off by default** (`solveChallenge`): goja in a child process with time and memory limits, against a minimal stand-in for the browser, following only a GET form on Reddit's own host. Robust against changes to the computed value, but it runs code from Reddit on the server, and it doesn't help against real fingerprinting. | [§5.1](#51-requests), [§9](#9-settings) |
 | 15 | Provider cooldowns | **One key per provider** (`reddit-native`, `arctic-shift`), separate from `reddit.com`; a block pauses the provider for 30 minutes, rate limits use the server's reset time. | [§7.1](#71-subscriptions) |
 | 16 | `nativeProfile` | **Later.** Native is always Chrome until a library with consistent Firefox and Safari profiles is usable. `topDefault` comes with R-6. | [§9](#9-settings) |
+
+Decided after the second reality check (2026-10-28):
+
+| # | Topic | Decision | Where |
+|---|---|---|---|
+| 17 | Default of `solveChallenge` | **On.** A home connection gets the JavaScript check too, so without an answer native gets nothing anywhere, and everything depends on Arctic Shift, a third party that was down for maintenance during the whole run. The sandbox of decision 14 stays. | [§5.1](#51-requests), [§9](#9-settings) |
 
 No questions are open.
 

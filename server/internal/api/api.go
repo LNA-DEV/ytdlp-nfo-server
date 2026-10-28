@@ -101,6 +101,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /api/v1/system", a(s.handleSystem))
 	mux.HandleFunc("POST /api/v1/system/test-url", a(s.handleTestURL))
 	mux.HandleFunc("POST /api/v1/system/resume", a(s.handleResume))
+	mux.HandleFunc("POST /api/v1/reddit/reset", a(s.handleRedditReset))
 	mux.HandleFunc("DELETE /api/v1/system/warnings/{key}", a(s.handleClearWarning))
 	mux.HandleFunc("POST /api/v1/subscriptions/preview", a(s.handleSubPreview))
 	mux.HandleFunc("GET /api/v1/subscriptions", a(s.handleListSubs))

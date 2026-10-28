@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -30,9 +31,9 @@ type RedditSettings struct {
 	BackfillMax      int    `json:"backfillMax"`      // posts per gap fill or backfill run
 	// Duplicates are the levels 2 and 3 of the duplicate check (§7.5).
 	Duplicates RedditDuplicates `json:"duplicates"`
-	// SolveChallenge answers the JavaScript check Reddit shows some
-	// networks instead of the page, in a sandbox (§5.4). Off by default:
-	// it goes against Reddit's wish to keep automated clients out.
+	// SolveChallenge answers the JavaScript check Reddit shows logged-out
+	// visitors instead of the page, in a sandbox (§5.1). On by default:
+	// without it native gets no page at all (decision 17).
 	SolveChallenge bool `json:"solveChallenge"`
 	// ExternalHosts are the sites whose link posts are downloaded (§7.6):
 	// hosts or "*.domain" (the domain and its subdomains).
@@ -69,7 +70,19 @@ func DefaultRedditSettings() RedditSettings {
 	return RedditSettings{Providers: []string{RedditNative, RedditArcticShift}, FirstListing: 100, JobListLimit: 25,
 		PageDelaySeconds: 2, GapFill: true, BackfillMax: 5000,
 		Duplicates:    RedditDuplicates{ContentHash: true, Similar: SimilarWarn, SimilarDistance: 6},
-		ExternalHosts: DefaultRedditExternalHosts()}
+		ExternalHosts: DefaultRedditExternalHosts(), SolveChallenge: true}
+}
+
+// UnmarshalJSON reads stored settings; a setting stored before it existed
+// gets its default (solveChallenge is on unless it was turned off).
+func (r *RedditSettings) UnmarshalJSON(b []byte) error {
+	type plain RedditSettings
+	p := plain{SolveChallenge: true}
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*r = RedditSettings(p)
+	return nil
 }
 
 // normalize fills settings stored before Reddit support existed.

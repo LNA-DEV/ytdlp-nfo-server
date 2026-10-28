@@ -2,8 +2,11 @@ package manager
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"math/rand/v2"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -81,6 +84,25 @@ func (m *Manager) redditProviders() map[string]reddit.Provider {
 		}
 	}
 	return map[string]reddit.Provider{config.RedditNative: r.native, config.RedditArcticShift: r.arctic}
+}
+
+// ResetReddit starts a new Reddit session, as Settings → Reddit offers it
+// (Reddit concept §5.1): the cookie jar is emptied, and native's pause
+// after a block or a check ends, so the next request tries it again.
+func (m *Manager) ResetReddit() error {
+	r := &m.reddit
+	r.mu.Lock()
+	if r.client != nil {
+		r.client.Jar().Reset()
+	}
+	delete(r.pauseCause, native.SiteKey)
+	r.mu.Unlock()
+	if err := os.Remove(filepath.Join(m.dataDir, "reddit", "cookies.json")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	m.Sched.ClearCooldown(native.SiteKey)
+	m.logf("reddit: session reset (cookies cleared, native no longer paused)")
+	return nil
 }
 
 // redditChain returns the provider chain: a subscription's override

@@ -54,7 +54,10 @@ func (p *Provider) Name() string { return reddit.ProviderNative }
 // Site implements reddit.Provider: the key of native's own cooldowns. It
 // isn't the site key of Reddit jobs and checks, so a blocked native
 // doesn't hold them up while Arctic Shift can answer.
-func (p *Provider) Site() string { return "reddit-native" }
+func (p *Provider) Site() string { return SiteKey }
+
+// SiteKey is the key of native's cooldowns.
+const SiteKey = "reddit-native"
 
 // ListingURL returns the first page of a listing (§5.1).
 func ListingURL(t reddit.Target) string {
@@ -314,9 +317,15 @@ func (p *Provider) document(ctx context.Context, u, referer string) (*browser.Re
 		}
 		p.Client.Jar().Reset()
 		return nil, &reddit.Error{Class: ytdlp.ClassBlocked, Reason: "Reddit's JavaScript check could not be answered: " + err.Error(),
-			Hint: reddit.HintChallenge}
+			Hint: reddit.HintChallengeFailed}
 	}
-	return p.Client.Document(ctx, submit, pageURL.String(), MaxPage)
+	resp, err = p.Client.Document(ctx, submit, pageURL.String(), MaxPage)
+	if err == nil && isChallenge(resp.Body) {
+		p.Client.Jar().Reset()
+		return nil, &reddit.Error{Class: ytdlp.ClassBlocked, Reason: "Reddit did not accept the answer to its JavaScript check",
+			Hint: reddit.HintChallengeFailed, Snippet: snippet(resp.Body)}
+	}
+	return resp, err
 }
 
 func isChallenge(body []byte) bool { return marker(strings.ToLower(string(body)), Markers.Challenge) }
@@ -370,7 +379,13 @@ func retryAfter(resp *browser.Response) time.Duration {
 	return 0
 }
 
+// transport classifies an error of a request: a network error, or the
+// error of an unanswered check.
 func transport(err error) *reddit.Error {
+	var e *reddit.Error
+	if errors.As(err, &e) {
+		return e
+	}
 	return &reddit.Error{Class: ytdlp.ClassTransient, Reason: err.Error()}
 }
 

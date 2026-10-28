@@ -511,6 +511,16 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleRedditReset starts a new Reddit session: no cookies, native no
+// longer paused.
+func (s *Server) handleRedditReset(w http.ResponseWriter, r *http.Request) {
+	if err := s.m.ResetReddit(); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (s *Server) handleClearWarning(w http.ResponseWriter, r *http.Request) {
 	s.m.ClearWarning(r.PathValue("key"))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

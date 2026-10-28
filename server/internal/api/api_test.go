@@ -416,3 +416,11 @@ func TestArchiveCheckRoutes(t *testing.T) {
 		t.Fatal("entry not removed")
 	}
 }
+
+func TestRedditResetRoute(t *testing.T) {
+	srv, _ := newServer(t, "", nil)
+	resp, body := do(t, srv.Client(), "POST", srv.URL+"/api/v1/reddit/reset", "", nil)
+	if resp.StatusCode != 200 || body["ok"] != true {
+		t.Fatalf("reset: %d %v", resp.StatusCode, body)
+	}
+}

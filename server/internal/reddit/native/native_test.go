@@ -229,9 +229,21 @@ func TestChallenge(t *testing.T) {
 	if err != nil || !answered || len(pg.Posts) == 0 {
 		t.Fatalf("answered: %v %v", err, pg)
 	}
+	// A failed or rejected answer is blocked (not transient), with the
+	// hint for an answer that didn't work.
 	p.Solve = func(context.Context, []byte, *url.URL) (string, error) { return "", errors.New("time limit") }
-	if _, err := p.List(context.Background(), reddit.Query{Target: tg, Limit: 3}); !strings.Contains(reddit.AsError(err).Reason, "could not be answered: time limit") {
-		t.Fatalf("failed answer: %v", err)
+	_, err = p.List(context.Background(), reddit.Query{Target: tg, Limit: 3})
+	if e := reddit.AsError(err); e.Class != ytdlp.ClassBlocked || e.Hint != reddit.HintChallengeFailed ||
+		!strings.Contains(e.Reason, "could not be answered: time limit") {
+		t.Fatalf("failed answer: %+v", e)
+	}
+	p.Solve = func(context.Context, []byte, *url.URL) (string, error) {
+		return "https://www.reddit.com/r/testsub/new/?solution=wrong", nil
+	}
+	_, err = p.List(context.Background(), reddit.Query{Target: tg, Limit: 3})
+	if e := reddit.AsError(err); e.Class != ytdlp.ClassBlocked || e.Hint != reddit.HintChallengeFailed ||
+		!strings.Contains(e.Reason, "did not accept") {
+		t.Fatalf("rejected answer: %+v", e)
 	}
 }
 
