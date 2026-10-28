@@ -1003,7 +1003,7 @@ func (m *Manager) PreviewSubscription(ctx context.Context, raw string) (*Preview
 			break
 		}
 		key := subscriptions.EntryKey(le)
-		in, _ := m.Store.HasArchive(ctx, key)
+		in, _ := m.Store.InLibrary(ctx, key)
 		if in {
 			p.InLibrary++
 		}

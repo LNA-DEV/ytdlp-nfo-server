@@ -566,7 +566,7 @@ func (p *Pipeline) newItems(rc *runCtx, entries []ytdlp.Entry, startIndex int, p
 }
 
 func (p *Pipeline) inArchive(key string) bool {
-	ok, _ := p.d.Store.HasArchive(bg, key)
+	ok, _ := p.d.Store.InLibrary(bg, key)
 	return ok
 }
 

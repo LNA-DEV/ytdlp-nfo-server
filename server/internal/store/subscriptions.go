@@ -700,7 +700,12 @@ func statusExpr(p StatusParams) string {
 		ELSE 'backlog' END`
 }
 
-const entryFrom = ` FROM subscription_entries e LEFT JOIN items i ON i.id = e.item_id LEFT JOIN archive a ON a.key = e.key `
+// entryFrom joins an entry with its item and its archive entry: its own,
+// or the one whose file the media index lists under the entry's key (a
+// crosspost, an image of a gallery, a skipped duplicate; Reddit concept
+// §7.5).
+const entryFrom = ` FROM subscription_entries e LEFT JOIN items i ON i.id = e.item_id LEFT JOIN archive a ON a.key =
+	COALESCE((SELECT m.archive_key FROM media_index m WHERE m.media_key = e.key LIMIT 1), e.key) `
 
 func entrySelect(p StatusParams) string {
 	return `SELECT e.id, e.subscription_id, e.key, e.listing_key, e.url, e.title, e.duration, e.upload_date, e.sort_date, e.thumbnail,
@@ -829,7 +834,8 @@ func (t *Tx) UpdateEntry(ctx context.Context, e *Entry) error {
 	return err
 }
 
-// ArchivedKeys returns which of the keys are in the archive.
+// ArchivedKeys returns which of the keys are in the archive or the media
+// index.
 func (t *Tx) ArchivedKeys(ctx context.Context, keys []string) (map[string]bool, error) {
 	out := map[string]bool{}
 	for start := 0; start < len(keys); start += 500 {
@@ -838,7 +844,9 @@ func (t *Tx) ArchivedKeys(ctx context.Context, keys []string) (map[string]bool, 
 		for i, k := range chunk {
 			args[i] = k
 		}
-		rows, err := t.tx.QueryContext(ctx, `SELECT key FROM archive WHERE key IN (`+placeholders(len(chunk))+`)`, args...)
+		in := placeholders(len(chunk))
+		rows, err := t.tx.QueryContext(ctx, `SELECT key FROM archive WHERE key IN (`+in+`)
+			UNION SELECT media_key FROM media_index WHERE media_key IN (`+in+`)`, append(args, args...)...)
 		if err != nil {
 			return nil, err
 		}
@@ -889,7 +897,8 @@ func (s *Store) SetIgnored(ctx context.Context, ids []int64, ignored bool) (int,
 // never downloaded (no linked item, not in the archive).
 func (s *Store) PruneGoneEntries(ctx context.Context, before time.Time) (int, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM subscription_entries WHERE gone_at IS NOT NULL AND gone_at < ?
-		AND item_id IS NULL AND NOT EXISTS (SELECT 1 FROM archive a WHERE a.key = subscription_entries.key)`, before.UnixMilli())
+		AND item_id IS NULL AND NOT EXISTS (SELECT 1 FROM archive a WHERE a.key = subscription_entries.key)
+		AND NOT EXISTS (SELECT 1 FROM media_index m WHERE m.media_key = subscription_entries.key)`, before.UnixMilli())
 	if err != nil {
 		return 0, err
 	}
