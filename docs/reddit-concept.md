@@ -1,14 +1,14 @@
 # Reddit Concept
 
-> Status: **Draft** · 2026-10-28
+> Status: **Draft**, decisions of 2026-10-28 recorded ([§14](#14-decisions-and-open-questions)) · 2026-10-28
 > Scope: server, web UI, browser add-on
-> Builds on [overhaul-concept.md](overhaul-concept.md) (pipeline, integrity invariants) and [subscriptions-concept.md](subscriptions-concept.md) (checks, entries, jobs). Open points are listed in [§14](#14-open-questions).
+> Builds on [overhaul-concept.md](overhaul-concept.md) (pipeline, integrity invariants) and [subscriptions-concept.md](subscriptions-concept.md) (checks, entries, jobs).
 
 ## 1. Summary
 
 Download images, galleries and videos from subreddits and user profiles, and subscribe to them like to a channel. Reddit gets two ways to read its data, called **providers**:
 
-- **native**: reads the HTML pages a logged-out browser gets from `www.reddit.com`. No account, no cookies, no API key.
+- **native**: reads the HTML pages a logged-out browser gets from `www.reddit.com`. No account, no login, no API key: it looks like a logged-out Chrome visitor.
 - **arcticshift**: reads the [Arctic Shift](https://github.com/ArthurHeitmann/arctic_shift) API, a free third-party archive of Reddit. The server then never talks to `www.reddit.com`.
 
 Both providers produce the same normalized **post**. Everything after that is provider-independent: subscription entries, jobs, items, archive keys and the library layout. Media files are always downloaded from Reddit's media hosts (`i.redd.it`, `v.redd.it`, `preview.redd.it`). Crossposts and re-uploads are recognized, so the same picture or video is not downloaded twice.
@@ -22,12 +22,12 @@ yt-dlp cannot list subreddits, and its Reddit extractor needs the JSON endpoints
 | R1 | **No login, no API key.** Reddit's JSON endpoints, RSS feeds and OAuth API are closed, closing or need approval ([§2](#2-access-situation)). The providers use only what a logged-out browser gets, or a third-party archive. Cookie profiles are not used for Reddit in this concept. |
 | R2 | **One media, one key, any provider.** The archive key identifies the media, not the post: `redditmedia <media id>` for an image or GIF, `reddit <v.redd.it id>` for a video and `redditgallery <hash>` for a gallery. The video key is the one yt-dlp's Reddit extractor writes, so videos downloaded earlier through yt-dlp count. A crosspost shows the media of its original and therefore gets the same key. Keys come only from Reddit's own IDs, never from the provider, so providers can be mixed and switched ([§7.5](#75-duplicates-and-crossposts)). |
 | R3 | **Providers are a chain.** An ordered list per subscription (default: the global order). A request falls through to the next provider on `blocked`, `rate_limited`, `auth_required` or a page layout the parser doesn't recognize. A `permanent` error (subreddit banned or not found) does not fall through. |
-| R4 | **No evasion.** Native is a plain HTTP client: no JavaScript, no headless browser, no TLS fingerprint spoofing, no CAPTCHA solving, no proxy rotation. If Reddit blocks it, the request is `blocked` and the next provider is tried. The subscription loop's impersonation escalation is a no-op for Reddit providers. |
-| R5 | **Arctic Shift is opt-in.** It is a volunteer-run third-party service that learns which subreddits and posts the server asks for. It is enabled in *Settings → Reddit*, which says so. |
+| R4 | **Native looks like a browser as far as possible.** It presents itself consistently as one current desktop Chrome: the TLS and HTTP/2 fingerprint, headers in Chrome's order, client hints, a persistent cookie jar like a returning logged-out visitor, a browser-like order of requests, and human pacing ([§5.1](#51-requests)). It does not run JavaScript and can't change the IP address. If Reddit still blocks it, the request is `blocked` and the next provider is tried. Because native always impersonates, the subscription loop's impersonation escalation is a no-op for it. |
+| R5 | **Arctic Shift is on by default, as the fallback.** The default chain is `native, arcticshift`. Arctic Shift is a volunteer-run third-party service that learns which subreddits and posts the server asks for; *Settings → Reddit* says so and can switch it off. |
 | R6 | **A post is one item and one folder**, including galleries. A gallery reaches the library through one atomic rename like any other item, so invariant 2 holds unchanged. |
 | R7 | **Images get their own verify and no NFO.** Images are checked by content (magic bytes plus a full decode), never by URL. Image items carry a hidden marker file instead of `movie.nfo`, so the library check and target selection still recognize them ([§8](#8-library-layout)). |
 | R8 | **Reddit listings are never complete.** Reddit lists at most about 1000 posts, and Arctic Shift has the full history, which is far too much to list. Reddit sources therefore never report a complete listing, and the subscription loop never marks their entries *gone*. |
-| R9 | **Reddit-hosted media first.** Images, galleries, GIFs and `v.redd.it` videos are in scope. Links to other sites (YouTube, Redgifs, Imgur, …) are ignored with a reason in this concept and can follow later ([§15](#15-rollout)). |
+| R9 | **Reddit-hosted media first, links to other sites after.** Images, galleries, GIFs and `v.redd.it` videos come first. Link posts to an allowlist of sites (YouTube, Redgifs, Imgur, Streamable, …) become ordinary downloads of their target in a later phase ([§7.6](#76-links-to-other-sites), [§15](#15-rollout)). |
 | R10 | **Measure before building.** Phase R-0 ships a probe subcommand. It shows from the user's own network whether each provider works and records the HTML and JSON this concept assumes ([§13](#13-testing)). The parser details in [§5](#5-native-provider) are expectations until R-0 confirms them. |
 | R11 | **Duplicates are caught as early as possible.** There are three levels. The media key catches crossposts before any media is downloaded. A SHA-256 of each image catches identical re-uploads before finalize. An optional perceptual hash flags reposts that were resized or recompressed, as a warning by default. A duplicate is *skipped*, never failed, and nothing in the library is changed for it ([§7.5](#75-duplicates-and-crossposts)). |
 
@@ -47,8 +47,11 @@ Status as of 2026-10-28. Most sources are secondary; dates are reported, not con
 
 **Why native needs no login.** The pages a logged-out browser shows are server-rendered: the HTML of a subreddit page already contains one `<shreddit-post>` element per post, with the post's data in its attributes. Further posts come from an HTML endpoint the page calls while scrolling. Native requests the same documents and reads them without running JavaScript. Three things limit it:
 
-1. **Reddit decides per client.** Whether a plain HTTP client gets the page or the block page depends on the IP address and on how the client looks. A home connection is more likely to work than a VPS. R-0 measures this.
-2. **The logged-out view is limited.** In the default card view, logged-out pages render only the first few posts; the compact view (`feedViewType=compactView`) renders more (measured by a third party on 2026-10-16). NSFW and quarantined communities and, depending on the country, mature content need a login. For those, native fails with `auth_required` and the chain falls through to Arctic Shift.
+1. **Reddit decides per client.** Whether a client gets the page or the block page depends on the IP address and on how the client looks. Native looks like a current Chrome as far as that is possible without running JavaScript (R4), but it can't change the IP address. A home connection is more likely to work than a VPS; the optional `proxy` setting can route Reddit requests through one ([§9](#9-settings)). R-0 measures this.
+2. **The logged-out view is limited.**
+   - In the default card view, logged-out pages render only the first few posts; the compact view (`feedViewType=compactView`) renders more (measured by a third party on 2026-10-16).
+   - **NSFW:** Reddit blurs NSFW posts or shows an 18+ dialog to logged-out visitors. Browser extensions remove both, which indicates that the posts are in the page anyway. Native sets Reddit's `over18` cookie, as yt-dlp does, and reads posts regardless of blur and dialog elements. R-0 checks this on an NSFW community.
+   - **Real gates:** where Reddit withholds content on the server (quarantined communities, or a legally required age verification in some countries), native reports `auth_required` and does not try to get around it. The chain falls through to Arctic Shift.
 3. **HTML changes more often than an API.** The parser keeps all element and attribute names in one place, and a page it can't read is a classified error, never an empty result ([§5.4](#54-errors)).
 
 ## 3. Terms
@@ -93,10 +96,26 @@ Both providers fill the same struct (`internal/reddit/post.go`). Fields a provid
 | User posts | `https://www.reddit.com/user/<name>/submitted/?feedViewType=compactView`, then its own more-posts endpoint (R-0 records it) |
 | One post (item metadata) | `https://www.reddit.com/r/<sub>/comments/<id>/`; without a subreddit, `https://www.reddit.com/comments/<id>/` (redirects to the full URL) |
 
-- **Client**:
-  - A fixed, current desktop browser `User-Agent`, as yt-dlp sends by default, plus `Accept-Language: en`. [§14](#14-open-questions) asks whether a descriptive project User-Agent works as well; R-0 measures both.
-  - A cookie jar per check or per item, discarded afterwards. It only holds what Reddit sets itself.
-- **Pacing**: pages of one listing are at least 2 s apart (±20 % jitter). The subscription loop already allows one check per site at a time and waits `siteDelaySeconds` between checks of a site ([subscriptions §5.4](subscriptions-concept.md#54-politeness-errors-and-rate-limits)).
+**Browser identity** (R4). Native presents itself as one current desktop Chrome, and every layer tells the same story:
+
+| Layer | What native sends |
+|---|---|
+| TLS | Chrome's ClientHello: cipher suites, extensions and their order, GREASE, ALPN `h2`. JA3/JA4 match Chrome. |
+| HTTP/2 | Chrome's SETTINGS, window update, stream priorities and pseudo-header order |
+| Headers | In Chrome's order: `User-Agent`, `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform`, `Accept`, `Accept-Encoding`, `Accept-Language`, `Sec-Fetch-Site`, `Sec-Fetch-Mode`, `Sec-Fetch-Dest`, `Sec-Fetch-User`, `Upgrade-Insecure-Requests`, `Priority`. All of them belong to the same Chrome version as the TLS profile. |
+| Navigation | The listing page as a top-level navigation (`Sec-Fetch-Mode: navigate`). Further pages as the page's script requests them (`Sec-Fetch-Mode: cors`, `Referer` = the listing page). Post pages as navigations from the listing. |
+| Cookies | One persistent cookie jar, like a returning logged-out visitor: what Reddit sets itself (`loid`, `csv`, `edgebucket`, `session_tracker`, …) plus `over18=1`. Stored in `DATA_DIR/reddit/cookies.json` (0600). It is reset after a block, and by hand in the settings. |
+| Timing | Pages of one listing 2–5 s apart (random), about as fast as a person scrolls |
+
+- **Library**: [`Noooste/azuretls-client`](https://github.com/Noooste/azuretls-client) (MIT). It brings Chrome's TLS and HTTP/2 fingerprints and controls the header order, and it works with the Go version the image builds with today (1.26). [`bogdanfinn/tls-client`](https://github.com/bogdanfinn/tls-client) (BSD-3) has more profiles (Chrome up to 152, Firefox, Safari) but needs Go 1.27. R-0 compares both with a plain `net/http` client.
+- **Profile updates**: the browser profile comes with the library and is updated with it. User-Agent, client hints and TLS profile always come from the same profile: a Chrome 150 User-Agent on a Chrome 131 fingerprint is more conspicuous than either alone.
+- **Limits of the disguise**:
+  - The IP address can't be faked. The optional `proxy` setting routes Reddit requests through a connection of the user's choice, for example the home connection when the server runs on a VPS. There are no proxy pools and no CAPTCHA services.
+  - If Reddit starts to require JavaScript challenges, native is blocked. The next step would be a real browser in a sidecar container ([§15](#15-rollout)).
+- **Media**:
+  - Images from `i.redd.it` use the same client and identity, with `Sec-Fetch-Dest: image` and `Referer: https://www.reddit.com/`.
+  - Videos go through yt-dlp, which gets `--impersonate chrome` for `v.redd.it` when a target is available.
+- **Pacing beyond one listing**: the subscription loop already allows one check per site at a time and waits `siteDelaySeconds` between checks of a site ([subscriptions §5.4](subscriptions-concept.md#54-politeness-errors-and-rate-limits)).
 - **Limits**: 5 MB per HTML document, 30 s per request, redirects only to allowlisted hosts ([§10](#10-security)).
 
 ### 5.2 Parsing
@@ -126,8 +145,8 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
 | Response | Class | Effect |
 |---|---|---|
 | 429, or a 200 with Reddit's rate-limit page | `rate_limited` | Site cooldown for `reddit.com` (`Retry-After` if sent, else `rateLimitCooldownMinutes`). Falls through to the next provider. |
-| 403, or a 200 with the "blocked by network security" page | `blocked` | Falls through. Hint: "Reddit blocks this server's network (VPN or datacenter addresses are often blocked). Enable Arctic Shift or run the server from another network." |
-| Redirect to the login page, or an NSFW, quarantine or age gate | `auth_required` | Falls through. Hint: "Reddit shows this community only to logged-in users. Enable Arctic Shift." |
+| 403, or a 200 with the "blocked by network security" page | `blocked` | Falls through. Resets the cookie jar. Hint: "Reddit blocks this server's network (VPN or datacenter addresses are often blocked). Use Arctic Shift, or route Reddit through another connection (setting `proxy`)." |
+| Redirect to the login page, a quarantine gate, or a page whose posts are withheld (age verification) | `auth_required` | Falls through. Hint: "Reddit shows this community only to logged-in or verified users. Arctic Shift has it if it is enabled." An NSFW blur or 18+ dialog is not a gate: the posts are read through it. |
 | 404, "community not found", banned or private community | `permanent` | No fall-through. Hint as for a removed channel |
 | A 200 page without readable posts | `extractor_broken` | Falls through. Hint: "Reddit's page layout changed; the server needs an update." Logged with the first 2 KB of the page. |
 | Network errors, 5xx, timeouts | `transient` | Falls through, backoff as usual |
@@ -178,11 +197,11 @@ type Lister interface {
 | First listing | The newest `firstListing` posts (default 100) become the backlog. The backlog choice *all* means these posts. |
 | Full rescan | Lists `firstListing` posts and never reports `complete` (R8), so nothing is marked *gone* |
 | Entry | `ListEntry{ExtractorKey, ID, URL: permalink, Title, Timestamp, Thumbnail, Duration}` plus two new optional fields, `MediaKind` and `NSFW`. The key is the media key if the listing shows the media, else `redditpost <post id>`. Both providers show it for images, GIFs and videos; only Arctic Shift shows it for galleries ([§7.5](#75-duplicates-and-crossposts)). |
-| Not media | `text` posts and, for now, `link` posts are stored as ignored with the reason `no media` or `link to <host>`, like `not a video` |
+| Not media | `text` posts are stored as ignored with the reason `no media`, like `not a video`. Link posts to a host on `externalHosts` become entries for their target ([§7.6](#76-links-to-other-sites)); other link posts are ignored with the reason `link to <host>`. |
 | Preview | A subreddit or user URL previews its newest 10 posts. A post URL switches to its subreddit, as a video URL switches to its channel (subscriptions decision 20). The preview names the provider that answered. |
 | Errors | The classes from [§5.4](#54-errors). Each provider sets the cooldown of its own site, and a provider whose site is in a cooldown is skipped. After the whole chain fails, the error of the first provider is recorded, with a hint that names all providers that were tried. |
 
-**Filters.** `store.Filters` gets `mediaKinds` (a subset of `image`, `gallery`, `video`, `gif`; empty = all) and `nsfw` (`include`, `exclude` or `only`; default `include`). Both only use listing data and leave non-Reddit entries alone. As with all filters, entries that don't match are ignored with a reason such as `filter: video`.
+**Filters.** `store.Filters` gets `mediaKinds` (a subset of `image`, `gallery`, `video`, `gif`, `linked`; empty = all) and `nsfw` (`include`, `exclude` or `only`; default `include`). Both only use listing data and leave non-Reddit entries alone. As with all filters, entries that don't match are ignored with a reason such as `filter: video`.
 
 **Defaults when subscribing.**
 - The name is `r/<name>` or `u/<name>`.
@@ -309,7 +328,7 @@ CREATE INDEX media_index_sha ON media_index(sha256);
 - **After the post is fetched:** the item is re-keyed to the media key (step 2 in [§7.2](#72-pipeline)), and the existing key lock and archive check skip it as "Already in library (crosspost of r/<sub>: <title>)". The existing re-keying of subscription entries (`rekeyEntries`) moves the entries to the media key and merges the ones that now share a key.
 - **Galleries:** besides the gallery key, each image's media key is looked up.
   - If all images are in the library (for example, posted one by one before), the item is skipped.
-  - If only some are, the whole gallery is downloaded so the album is complete, with the warning "3 of 5 images are already in the library". [§14](#14-open-questions) asks whether to skip those images instead.
+  - If only some are, the whole gallery is downloaded so the album is complete, with the warning "3 of 5 images are already in the library". [§14](#14-decisions-and-open-questions) asks whether to skip those images instead.
 
 **Level 2.** After verify, the SHA-256 of each image is looked up in the media index.
 
@@ -328,7 +347,47 @@ CREATE INDEX media_index_sha ON media_index(sha256);
 - The hashes are kept in memory as a list of 64-bit values and compared linearly. A million images take 8 MB and a few milliseconds per lookup, so no special index is needed.
 - Videos are not hashed in this concept. A later version can hash frames at 10, 50 and 90 % of the duration, together with the duration.
 
-**What a duplicate never does:** it never replaces, moves, links or deletes anything in the library; it only skips the new download. Duplicates across sites (the same picture from Reddit and from another site) are out of scope.
+**What a duplicate never does:** it never replaces, moves, links or deletes anything in the library; it only skips the new download. Duplicates across sites (the same picture from Reddit and from another site) are out of scope, except for linked videos, which share the target's key ([§7.6](#76-links-to-other-sites)).
+
+### 7.6 Links to other sites
+
+Many posts link to media elsewhere: YouTube videos, Redgifs clips, Imgur images and GIFs, Streamable videos. In such a **link post**, the media lives on the other site, and the Reddit post only adds a title and a subreddit.
+
+**Principle: a link post becomes an ordinary download of its target.** The entry's URL is the target URL, not the permalink. Its item runs through the existing yt-dlp pipeline with the target's metadata, NFO, archive key and site rules. The same video is then the same library item, whether it came from Reddit, from a YouTube subscription or from a pasted URL.
+
+**Allowlist.** Posts are written by strangers, so only hosts on `externalHosts` ([§9](#9-settings)) are followed. The default list:
+
+| Site | URL forms | Key at listing time | Downloaded by |
+|---|---|---|---|
+| YouTube | `youtube.com/watch?v=<id>`, `youtu.be/<id>`, `youtube.com/shorts/<id>` | `youtube <id>` | yt-dlp |
+| Redgifs | `redgifs.com/watch/<id>`, `redgifs.com/ifr/<id>` | `redgifs <id>` (lowercase) | yt-dlp |
+| Streamable | `streamable.com/<id>`, `streamable.com/e/<id>` | `streamable <id>` | yt-dlp |
+| Imgur video or GIF | `imgur.com/<id>`, `i.imgur.com/<id>.gifv`, `.mp4`, `.gif` | `imgur <id>` | yt-dlp |
+| Imgur still image | `i.imgur.com/<id>.jpg`, `.jpeg`, `.png`, `.webp` | `imgur <id>` | The image path of [§7.2](#72-pipeline): yt-dlp's Imgur extractor rejects still images ("not a video or animated image") |
+
+- **More hosts**: the user can add hosts (an exact host or `*.example.com`). A host without a known URL form gets the key `url <normalized URL>`, which the subscription system already uses for entries without an ID. After the metadata is fetched, the item is re-keyed to yt-dlp's key as usual.
+- **Keys**: the known keys are the ones yt-dlp writes (`<extractor key, lowercase> <id>`), and tests pin them against yt-dlp's URL patterns. A wrong guess costs nothing: the re-keying after fetch meta corrects it, and the key lock prevents a double download.
+- **Not followed**:
+  - hosts not on the list;
+  - Imgur albums and galleries (`imgur.com/a/…`, `imgur.com/gallery/…`), which need the Imgur API;
+  - links to other Reddit posts (crossposts are handled in [§7.5](#75-duplicates-and-crossposts)).
+
+**Jobs per target site.** The scheduler limits and cools down per site, and options are resolved per job URL. A YouTube video inside a Reddit job would ignore the YouTube site rule (cookies, impersonation, per-site limit), and a YouTube 429 would cool down `reddit.com` instead of `youtube.com`. So when a check or a user action queues entries, `subJobTx` groups them by site:
+- Reddit-hosted media in one job;
+- each target site in a job of its own (`"r/videos: 3 linked videos (youtube.com)"`), with the subscription's band and options resolved for the target URL (subscription option > site rule of the target > default).
+
+The exception is a single post URL pasted by hand that turns out to be a link post: its item switches to the target URL inside its job, and the target's site limits don't apply to that one job.
+
+**Duplicates.** Level 1 works through the target keys. A YouTube video that is already in the library, from anywhere, shows as *in library* at listing time, and a link to it in another subreddit is skipped without a download. Levels 2 and 3 apply to Imgur still images as to Reddit images.
+
+**Library and metadata.**
+- A linked item lands in the subscription's folder like any other (S9).
+- Its NFO comes from the target's metadata (the YouTube title and channel), not from the Reddit post, so it matches a direct download of the same video.
+- The feed shows the Reddit post's title and subreddit.
+
+**Filters.** `mediaKinds` has `linked` for these posts. The NSFW filter uses the post's flag, so it applies to links as well; most Redgifs links are NSFW.
+
+**Security.** Before a target URL reaches yt-dlp, it must pass all of these: `https` only, host on the allowlist, `config.ValidateURL`, and an address that isn't private (the check from [§10](#10-security)). yt-dlp can still follow redirects within the target site; the allowlist limits that to well-known sites.
 
 ## 8. Library layout
 
@@ -350,7 +409,7 @@ CREATE INDEX media_index_sha ON media_index(sha256);
   ```
 
   `library.FolderVideoID` and `library.ScanFolders` fall back to this file when there is no `movie.nfo`, and return the ID part of its `key`. Then `ChooseTarget` still replaces the same post instead of adding ` (2)`, and *Archive → Check library* finds image folders. `ScanFolders` also learns the image extensions.
-- **Jellyfin**: a movie library ignores images. A Reddit subscription should therefore use a library of the Jellyfin type *Home videos and photos*; the subscription's library can be chosen per subscription (S9). Whether Jellyfin reads `movie.nfo` in that library type is not verified; the videos play either way. Jellyfin ignores the hidden marker.
+- **Jellyfin**: a movie library ignores images. A Reddit subscription should therefore use a library of the Jellyfin type *Home videos and photos*; the subscription's library can be chosen per subscription (S9). If only one library exists, or the chosen one is not marked as a Reddit library, the add dialog warns that Jellyfin's movie libraries don't show images. It doesn't block. Whether Jellyfin reads `movie.nfo` in that library type is not verified; the videos play either way. Jellyfin ignores the hidden marker.
 
 ## 9. Settings
 
@@ -358,8 +417,10 @@ CREATE INDEX media_index_sha ON media_index(sha256);
 
 | Setting | Default | Range | Notes |
 |---|---|---|---|
-| `providers` | `["native"]` | ordered subset of `native`, `arcticshift` | Global chain. `arcticshift` can only be added after `arcticShiftAccepted` |
-| `arcticShiftAccepted` | `false` | – | The user confirmed the note: third-party service, no guarantees, it sees the subreddits and posts the server asks for (R5) |
+| `providers` | `["native", "arcticshift"]` | ordered subset of `native`, `arcticshift` | Global chain (R3, R5). The settings page says that Arctic Shift is a third-party service without guarantees that sees the subreddits and posts the server asks for. |
+| `nativeProfile` | `chrome` | `chrome`, `firefox`, `safari` | Browser identity of native (R4). Always the newest profile of that browser in the library. |
+| `proxy` | `""` | `http://`, `https://` or `socks5://` URL | Route all Reddit and Arctic Shift requests and media downloads through this proxy, for example the home connection. Credentials in it are never logged. |
+| `externalHosts` | see [§7.6](#76-links-to-other-sites) | hosts or `*.domain` | Link posts to these hosts are downloaded |
 | `firstListing` | `100` | 25–1000 | Depth of the first listing and of a full rescan |
 | `jobListLimit` | `25` | 1–1000 | Posts of a pasted subreddit URL |
 | `pageDelaySeconds` | `2` | 1–60 | Between two native pages, ±20 % jitter |
@@ -383,7 +444,8 @@ A subscription can override the chain (`provider`: `""` = global, `native`, `arc
 - **Address check**: the dialer refuses loopback, private, link-local and unique-local addresses after DNS resolution, which also covers DNS rebinding.
 - **yt-dlp** only gets manifest URLs on `v.redd.it` that the code built itself from a validated ID. `--ignore-config` and the URL after `--` stay as they are.
 - **Size and time limits** on every response ([§5.1](#51-requests), [§7.3](#73-verify)).
-- **No secrets**: no cookie profile or token is ever sent to Reddit or Arctic Shift.
+- **No secrets**: no cookie profile or token is ever sent to Reddit or Arctic Shift. Native's cookie jar only holds what Reddit sets for a logged-out visitor; it is stored with 0600 permissions and used for Reddit only.
+- **Link posts** reach yt-dlp only through the allowlist and the checks of [§7.6](#76-links-to-other-sites).
 
 ## 11. Integrations
 
@@ -400,7 +462,9 @@ A subscription can override the chain (`provider`: `""` = global, `native`, `arc
 | Package | Content |
 |---|---|
 | `internal/reddit` | URL parsing and canonical URLs, `Post`, the provider chain, the media downloader with the host allowlist |
-| `internal/reddit/native` | HTTP client, HTML parser, layout table |
+| `internal/reddit/browser` | The browser identity of [§5.1](#51-requests) on top of `azuretls-client` (new dependency): profile, header order, navigation headers, persistent cookie jar, proxy |
+| `internal/reddit/native` | Requests, HTML parser, layout table |
+| `internal/reddit/links.go` | Allowlist, known URL forms and their keys ([§7.6](#76-links-to-other-sites)) |
 | `internal/reddit/arcticshift` | API client |
 | `internal/subscriptions` | `Lister` interface, `ytdlpLister` (moved code), `redditLister` |
 | `internal/pipeline/reddit.go` | `attemptReddit`, gallery handling, verify of images |
@@ -414,14 +478,16 @@ A subscription can override the chain (`provider`: `""` = global, `native`, `arc
 **R-0 probe.**
 
 ```bash
-ytdlp-nfo-server reddit-probe [--provider native|arcticshift|all] [--user-agent browser|project] [--fixtures DIR] <subreddit or post URL>
+ytdlp-nfo-server reddit-probe [--provider native|arcticshift|all] [--client browser|tlsclient|plain] [--proxy URL] [--fixtures DIR] <subreddit or post URL>
 ```
 
-It runs both providers from the container's network and prints:
+It runs the providers from the container's network and prints:
 - the HTTP status per request;
-- whether a block page, rate-limit page or login gate was detected;
+- whether a block page, rate-limit page, login gate or NSFW overlay was detected;
 - the number of posts parsed and which attributes were found;
 - for the first image and video, whether `i.redd.it` and the `v.redd.it` manifest answer.
+
+`--client` compares the browser identity on `azuretls-client` (`browser`, the default), the same on `tls-client`, and a plain `net/http` client. This shows whether the disguise makes a difference from that network. The R-0 runs include an NSFW community and an NSFW post page, to confirm that the posts are in the page behind the overlay ([§2](#2-access-situation)).
 
 With `--fixtures`, it stores the pages and JSON responses with usernames and titles replaced, as fixtures for the parser tests. It writes nothing else and needs no database. Run hourly for a few days with `--quiet` (one line per run), it shows how stable each provider is from that network.
 
@@ -432,13 +498,21 @@ With `--fixtures`, it stores the pages and JSON responses with usernames and tit
 | Scenario | Expected result |
 |---|---|
 | Parser on the R-0 fixtures | Golden posts, including gallery, video, crosspost and NSFW post |
+| An NSFW page with blur and 18+ dialog | Posts parsed as usual, `NSFW` set |
+| A page whose posts are withheld (age verification or quarantine) | `auth_required`, chain falls through |
+| Requests of the browser client (captured by the fake Reddit) | Header names and order, client hints, `Sec-Fetch-*` and `Referer` as in [§5.1](#51-requests); User-Agent and client hints of the same version |
+| Cookies across checks | Set by the fake Reddit in one check, sent in the next. Reset after a block |
 | A 200 page without posts and without the empty-state marker | `extractor_broken`, chain falls through |
 | Native block page, Arctic Shift enabled | The check succeeds through Arctic Shift. The check log names both providers |
 | Native and Arctic Shift list the same posts in different checks | Images and videos: the same keys, no new entries, no job. A gallery that native lists under its post key and Arctic Shift under its gallery key is downloaded once, and its two entries are merged at that point (`rekeyEntries`). |
 | First check of a subreddit, `firstListing` 100 | 100 backlog entries, no job |
 | Windowed check, 70 new posts, window 50 | Paging by cursor (native) or `before` (Arctic Shift), all 70 found |
 | Full rescan | Never marks entries *gone* |
-| Text and link posts | Ignored with a reason, never queued |
+| Text posts, link posts to hosts not on the allowlist | Ignored with a reason, never queued |
+| A link post to YouTube, the video already in the library from a YouTube subscription | Entry *in library* at listing time, no job |
+| A check finds 2 Reddit images and 3 YouTube links | Two jobs: one for `reddit.com`, one for `youtube.com` with the YouTube site rule's options |
+| A link post to `i.imgur.com/<id>.jpg` | Downloaded through the image path, key `imgur <id>` |
+| A link post to a host added as `*.example.com` | Key `url <normalized URL>`, re-keyed to yt-dlp's key after fetch meta |
 | Filter `mediaKinds = [image, gallery]` | Videos ignored as `filter: video` |
 | Two Reddit videos in one job | Two archive entries, two folders (no re-keying to `generic DASHPlaylist`) |
 | A crosspost of an image in the library, listed with its media | Entry *in library*, no job, no request |
@@ -461,15 +535,22 @@ With `--fixtures`, it stores the pages and JSON responses with usernames and tit
 | A post links to a private address or another host | Never fetched |
 | Arctic Shift 429 with `X-RateLimit-Reset` | Cooldown for the Arctic Shift site key, chain falls through |
 
-## 14. Open questions
+## 14. Decisions and open questions
+
+Decided on 2026-10-28:
+
+| # | Topic | Decision | Where |
+|---|---|---|---|
+| 1 | Arctic Shift | **On by default**, as the fallback after native. The settings page says what Arctic Shift sees, and it can be switched off. | R5, [§9](#9-settings) |
+| 2 | How native presents itself | **As much like a browser as possible**: one consistent Chrome identity across TLS, HTTP/2, headers, navigation, cookies and timing. Not possible without JavaScript or another IP address, and therefore not done: JavaScript challenges and a different IP. The `proxy` setting covers the second. | R4, [§5.1](#51-requests) |
+| 3 | Images and a movie-only library | **Warn, don't block.** The add dialog says that Jellyfin's movie libraries don't show images. | [§8](#8-library-layout) |
+| 4 | NSFW | **Included by default.** Native reads NSFW posts through the blur and the 18+ dialog, like the browser extensions that remove them. Only content that Reddit withholds on the server goes through Arctic Shift. | [§2](#2-access-situation), [§5.4](#54-errors) |
+| 5 | Links to other sites | **Designed in [§7.6](#76-links-to-other-sites)** and built in phase R-5: an allowlist, the target's own key, metadata and site rules, and one job per target site. | R9 |
+
+Still open:
 
 | # | Question | Recommendation |
 |---|---|---|
-| 1 | Is Arctic Shift opt-in, or on by default as the second provider? | **Opt-in** (R5): it is a third-party service that sees what the server asks for. |
-| 2 | Native User-Agent: a browser string (like yt-dlp) or a descriptive project string? | Decide after R-0, which measures both. A browser string is the yt-dlp default and not evasion in the sense of R4; if the project string works as well, prefer it. |
-| 3 | Where do images go if the user has only a movie library? | Warn in the add dialog that Jellyfin's movie libraries don't show images, and suggest a *Home videos and photos* library. Don't block. |
-| 4 | Default of the NSFW filter | `include`. NSFW communities only work through Arctic Shift anyway ([§2](#2-access-situation)). |
-| 5 | Links to other sites (YouTube, Redgifs, Imgur, …) | Later (R9). With an allowlist they can go through the existing yt-dlp path and its re-keying. |
 | 6 | A gallery partly in the library: download the whole gallery, or only the new images? | **Whole gallery**: an album with gaps is worse than a few duplicate files. |
 | 7 | Default of level 3: `warn` or `skip`? | **`warn`**: a perceptual match can be wrong (screenshots, memes on the same template), and a skipped image is easy to miss. |
 
@@ -477,9 +558,10 @@ With `--fixtures`, it stores the pages and JSON responses with usernames and tit
 
 | Phase | Content | Exit criteria |
 |---|---|---|
-| **R-0 Probe** | `reddit-probe` subcommand, fixtures | Run on the user's server for a few days. For each provider: works / works with limits / blocked. The parser table in [§5.2](#52-parsing) is confirmed or corrected. **Go/no-go per provider.** |
+| **R-0 Probe** | `reddit-probe` subcommand with the browser identity, fixtures | Run on the user's server for a few days. For each provider and client: works / works with limits / blocked, including NSFW. The parser table in [§5.2](#52-parsing) is confirmed or corrected, and the library for the browser identity is chosen. **Go/no-go per provider.** |
 | **R-1 Lister** | `Lister` interface, `ytdlpLister` | No behavior change. All tests pass, including the integrity tests |
 | **R-2 Listing** | Providers (the ones that passed R-0), Reddit sources, canonical URLs, preview, errors, chain, filters, settings, OPML import of Reddit RSS | A subreddit can be subscribed, checked and previewed. Entries appear in the feed with thumbnails |
 | **R-3 Media** | `attemptReddit`: images, GIFs, galleries, `v.redd.it` videos, verify, marker, library scan and check, single-post jobs and one-off subreddit jobs. Media keys, media index, duplicate levels 1 and 2 | All tests from [§13](#13-testing) pass except level 3. A real subreddit with images, galleries, videos and crossposts lands complete and without duplicates in a *Home videos and photos* library |
 | **R-4 Similar images** | Level 3 (dHash), settings, warning and link in the UI | Level 3 tests pass. On a real subreddit with known reposts, the warnings were checked by hand for false positives |
-| Later | Links to other sites, perceptual hashes for videos, score filters (once scores settle), a logged-in provider if one becomes necessary | – |
+| **R-5 Links** | [§7.6](#76-links-to-other-sites): allowlist and known URL forms, `linked` entries, one job per target site, Imgur still images, settings and filter | The link tests from [§13](#13-testing) pass. A subreddit with YouTube and Redgifs links downloads them as ordinary items of those sites, and videos already in the library are not downloaded again |
+| Later | A real browser in a sidecar container if Reddit starts to require JavaScript challenges, perceptual hashes for videos, Imgur albums, score filters (once scores settle), a logged-in provider if one becomes necessary | – |
