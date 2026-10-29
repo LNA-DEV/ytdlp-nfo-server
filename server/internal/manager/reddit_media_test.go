@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -601,5 +602,37 @@ func TestRedditJPEGExtensions(t *testing.T) {
 	check("gn", "No preview [gn]", "No preview [gn] - 01.jpg", "No preview [gn] - 02.jpg")
 	if n := site.Count("i.redd.it", "/jn1.jpg"); n != 1 {
 		t.Fatalf("%d requests for the MIME spelling", n)
+	}
+}
+
+// A pasted top, hot or rising URL keeps its sort order: the items run in
+// the order of the list, rank 1 first. Only native ranks (§7.7).
+func TestRedditSortedJob(t *testing.T) {
+	w, site := redditMediaWorld(t)
+	now := time.Now().Truncate(time.Second)
+	for i, score := range []int{5, 50, 20, 40} {
+		site.Add(&fakereddit.Post{ID: fmt.Sprintf("s%d", i), Subreddit: "example", Title: fmt.Sprintf("Score %d", score), Kind: "image",
+			Media: []string{fmt.Sprintf("si%d", i)}, Created: now.Add(-time.Duration(i) * time.Minute), Score: score})
+	}
+	for _, u := range []string{"https://www.reddit.com/r/example/top/?t=week", "https://www.reddit.com/r/example/hot/"} {
+		force := true
+		j := w.download(u, config.OptionsRequest{Force: &force})
+		var order []string
+		for _, it := range w.items(j.ID) {
+			order = append(order, it.ArchiveKey)
+		}
+		l := w.log(j.ID)
+		if j.State != store.JobCompleted || strings.Join(order, ",") != "redditmedia si1,redditmedia si3,redditmedia si2,redditmedia si0" ||
+			!strings.Contains(l, "Item 1/4: Score 50") || !strings.Contains(l, "Item 2/4: Score 40") {
+			t.Fatalf("%s: %s %v\n%s", u, j.State, order, l)
+		}
+	}
+	if !strings.Contains(w.log(1), "(25 posts, top)") {
+		t.Fatalf("sort order lost:\n%s", w.log(1))
+	}
+	site.SetNativeBlocked(true)
+	j := w.download("https://www.reddit.com/r/example/rising/", config.OptionsRequest{})
+	if j.State != store.JobFailed || !strings.Contains(j.Hint, reddit.HintTopNative) {
+		t.Fatalf("native blocked: %s %q", j.State, j.Hint)
 	}
 }

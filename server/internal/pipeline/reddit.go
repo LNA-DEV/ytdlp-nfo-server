@@ -793,7 +793,12 @@ func (p *Pipeline) redditPlan(ctx context.Context, rc *runCtx, t reddit.Target) 
 			return p.stop(ctx, rc), false
 		}
 		if rerr != nil {
-			return p.jobFailure(ctx, rc, ytdlp.Classification{Class: rerr.Class, Reason: rerr.Reason, Hint: rerr.Hint, Norm: ytdlp.Normalize(rerr.Reason)}), false
+			hint := rerr.Hint
+			if t.EffectiveSort() != reddit.SortNew && !strings.Contains(hint, reddit.HintTopNative) {
+				hint = strings.TrimSpace(reddit.HintTopNative + " " + hint) // only native ranks (§7.7)
+			}
+			return p.jobFailure(ctx, rc, ytdlp.Classification{Class: rerr.Class, Reason: rerr.Reason, Hint: hint,
+				Norm: ytdlp.Normalize(rerr.Reason), FromServer: true}), false
 		}
 		job.Title, job.IsPlaylist = t.Name(), true
 		if page.Icon != "" {
