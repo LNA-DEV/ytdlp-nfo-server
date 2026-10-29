@@ -189,8 +189,16 @@ func (m *Manager) ImportSubscriptions(ctx context.Context, format, data string) 
 			res.Skipped = append(res.Skipped, ImportSkip{URL: it.URL, Reason: "listed twice"})
 			continue
 		}
+		if !subscriptions.Subscribable(u) {
+			res.Skipped = append(res.Skipped, ImportSkip{URL: it.URL, Reason: "hot, rising and controversial can't be subscribed"})
+			continue
+		}
 		seen[canon] = true
-		plan = append(plan, planned{item: it, src: subscriptions.NewSource(u, canon, tab)})
+		src := subscriptions.NewSource(u, canon, tab)
+		if subscriptions.IsTopList(u) {
+			src.ListLimit = m.Settings.Settings().Reddit.TopDefault
+		}
+		plan = append(plan, planned{item: it, src: src})
 	}
 	var canons []string
 	for _, p := range plan {

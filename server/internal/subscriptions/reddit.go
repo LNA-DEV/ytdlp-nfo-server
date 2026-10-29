@@ -87,6 +87,9 @@ func (r *RedditLister) List(ctx context.Context, req ListRequest) (*ListResult, 
 	if limit <= 0 {
 		limit = r.Settings().FirstListing
 	}
+	if req.Limit > 0 {
+		limit = req.Limit
+	}
 	limit = min(limit, reddit.MaxListing)
 	page, name, err := chain.List(ctx, reddit.Query{Target: t, Limit: limit})
 	res.Output = log.get()
@@ -95,6 +98,10 @@ func (r *RedditLister) List(ctx context.Context, req ListRequest) (*ListResult, 
 		c := err.Classification()
 		if res.TimedOut {
 			c = ytdlp.Classification{Class: ytdlp.ClassTransient, Reason: "listing timed out after " + req.Timeout.String()}
+		}
+		if t.EffectiveSort() != reddit.SortNew && !strings.Contains(c.Hint, reddit.HintTopNative) {
+			// Only native ranks; Arctic Shift can't stand in (§7.7).
+			c.Hint = strings.TrimSpace(reddit.HintTopNative + " " + c.Hint)
 		}
 		return res, &c
 	}
@@ -106,6 +113,9 @@ func (r *RedditLister) List(ctx context.Context, req ListRequest) (*ListResult, 
 	// time (§7.7).
 	res.Truncated = !page.End && len(page.Posts) >= limit
 	res.Exhausted = page.End || req.Window <= 0 || limit >= reddit.MaxListing
+	if req.Limit > 0 { // a top list: no deeper listing, no gap
+		res.Truncated, res.Exhausted = false, true
+	}
 	return res, nil
 }
 

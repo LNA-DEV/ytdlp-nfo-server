@@ -38,6 +38,8 @@ type RedditSettings struct {
 	// ExternalHosts are the sites whose link posts are downloaded (§7.6):
 	// hosts or "*.domain" (the domain and its subdomains).
 	ExternalHosts []string `json:"externalHosts"`
+	// TopDefault is N of a new top-list source (§7.7).
+	TopDefault int `json:"topDefault"`
 }
 
 // DefaultRedditExternalHosts returns the sites followed by default.
@@ -70,7 +72,7 @@ func DefaultRedditSettings() RedditSettings {
 	return RedditSettings{Providers: []string{RedditNative, RedditArcticShift}, FirstListing: 100, JobListLimit: 25,
 		PageDelaySeconds: 2, GapFill: true, BackfillMax: 5000,
 		Duplicates:    RedditDuplicates{ContentHash: true, Similar: SimilarWarn, SimilarDistance: 6},
-		ExternalHosts: DefaultRedditExternalHosts(), SolveChallenge: true}
+		ExternalHosts: DefaultRedditExternalHosts(), SolveChallenge: true, TopDefault: 10}
 }
 
 // UnmarshalJSON reads stored settings; a setting stored before it existed
@@ -103,7 +105,7 @@ func (r *RedditSettings) normalize() {
 	}
 	for _, f := range []struct{ v, d *int }{
 		{&r.FirstListing, &d.FirstListing}, {&r.JobListLimit, &d.JobListLimit},
-		{&r.PageDelaySeconds, &d.PageDelaySeconds}, {&r.BackfillMax, &d.BackfillMax},
+		{&r.PageDelaySeconds, &d.PageDelaySeconds}, {&r.BackfillMax, &d.BackfillMax}, {&r.TopDefault, &d.TopDefault},
 	} {
 		if *f.v <= 0 {
 			*f.v = *f.d
@@ -146,6 +148,7 @@ func (r RedditSettings) Validate(libraries map[string]bool) error {
 		{"jobListLimit", r.JobListLimit, 1, 1000},
 		{"pageDelaySeconds", r.PageDelaySeconds, 1, 60},
 		{"backfillMax", r.BackfillMax, 100, 50000},
+		{"topDefault", r.TopDefault, 1, 1000},
 	} {
 		if x.v < x.lo || x.v > x.hi {
 			return fmt.Errorf("reddit.%s must be between %d and %d", x.name, x.lo, x.hi)

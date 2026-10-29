@@ -315,6 +315,11 @@ CREATE INDEX media_index_media ON media_index(media_key);
 CREATE INDEX media_index_sha ON media_index(sha256);
 CREATE INDEX media_index_archive ON media_index(archive_key);
 `,
+	// 8: top lists as sources: N of a top source, 0 for all other sources
+	// (Reddit concept §7.7)
+	`
+ALTER TABLE subscription_sources ADD COLUMN list_limit INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

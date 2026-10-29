@@ -85,3 +85,37 @@ func TestListSourceWithoutWindowListsOnce(t *testing.T) {
 		t.Fatalf("%d listings, result %+v", stub.calls, r)
 	}
 }
+
+// limitLister records the requests; it is never exhausted and always
+// truncated, like a listing that stopped at its limit.
+type limitLister struct{ reqs []ListRequest }
+
+func (s *limitLister) List(_ context.Context, req ListRequest) (*ListResult, *ytdlp.Classification) {
+	s.reqs = append(s.reqs, req)
+	l := &ytdlp.Listing{IsPlaylist: true}
+	for i := range max(req.Limit, 1) {
+		l.Entries = append(l.Entries, ytdlp.ListEntry{ExtractorKey: "Stub", ID: fmt.Sprint(i)})
+	}
+	return &ListResult{Listing: l, Truncated: true}, nil
+}
+
+// A top list is listed once with its N, whatever the window, and nothing
+// in it is a gap (Reddit concept §7.7).
+func TestListSourceTopList(t *testing.T) {
+	logs, err := joblog.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &limitLister{}
+	l := NewLoop(Deps{Logs: logs, ListerFor: func(string) Lister { return stub }})
+	now := time.Now()
+	src := &store.Source{ID: 1, Canonical: "https://www.reddit.com/r/example/top?t=week", FirstOKAt: now, LastOKAt: now,
+		LastFullAt: now, OrderKnown: true, ListLimit: 7}
+	sub := &store.Subscription{ID: 1, Listing: store.ListingAuto, Sources: []*store.Source{src}}
+	settings := config.Settings{Subscriptions: config.DefaultSubscriptionSettings()}
+	r := l.listSource(context.Background(), sub, src, versions.Binary{}, ytdlp.CallOptions{}, settings, map[string]bool{}, false, logs.Get(1))
+	if len(stub.reqs) != 1 || stub.reqs[0].Limit != 7 || stub.reqs[0].Window != 0 || r.Gap || r.Complete || r.Err != nil ||
+		len(r.Listing.Entries) != 7 {
+		t.Fatalf("requests %+v, result %+v", stub.reqs, r)
+	}
+}

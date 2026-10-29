@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -336,5 +337,77 @@ func TestRedditChallenge(t *testing.T) {
 	w2.checkNow(id)
 	if site2.Solved != 1 {
 		t.Fatalf("the cookie was not kept: %d checks answered", site2.Solved)
+	}
+}
+
+// A top list as a source (Reddit concept §7.7): every check lists exactly
+// the top N, ranked by score; a post that enters the top N is a new entry.
+// Only native ranks, so the check fails without it.
+func TestRedditTopSource(t *testing.T) {
+	w, site := redditWorld(t)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+	for i := 0; i < 8; i++ {
+		site.Add(&fakereddit.Post{ID: fmt.Sprintf("t%d", i), Subreddit: "example", Title: fmt.Sprintf("Top %d", i), Kind: "image",
+			Media: []string{fmt.Sprintf("ti%d", i)}, Created: now.Add(-time.Duration(i) * time.Hour), Score: (8 - i) * 10})
+	}
+	topURL := "https://www.reddit.com/r/example/top/?t=week"
+	p, err := w.m.PreviewSubscription(ctx, topURL)
+	if err != nil || len(p.Sources) != 1 || p.Sources[0].ListLimit != 10 ||
+		p.Sources[0].Canonical != "https://www.reddit.com/r/example/top?t=week" || p.Entries[0].Key != "redditmedia ti0" {
+		t.Fatalf("preview: %+v %v", p, err)
+	}
+	if _, err := w.m.CreateSubscription(ctx, SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/example/hot/"}}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("hot list subscribed: %v", err)
+	}
+	if _, err := w.m.CreateSubscription(ctx, SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/example/", ListLimit: 5}}}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("N for a listing of new posts: %v", err)
+	}
+
+	created := time.Now()
+	v := w.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: topURL, ListLimit: 3}}})
+	id := sid(v)
+	w.waitChecked(id, created)
+	// The newest posts rank highest here, so the dates of the list look
+	// newest first; its order is still not learned from them.
+	if got := keysOf(w.entries(id, "backlog")); got != "redditmedia ti0,redditmedia ti1,redditmedia ti2" {
+		t.Fatalf("backlog: %s", got)
+	}
+	sv, _ := w.m.GetSubscription(ctx, id)
+	if src := sv.Sources[0]; src.ListLimit != 3 || src.NewestFirst || !src.OrderKnown {
+		t.Fatalf("source: %+v", src)
+	}
+
+	// An older post enters the top 3, a newer one doesn't: only the first
+	// is new, and nothing counts as a gap.
+	site.Add(&fakereddit.Post{ID: "up", Subreddit: "example", Title: "Rising", Kind: "image", Media: []string{"tiup"},
+		Created: now.Add(-48 * time.Hour), Score: 65},
+		&fakereddit.Post{ID: "low", Subreddit: "example", Title: "Low", Kind: "image", Media: []string{"tilow"}, Created: now, Score: 1})
+	sub := w.checkNow(id)
+	log, _ := w.m.subs.logs.Read(id)
+	if got := keysOf(w.entries(id, "new")); got != "redditmedia tiup" || sub.Warning != "" ||
+		!strings.Contains(string(log), "(top 3)") || strings.Contains(string(log), "listing more") {
+		t.Fatalf("new %s, warning %q\n%s", got, sub.Warning, log)
+	}
+	sv, _ = w.m.GetSubscription(ctx, id)
+	if src := sv.Sources[0]; src.NewestFirst || !src.OrderKnown {
+		t.Fatalf("order learned from the dates of a top list: %+v", src)
+	}
+
+	// N can change.
+	if _, err := w.m.UpdateSubscription(ctx, id, SubscriptionInput{ListLimits: map[string]int{sv.Sources[0].ID: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if sv, _ = w.m.GetSubscription(ctx, id); sv.Sources[0].ListLimit != 5 {
+		t.Fatalf("N: %d", sv.Sources[0].ListLimit)
+	}
+
+	// Native blocked: no fall-through to Arctic Shift, which can't rank.
+	site.SetNativeBlocked(true)
+	before := site.Count("arctic-shift.photon-reddit.com", "/api/posts/search")
+	sub = w.checkNow(id)
+	if !strings.Contains(sub.Hint, reddit.HintTopNative) || sub.ErrorClass == "" ||
+		site.Count("arctic-shift.photon-reddit.com", "/api/posts/search") != before {
+		t.Fatalf("blocked: %s %q %q", sub.ErrorClass, sub.Error, sub.Hint)
 	}
 }

@@ -300,6 +300,9 @@ func Apply(in Input) *Output {
 		wasNewest, wasKnown := src.NewestFirst, src.OrderKnown
 		newest, dated := listingOrder(src, r.Listing)
 		switch {
+		case src.ListLimit > 0:
+			// A top list ranks by score: its dates say nothing about its
+			// order (Reddit concept §7.7).
 		case dated:
 			src.NewestFirst, src.OrderKnown = newest, true
 		case !src.OrderKnown:

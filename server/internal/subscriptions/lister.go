@@ -18,6 +18,10 @@ type ListRequest struct {
 	Call    ytdlp.CallOptions
 	// Providers overrides the Reddit provider chain ("" = the global one).
 	Providers string
+	// Limit lists exactly this many entries of a top list (Reddit concept
+	// §7.7), whatever the window; such a listing is never complete and has
+	// no gap.
+	Limit int
 }
 
 // ListResult is the outcome of a listing.

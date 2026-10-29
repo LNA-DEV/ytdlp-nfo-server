@@ -111,13 +111,38 @@ func Canonical(raw string, l *ytdlp.Listing) (canonical, tab string) {
 
 // NewSource returns a new source. A Reddit listing of new posts lists
 // newest first, known up front, so checks use the window from the start
-// (Reddit concept §7.1).
+// (Reddit concept §7.1). A top list has a fixed order of its own (§7.7);
+// the caller sets its N.
 func NewSource(u, canonical, tab string) *store.Source {
 	src := &store.Source{URL: u, Canonical: canonical, Tab: tab}
-	if t, ok := reddit.Parse(canonical); ok && t.IsListing() && t.EffectiveSort() == reddit.SortNew {
-		src.NewestFirst, src.OrderKnown = true, true
+	if t, ok := reddit.Parse(canonical); ok && t.IsListing() {
+		switch t.EffectiveSort() {
+		case reddit.SortNew:
+			src.NewestFirst, src.OrderKnown = true, true
+		case reddit.SortTop:
+			src.OrderKnown = true
+		}
 	}
 	return src
+}
+
+// IsTopList reports whether a URL is a Reddit top list (Reddit concept
+// §7.7).
+func IsTopList(u string) bool {
+	t, ok := reddit.Parse(u)
+	return ok && t.IsListing() && t.EffectiveSort() == reddit.SortTop
+}
+
+// Subscribable reports whether a Reddit listing can be a source: new posts
+// or a top list. Hot, rising and controversial reorder all the time, so
+// they are for one-off jobs only (Reddit concept §7.7).
+func Subscribable(u string) bool {
+	t, ok := reddit.Parse(u)
+	if !ok || !t.IsListing() {
+		return true
+	}
+	s := t.EffectiveSort()
+	return s == reddit.SortNew || s == reddit.SortTop
 }
 
 // Kind returns "channel" if the listing is a channel (its id is the

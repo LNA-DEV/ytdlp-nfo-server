@@ -16,6 +16,7 @@ import (
 	"image/png"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,8 @@ type Post struct {
 	NoPreview bool
 	// Slug is the title part of the permalink (default "post").
 	Slug string
+	// Score ranks the post in top, hot, rising and controversial lists.
+	Score int
 }
 
 // Site serves the same posts through native pages, the Arctic Shift API
@@ -331,8 +334,8 @@ func postHTML(p *Post, full bool) string {
 		kind, href = "crosspost", permalink(p.Original)
 	}
 	fmt.Fprintf(&b, `<shreddit-post id="t3_%s" permalink="%s" post-title="%s" author="%s" subreddit-prefixed-name="r/%s" `+
-		`created-timestamp="%s" post-type="%s" content-href="%s"`, p.ID, permalink(p), html.EscapeString(p.Title), p.Author,
-		p.Subreddit, p.Created.UTC().Format("2006-01-02T15:04:05.000000+0000"), kind, html.EscapeString(href))
+		`created-timestamp="%s" post-type="%s" content-href="%s" score="%d"`, p.ID, permalink(p), html.EscapeString(p.Title), p.Author,
+		p.Subreddit, p.Created.UTC().Format("2006-01-02T15:04:05.000000+0000"), kind, html.EscapeString(href), p.Score)
 	if p.NSFW {
 		b.WriteString(` nsfw=""`)
 	}
@@ -367,12 +370,12 @@ func (s *Site) native(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := strings.FieldsFunc(r.URL.Path, func(c rune) bool { return c == '/' })
 	switch {
-	case len(parts) == 3 && parts[0] == "r" && parts[2] == "new" && s.spelling(parts[1]) != parts[1]:
-		w.Write(ShellPage("/r/" + s.spelling(parts[1]) + "/new/?feedViewType=compactView"))
-	case len(parts) == 3 && parts[0] == "r" && parts[2] == "new":
-		s.page(w, parts[1], "", true)
+	case len(parts) == 3 && parts[0] == "r" && sorts[parts[2]] && s.spelling(parts[1]) != parts[1]:
+		w.Write(ShellPage("/r/" + s.spelling(parts[1]) + "/" + parts[2] + "/?" + r.URL.RawQuery))
+	case len(parts) == 3 && parts[0] == "r" && sorts[parts[2]]:
+		s.page(w, parts[1], parts[2], "", true)
 	case len(parts) == 4 && parts[0] == "svc" && parts[2] == "community-more-posts":
-		s.page(w, r.URL.Query().Get("name"), r.URL.Query().Get("after"), false)
+		s.page(w, r.URL.Query().Get("name"), parts[3], r.URL.Query().Get("after"), false)
 	case len(parts) >= 4 && parts[0] == "r" && parts[2] == "comments", len(parts) >= 2 && parts[0] == "comments":
 		id := parts[1]
 		if parts[0] == "r" {
@@ -396,8 +399,15 @@ func (s *Site) native(w http.ResponseWriter, r *http.Request) {
 }
 
 // page writes a listing page (first) or a more-posts partial.
-func (s *Site) page(w http.ResponseWriter, sub, after string, first bool) {
+// sorts are the listings the fake serves: new by time, the others by
+// score.
+var sorts = map[string]bool{"new": true, "top": true, "hot": true, "rising": true, "controversial": true}
+
+func (s *Site) page(w http.ResponseWriter, sub, sort, after string, first bool) {
 	posts := s.posts(sub)
+	if sort != "new" {
+		slices.SortStableFunc(posts, func(a, b *Post) int { return b.Score - a.Score })
+	}
 	start := 0
 	if after != "" {
 		start = len(posts)
@@ -430,8 +440,8 @@ func (s *Site) page(w http.ResponseWriter, sub, after string, first bool) {
 		b.WriteString("<article>" + postHTML(p, false) + "</article>")
 	}
 	if end < len(posts) && end > 0 {
-		fmt.Fprintf(&b, `<faceplate-partial loading="lazy" src="/svc/shreddit/community-more-posts/new/?after=%s&amp;name=%s&amp;feedViewType=compactView"></faceplate-partial>`,
-			cursor(posts[end-1].ID), sub)
+		fmt.Fprintf(&b, `<faceplate-partial loading="lazy" src="/svc/shreddit/community-more-posts/%s/?after=%s&amp;name=%s&amp;feedViewType=compactView"></faceplate-partial>`,
+			sort, cursor(posts[end-1].ID), sub)
 	}
 	if first {
 		b.WriteString("</shreddit-feed></body></html>")

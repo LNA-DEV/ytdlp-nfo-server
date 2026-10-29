@@ -455,7 +455,9 @@ A subscription only needs the posts since its last check. Native doubles the win
 A Reddit subscription can follow a top list: "the top N of the day, week, month or year". It is a source with the canonical URL `https://www.reddit.com/r/<name>/top?t=<period>` and N in the new source column `list_limit` (1–1000, default `topDefault` = 10).
 
 - **Checks:** every check lists the top N, whatever the window. A post that enters the top N and isn't known yet is a new entry, and auto mode downloads it. That keeps big subreddits manageable: only what makes it to the top.
-- **Order:** the order of a top source is fixed (`order_known = 1`, `newest_first = 0`). `listingOrder` (`internal/subscriptions/order.go`) leaves sources with a `list_limit` alone, because the dates in a top list say nothing about its order. Entries still sort by post time.
+- **Order:** the order of a top source is fixed (`order_known = 1`, `newest_first = 0`). `Apply` doesn't learn the order of sources with a `list_limit` from their dates, because the dates in a top list say nothing about its order. Entries still sort by post time.
+- **N** is set when the source is added (`listLimit`, default `topDefault`) and can be changed later (`listLimits` by source id in `PATCH /api/v1/subscriptions/{id}`).
+- **Not subscribable:** hot, rising and controversial. A source URL with one of them is refused, and an OPML import skips it.
 - **Backlog:** the first listing is the backlog, as for any source (S4).
 - **Native only.** If native fails, the check fails with the hint "Top lists need native: Arctic Shift can't rank by score". It doesn't fall through.
 - **Never complete and never a gap:** a top list has no "since the last check".
@@ -544,7 +546,7 @@ The items run in the order of the list (rank 1 first), not oldest first as in su
 | `duplicates.similarDistance` | `6` | 0–16 | Bits two dHashes may differ in to count as similar |
 | `gapFill` | `true` | – | Fill gaps from Arctic Shift if it is in the chain ([§7.7](#77-history-top-lists-and-gaps)) |
 | `backfillMax` | `5000` | 100–50000 | Posts per backfill or gap fill run |
-| `topDefault` | `10` | 1–1000 | N of a new top source. Comes with the top sources in R-6. |
+| `topDefault` | `10` | 1–1000 | N of a new top source |
 
 A subscription can override the chain (`provider`: `""` = global, `native`, `arcticshift`, `native,arcticshift`, `arcticshift,native`). A subscription's override is stored on its jobs with the other effective options (`redditProviders`), so a retry uses the same chain; jobs without an override use the global order at the time they run.
 
@@ -712,7 +714,7 @@ Decided after the first reality check (2026-10-28):
 |---|---|---|---|
 | 14 | Reddit's JavaScript check | **Answer it in a sandbox, off by default** (`solveChallenge`): goja in a child process with time and memory limits, against a minimal stand-in for the browser, following only a GET form on Reddit's own host. Robust against changes to the computed value, but it runs code from Reddit on the server, and it doesn't help against real fingerprinting. | [§5.1](#51-requests), [§9](#9-settings) |
 | 15 | Provider cooldowns | **One key per provider** (`reddit-native`, `arctic-shift`), separate from `reddit.com`; a block pauses the provider for 30 minutes, rate limits use the server's reset time. | [§7.1](#71-subscriptions) |
-| 16 | `nativeProfile` | **Later.** Native is always Chrome until a library with consistent Firefox and Safari profiles is usable. `topDefault` comes with R-6. | [§9](#9-settings) |
+| 16 | `nativeProfile` | **Later.** Native is always Chrome until a library with consistent Firefox and Safari profiles is usable. | [§9](#9-settings) |
 
 Decided after the second reality check (2026-10-28):
 

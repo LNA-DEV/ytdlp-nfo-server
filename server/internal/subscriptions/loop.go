@@ -372,11 +372,17 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 			}
 		}
 	}
+	if src.ListLimit > 0 {
+		window = 0 // a top list: always the top N (Reddit concept §7.7)
+	}
 	for {
 		r.Window = window
 		timeout := FullTimeout
 		desc := "full listing"
-		if window > 0 {
+		switch {
+		case src.ListLimit > 0:
+			desc = fmt.Sprintf("top %d", src.ListLimit)
+		case window > 0:
 			timeout, desc = WindowTimeout, fmt.Sprintf("newest %d", window)
 		}
 		if r.Impersonated {
@@ -384,8 +390,8 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 		}
 		log.Printf("Listing %s (%s)", src.Canonical, desc)
 		lister := l.d.ListerFor(src.Canonical)
-		req := ListRequest{URL: src.Canonical, Tab: src.Tab, Window: window, Timeout: timeout, Bin: bin, Call: call,
-			Providers: sub.Provider}
+		req := ListRequest{URL: src.Canonical, Tab: src.Tab, Window: window, Limit: src.ListLimit, Timeout: timeout, Bin: bin,
+			Call: call, Providers: sub.Provider}
 		res, cls := lister.List(ctx, req)
 		if ctx.Err() != nil {
 			return r
@@ -429,7 +435,7 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 		// if a lister didn't say so.
 		if !gap || res.Exhausted || window == 0 {
 			log.Printf("Listed %d entries%s", len(listing.Entries), via)
-			if gap && res.Truncated && !src.LastOKAt.IsZero() {
+			if gap && res.Truncated && !src.LastOKAt.IsZero() && src.ListLimit == 0 {
 				l.fillGap(ctx, lister, req, src, &r, log)
 			}
 			return r

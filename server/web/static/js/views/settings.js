@@ -337,6 +337,7 @@ export class SettingsView {
         h('div', { class: 'grid' },
           field('First listing (posts)', num('firstListing', 25, 1000), 'Depth of the first check and of a full rescan; native lists at most 1000'),
           field('Posts of a pasted subreddit URL', num('jobListLimit', 1, 1000)),
+          field('Top list size', num('topDefault', 1, 1000), 'N of a new top-list source ("the top N of the week"); each subscription can change it'),
           field('Library for new Reddit subscriptions', bindSelect(r, 'defaultLibrary', libs), 'Use a Jellyfin library of the type "Home videos and photos": movie libraries don\'t show images')),
         h('div', { class: 'btn-row', style: 'margin-top:.8rem' }, bindCheck(r, 'gapFill', 'Fill gaps from Arctic Shift when more posts appeared than native can list')),
         h('div', { class: 'grid' }, field('Posts per gap fill', num('backfillMax', 100, 50000)))),

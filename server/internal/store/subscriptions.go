@@ -171,6 +171,9 @@ type Source struct {
 	OrderKnown  bool
 	Error       string
 	ErrorClass  string
+	// ListLimit is N of a top list (Reddit concept §7.7): every check lists
+	// exactly the top N. 0 for all other sources.
+	ListLimit int
 }
 
 // Entry is one video seen in a source. Status and the Item* fields are
@@ -289,7 +292,7 @@ func scanSub(r scanner) (*Subscription, error) {
 }
 
 const sourceCols = `id, subscription_id, url, canonical, tab, added_at, first_ok_at, last_ok_at, last_full_at,
-	impersonate, newest_first, order_known, error, error_class`
+	impersonate, newest_first, order_known, error, error_class, list_limit`
 
 func scanSource(r scanner) (*Source, error) {
 	var (
@@ -299,7 +302,7 @@ func scanSource(r scanner) (*Source, error) {
 		imp, newest, known     int
 	)
 	if err := r.Scan(&src.ID, &src.SubscriptionID, &src.URL, &src.Canonical, &src.Tab, &added, &firstOK, &lastOK,
-		&lastF, &imp, &newest, &known, &src.Error, &src.ErrorClass); err != nil {
+		&lastF, &imp, &newest, &known, &src.Error, &src.ErrorClass, &src.ListLimit); err != nil {
 		return nil, err
 	}
 	src.NewestFirst, src.OrderKnown = newest != 0, known != 0
@@ -406,10 +409,11 @@ func insertSources(ctx context.Context, q querier, subID int64, srcs []*Source) 
 			src.AddedAt = now
 		}
 		res, err := q.ExecContext(ctx, `INSERT INTO subscription_sources (subscription_id, url, canonical, tab, added_at,
-			first_ok_at, last_ok_at, last_full_at, impersonate, newest_first, order_known, error, error_class)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			first_ok_at, last_ok_at, last_full_at, impersonate, newest_first, order_known, error, error_class, list_limit)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			subID, src.URL, src.Canonical, src.Tab, src.AddedAt.UnixMilli(), ms(src.FirstOKAt), ms(src.LastOKAt),
-			ms(src.LastFullAt), b2i(src.Impersonate), b2i(src.NewestFirst), b2i(src.OrderKnown), src.Error, src.ErrorClass)
+			ms(src.LastFullAt), b2i(src.Impersonate), b2i(src.NewestFirst), b2i(src.OrderKnown), src.Error, src.ErrorClass,
+			src.ListLimit)
 		if err != nil {
 			return err
 		}
@@ -552,13 +556,20 @@ func (t *Tx) ClearFullRequest(ctx context.Context, id int64) error {
 	return err
 }
 
+// SetListLimit changes N of a top-list source.
+func (t *Tx) SetListLimit(ctx context.Context, subID, sourceID int64, n int) error {
+	_, err := t.tx.ExecContext(ctx, `UPDATE subscription_sources SET list_limit = ? WHERE id = ? AND subscription_id = ?`,
+		n, sourceID, subID)
+	return err
+}
+
 // SaveSource writes the check state of a source.
 func (t *Tx) SaveSource(ctx context.Context, src *Source) error {
 	_, err := t.tx.ExecContext(ctx, `UPDATE subscription_sources SET canonical = ?, tab = ?, first_ok_at = ?,
-		last_ok_at = ?, last_full_at = ?, impersonate = ?, newest_first = ?, order_known = ?, error = ?, error_class = ?
-		WHERE id = ?`,
+		last_ok_at = ?, last_full_at = ?, impersonate = ?, newest_first = ?, order_known = ?, error = ?, error_class = ?,
+		list_limit = ? WHERE id = ?`,
 		src.Canonical, src.Tab, ms(src.FirstOKAt), ms(src.LastOKAt), ms(src.LastFullAt), b2i(src.Impersonate),
-		b2i(src.NewestFirst), b2i(src.OrderKnown), src.Error, src.ErrorClass, src.ID)
+		b2i(src.NewestFirst), b2i(src.OrderKnown), src.Error, src.ErrorClass, src.ListLimit, src.ID)
 	return err
 }
 
