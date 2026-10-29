@@ -128,6 +128,102 @@ async function checkNow(sub, full = false) {
   } catch (ex) { toast(ex.message, 'err'); }
 }
 
+// --- Reddit top lists and older posts (Reddit concept §7.7) ---
+
+const PERIODS = [['hour', 'hour'], ['day', 'day'], ['week', 'week'], ['month', 'month'], ['year', 'year'], ['all', 'all time']];
+
+// topPeriod returns the period of a top-list URL ("week"), "" for others.
+function topPeriod(u) {
+  try {
+    const url = new URL(u);
+    return /\/top\/?$/.test(url.pathname) || url.searchParams.get('sort') === 'top' ? url.searchParams.get('t') || 'day' : '';
+  } catch { return ''; }
+}
+
+function periodLabel(p) { return p === 'all' ? 'all time' : `the ${p}`; }
+
+// backfillDialog loads older posts into the backlog: the top of a period,
+// a time range, or the top of a time range, counted first.
+async function backfillDialog(sub) {
+  return modal((close) => {
+    const kind = h('div', { class: 'choices' },
+      ...[['top', 'Top of a period'], ['range', 'Everything in a time range'], ['rangeTop', 'Top of a time range']].map(([v, l], i) =>
+        h('label', { class: 'check' }, h('input', { type: 'radio', name: 'bf-kind', value: v, checked: i === 0 }), l)));
+    const period = select('period', PERIODS, 'year');
+    const n = h('input', { type: 'number', min: 1, max: 1000, value: 100, style: 'width:6rem' });
+    const from = h('input', { type: 'date' });
+    const to = h('input', { type: 'date' });
+    const download = h('input', { type: 'checkbox' });
+    const counts = h('div', { class: 'muted small' });
+    const periodRow = h('label', { class: 'field' }, 'Period', period);
+    const nRow = h('label', { class: 'field' }, 'Posts', n);
+    const rangeRow = h('div', { class: 'form-row' }, h('label', { class: 'field' }, 'From', from), h('label', { class: 'field' }, 'To', to));
+    const countBtn = h('button', { class: 'btn small', type: 'button' }, 'Count posts');
+    const note = h('p', { class: 'muted small' });
+    const current = () => kind.querySelector('input:checked').value;
+    const show = () => {
+      const k = current();
+      periodRow.classList.toggle('hidden', k !== 'top');
+      nRow.classList.toggle('hidden', k === 'range');
+      rangeRow.classList.toggle('hidden', k === 'top');
+      countBtn.classList.toggle('hidden', k === 'top');
+      note.textContent = {
+        top: 'From Reddit itself (native): at most 1000 posts.',
+        range: 'From Arctic Shift, newest first. At most “Posts per gap fill or older-posts run” (Settings → Reddit) per run; Continue loads more.',
+        rangeTop: 'From Arctic Shift: the whole range is listed and ranked by score, so it has to fit into one run.',
+      }[k];
+    };
+    kind.addEventListener('change', show);
+    countBtn.addEventListener('click', async () => {
+      countBtn.disabled = true;
+      clear(counts).append('Counting…');
+      try {
+        const c = await post(`/subscriptions/${sub.id}/backfill/preview`, { from: from.value, to: to.value });
+        clear(counts).append(c.known
+          ? `${c.years.map((y) => `${y.year}: ${y.count.toLocaleString()}`).join(' · ') || 'No posts'} — about ${c.total.toLocaleString()} posts with this subscription's media and NSFW filters (at most ${c.backfillMax.toLocaleString()} per run)`
+          : 'Arctic Shift could not count them (it times out for very large subreddits); loading still works.');
+      } catch (ex) { clear(counts).append(ex.message); }
+      countBtn.disabled = false;
+    });
+    const start = h('button', { class: 'btn primary' }, 'Load');
+    start.addEventListener('click', async () => {
+      const k = current();
+      const body = { kind: k, download: download.checked };
+      if (k === 'top') body.period = period.value;
+      if (k !== 'range') body.n = Number(n.value) || 100;
+      if (k !== 'top') { body.from = from.value; body.to = to.value; }
+      start.disabled = true;
+      try {
+        const v = await post(`/subscriptions/${sub.id}/backfill`, body);
+        toast('Older posts are loaded with the next check', 'ok');
+        close(v);
+      } catch (ex) { toast(ex.message, 'err'); start.disabled = false; }
+    });
+    show();
+    return h('div', {},
+      h('h2', {}, `Load older posts: ${sub.name}`),
+      h('p', { class: 'muted' }, 'The posts are added to the backlog; nothing is downloaded unless you ask for it.'),
+      h('div', { class: 'field' }, 'What', kind),
+      periodRow, rangeRow, nRow, note,
+      h('div', { class: 'btn-row' }, countBtn), counts,
+      h('label', { class: 'check' }, download, 'Download them (in the background, after everything else)'),
+      h('div', { class: 'btn-row' }, h('button', { class: 'btn', onclick: () => close() }, 'Cancel'), start));
+  });
+}
+
+// backfillLine shows a stored request with Continue and Cancel.
+function backfillLine(s, replace) {
+  const b = s.backfill;
+  if (!b) return null;
+  const total = b.total ? ` of about ${b.total.toLocaleString()}` : '';
+  const state = b.error ? `failed: ${b.error}` : b.pending ? (b.loaded ? `${b.loaded.toLocaleString()}${total} loaded, continuing with the next check` : 'waiting for the next check')
+    : `${b.loaded.toLocaleString()}${total} posts loaded`;
+  const act = (label, fn) => h('button', { class: 'btn small', onclick: async () => { try { replace(await fn()); } catch (ex) { toast(ex.message, 'err'); } } }, label);
+  return h('div', { class: 'banner inline' + (b.error ? ' warn' : '') }, h('span', { class: 'grow' }, `Older posts (${b.description}): ${state}`),
+    b.canContinue ? act('Continue', () => post(`/subscriptions/${s.id}/backfill`, { continue: true })) : null,
+    act(b.pending || b.error ? 'Cancel' : 'Done', () => del(`/subscriptions/${s.id}/backfill`)));
+}
+
 function menu(items) {
   const d = h('details', { class: 'menu', onclick: (e) => e.stopPropagation() }, h('summary', { title: 'More' }, '⋮'));
   const list = h('div', { class: 'menu-list' });
@@ -304,7 +400,9 @@ export async function addDialog(initialURL = '') {
     const provider = select('provider', PROVIDERS, '');
     const redditFilters = redditFilterInputs({}, provider);
     const libWarn = redditLibraryWarning(o, lf);
+    const loadOlder = h('input', { type: 'checkbox' });
     const redditBox = h('div', { class: 'hidden' },
+      h('label', { class: 'check' }, loadOlder, 'Load older posts after subscribing (top lists or a time range)…'),
       collapsible('Reddit (media, NSFW, providers)', redditFilters, true));
     let reddit = false;
     form.append(
@@ -347,7 +445,13 @@ export async function addDialog(initialURL = '') {
       for (const s of p.sources) {
         const cb = h('input', { type: 'checkbox', checked: s.selected && !s.subscriptionId, disabled: !!s.subscriptionId, dataset: { url: s.url, canonical: s.canonical } });
         cb.addEventListener('change', () => { subscribe.disabled = !tabsBox.querySelector('input:checked'); });
-        tabsBox.append(h('label', { class: 'check' }, cb, s.tab ? TAB_LABEL[s.tab] || s.tab : reddit ? `${p.name}, newest posts` : 'This playlist',
+        let label = s.tab ? TAB_LABEL[s.tab] || s.tab : reddit ? `${p.name}, newest posts` : 'This playlist';
+        if (s.listLimit) {
+          // A top list: every check takes its top N.
+          cb.topN = h('input', { type: 'number', min: 1, max: 1000, value: s.listLimit, style: 'width:5rem' });
+          label = h('span', {}, `${p.name}, top `, cb.topN, ` of ${periodLabel(topPeriod(s.canonical))}`);
+        }
+        tabsBox.append(h('label', { class: 'check' }, cb, label,
           s.subscriptionId ? h('a', { href: '#/subscriptions/' + s.subscriptionId, onclick: () => close() }, ` (already in “${s.subscriptionName}”)`) : null));
       }
       name.value = p.name;
@@ -364,7 +468,8 @@ export async function addDialog(initialURL = '') {
     url.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doPreview(); } });
 
     subscribe.addEventListener('click', async () => {
-      const sources = [...tabsBox.querySelectorAll('input:checked')].map((cb) => ({ url: cb.dataset.url, canonical: cb.dataset.canonical }));
+      const sources = [...tabsBox.querySelectorAll('input[type=checkbox]:checked')].map((cb) => ({ url: cb.dataset.url, canonical: cb.dataset.canonical,
+        ...(cb.topN ? { listLimit: Number(cb.topN.value) || undefined } : {}) }));
       const bl = form.querySelector('[name=backlog]:checked').value;
       const body = {
         name: name.value.trim(), folder: lf.folder.value.trim(), sources,
@@ -379,6 +484,7 @@ export async function addDialog(initialURL = '') {
         const sub = await post('/subscriptions', body);
         toast(`Subscribed to ${sub.name}`, 'ok');
         close(sub);
+        if (reddit && loadOlder.checked) await backfillDialog(sub);
       } catch (ex) {
         toast(ex.message, 'err');
         subscribe.disabled = false;
@@ -421,9 +527,12 @@ async function editDialog(sub) {
     libWarn.show(reddit);
     const removed = new Set();
     const srcList = h('div', {});
+    const limits = {};
     const drawSources = () => {
       clear(srcList).append(...sub.sources.map((s) => h('div', { class: 'source-row' + (removed.has(s.id) ? ' removed' : '') },
         h('span', { class: 'mono grow' }, s.url), s.tab ? h('span', { class: 'muted' }, TAB_LABEL[s.tab] || s.tab) : null,
+        s.listLimit ? h('label', { class: 'muted' }, 'Top ', h('input', { type: 'number', min: 1, max: 1000, value: limits[s.id] || s.listLimit, style: 'width:5rem',
+          oninput: (e) => { limits[s.id] = Number(e.target.value); } })) : null,
         h('button', { class: 'btn small', type: 'button', onclick: () => { removed.has(s.id) ? removed.delete(s.id) : removed.add(s.id); drawSources(); } }, removed.has(s.id) ? 'Keep' : 'Remove'))));
     };
     drawSources();
@@ -438,6 +547,8 @@ async function editDialog(sub) {
       };
       if (reddit) body.provider = provider.value;
       if (addURL.value.trim()) body.addSources = [{ url: addURL.value.trim() }];
+      const changed = Object.entries(limits).filter(([id, v]) => v && v !== (sub.sources.find((s) => s.id === id) || {}).listLimit);
+      if (changed.length) body.listLimits = Object.fromEntries(changed);
       save.disabled = true;
       try {
         const v = await patch('/subscriptions/' + sub.id, body);
@@ -702,6 +813,7 @@ export class SubscriptionsView {
           h('button', { class: 'btn small', onclick: async () => { const v = await editDialog(s); if (v) replace(v); } }, 'Edit'),
           menu([
             ['Full rescan', () => checkNow(s, true)],
+            isReddit(s) ? ['Load older posts…', async () => { const v = await backfillDialog(s); if (v) replace(v); }] : null,
             ['Show check log', () => showLog(s)],
             [s.enabled ? 'Pause' : 'Resume', async () => replace(await patch('/subscriptions/' + s.id, { enabled: !s.enabled }))],
             ['Delete', async () => { if (await deleteSub(s)) location.hash = '#/subscriptions'; }, 'danger'],
@@ -710,6 +822,7 @@ export class SubscriptionsView {
       h('div', { class: 'sources' }, s.sources.map((src) => h('div', { class: 'source-row' },
         h('a', { class: 'mono grow', href: src.url, target: '_blank', rel: 'noreferrer' }, src.url),
         src.tab ? h('span', { class: 'muted' }, TAB_LABEL[src.tab] || src.tab) : null,
+        src.listLimit ? h('span', { class: 'muted' }, `top ${src.listLimit} of ${periodLabel(topPeriod(src.canonical))}`) : null,
         src.error ? h('span', { class: 'bad small', title: src.error }, `⚠ ${src.errorClass ? src.errorClass.replace('_', ' ') + ': ' : ''}${src.error}`) : null,
         src.impersonate ? h('span', { class: 'muted small', title: 'This source only lists with impersonation' }, 'impersonating') : null))),
       h('div', { class: 'muted small' }, `${checked} · ${next} · ${every(s.effectiveIntervalMinutes)}`),
@@ -718,6 +831,8 @@ export class SubscriptionsView {
         s.provider ? ` · Providers: ${s.provider.replace(',', ', ')}` : ''));
     const err = errorLine(s);
     if (err) hd.append(err);
+    const bf = backfillLine(s, replace);
+    if (bf) hd.append(bf);
     if (s.warning) {
       hd.append(h('div', { class: 'banner warn inline' }, h('span', { class: 'grow' }, s.warning),
         h('button', { class: 'btn small', onclick: () => this.downloadStatus('new') }, 'Download all new'),
