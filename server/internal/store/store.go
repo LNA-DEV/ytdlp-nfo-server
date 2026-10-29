@@ -320,6 +320,11 @@ CREATE INDEX media_index_archive ON media_index(archive_key);
 	`
 ALTER TABLE subscription_sources ADD COLUMN list_limit INTEGER NOT NULL DEFAULT 0;
 `,
+	// 9: a requested backfill (loading older posts) survives a restart,
+	// with its position for Continue (Reddit concept §7.7)
+	`
+ALTER TABLE subscriptions ADD COLUMN backfill TEXT NOT NULL DEFAULT '';
+`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

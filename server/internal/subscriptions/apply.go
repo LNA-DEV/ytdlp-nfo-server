@@ -47,6 +47,8 @@ type Result struct {
 	Cooldown   time.Time // rate-limited: no check before this
 	Ytdlp      string    // version id used
 	Full       bool      // a requested full rescan
+	// Backfill is the run of a requested backfill (Reddit concept §7.7).
+	Backfill *BackfillResult
 }
 
 // Input is everything Apply needs; Sub and Entries are read in the commit
@@ -81,7 +83,9 @@ type Output struct {
 	Auto    []*store.Entry // one auto job
 	Requeue []*store.Entry // one one-item auto job each (§5.3)
 	Backlog []*store.Entry // one backlog job (the backlog choice)
-	Sources []*store.Source
+	// Backfilled are the entries a backfill added (Reddit concept §7.7).
+	Backfilled []*store.Entry
+	Sources    []*store.Source
 	// Ordered lists the sources whose order this check confirmed or
 	// changed (for the check log).
 	Ordered []*store.Source
@@ -448,6 +452,41 @@ func Apply(in Input) *Output {
 			if l.Thumbnail != "" {
 				sub.Thumbnail = l.Thumbnail
 			}
+		}
+	}
+
+	// Older posts of a backfill (Reddit concept §7.7): new ones become
+	// backlog entries of the source it ran on; known ones stay as they are.
+	if b := in.Result.Backfill; b != nil && b.Listing != nil && srcByID[b.SourceID] != nil {
+		entries := b.Listing.Entries
+		for pos := len(entries) - 1; pos >= 0; pos-- { // oldest first
+			le := entries[pos]
+			key := EntryKey(le)
+			if key == "" || byKey[key] != nil || le.AltKey != "" && byKey[le.AltKey] != nil {
+				continue
+			}
+			date, sortTime := listingDate(le)
+			e := &store.Entry{SubscriptionID: sub.ID, Key: key, URL: le.URL, SourceID: b.SourceID, Position: pos, Backlog: true,
+				FirstSeenAt: now, LastSeenAt: now, SortDate: now, Title: le.Title, Duration: le.Duration, UploadDate: date,
+				Thumbnail: le.Thumbnail, MediaKind: le.MediaKind, NSFW: le.NSFW}
+			if !sortTime.IsZero() {
+				e.SortDate = sortTime
+			}
+			if le.AltKey != "" && le.AltKey != key {
+				e.ListingKey = le.AltKey
+				byKey[le.AltKey] = e
+			}
+			switch le.MediaKind {
+			case "text":
+				e.Ignored, e.IgnoreReason = true, ReasonNoMedia
+			case "link":
+				e.Ignored, e.IgnoreReason = true, ReasonLinkPrefix+linkHost(le.Link)
+			}
+			byKey[key] = e
+			inserted[e] = true
+			out.Insert = append(out.Insert, e)
+			out.Backfilled = append(out.Backfilled, e)
+			out.Summary.Backlog++
 		}
 	}
 

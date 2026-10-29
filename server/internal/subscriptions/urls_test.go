@@ -1,8 +1,11 @@
 package subscriptions
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
 )
 
@@ -63,6 +66,35 @@ func TestCanonical(t *testing.T) {
 		l := &ytdlp.Listing{ID: "x1", ExtractorKey: "ExampleUser", IsPlaylist: true, WebpageURL: u}
 		if got := DisplayName(l); got != want {
 			t.Errorf("display name of %s: %q, want %q", u, got, want)
+		}
+	}
+}
+
+// Media kinds become URL prefixes and NSFW becomes over_18; links to
+// other sites need a search without a prefix (Reddit concept §7.7).
+func TestServerFilters(t *testing.T) {
+	show := func(fs []ServerFilter) string {
+		var out []string
+		for _, f := range fs {
+			o := "any"
+			if f.Over18 != nil {
+				o = fmt.Sprint(*f.Over18)
+			}
+			out = append(out, f.Prefix+"|"+o)
+		}
+		return strings.Join(out, " ")
+	}
+	for _, c := range []struct {
+		f    store.Filters
+		want string
+	}{
+		{store.Filters{}, "|any"},
+		{store.Filters{MediaKinds: []string{"image", "gif", "gallery"}, NSFW: store.NSFWExclude},
+			"https://i.redd.it/|false https://www.reddit.com/gallery/|false"},
+		{store.Filters{MediaKinds: []string{"video", "linked"}, NSFW: store.NSFWOnly}, "|true"},
+	} {
+		if got := show(ServerFilters(c.f)); got != c.want {
+			t.Errorf("%+v: %s", c.f, got)
 		}
 	}
 }

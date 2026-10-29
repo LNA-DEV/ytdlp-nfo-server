@@ -127,6 +127,59 @@ func (s *Server) handleCheckSub(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
+// handleBackfill stores a request to load older posts (Reddit concept
+// §7.7), or continues one.
+func (s *Server) handleBackfill(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var in manager.BackfillInput
+	if !decode(w, r, &in, 4<<10) {
+		return
+	}
+	v, err := s.m.RequestBackfill(r.Context(), id, in)
+	if err != nil {
+		writeSubErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, v)
+}
+
+func (s *Server) handleCancelBackfill(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	v, err := s.m.CancelBackfill(r.Context(), id)
+	if err != nil {
+		writeSubErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// handleBackfillPreview counts the posts of a time range per year.
+func (s *Server) handleBackfillPreview(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if !decode(w, r, &req, 4<<10) {
+		return
+	}
+	c, err := s.m.PreviewBackfill(r.Context(), id, req.From, req.To)
+	if err != nil {
+		writeSubErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
 // handleCheckAll makes all (or the listed) enabled subscriptions due now;
 // meant for an external cron (S10).
 func (s *Server) handleCheckAll(w http.ResponseWriter, r *http.Request) {

@@ -94,6 +94,8 @@ type SubscriptionView struct {
 	Sources           []SourceView          `json:"sources"`
 	Counts            store.EntryCounts     `json:"counts"`
 	SharedWith        []string              `json:"sharedWith,omitempty"` // subscriptions using the same folder
+	// Backfill is a request to load older posts (Reddit concept §7.7).
+	Backfill *BackfillView `json:"backfill,omitempty"`
 }
 
 func (m *Manager) subView(sub *store.Subscription, all []*store.Subscription) SubscriptionView {
@@ -107,6 +109,7 @@ func (m *Manager) subView(sub *store.Subscription, all []*store.Subscription) Su
 		Notify: sub.Notify, Provider: sub.Provider, State: sub.State, Failures: sub.Failures, Error: sub.Error, ErrorClass: sub.ErrorClass,
 		Hint: sub.Hint, Warning: sub.Warning, LastCheckAt: tptr(sub.LastCheckAt), LastOKAt: tptr(sub.LastOKAt),
 		NextCheckAt: tptr(sub.NextCheckAt), CreatedAt: sub.CreatedAt, Sources: []SourceView{}, Counts: m.subCounts(sub.ID),
+		Backfill: backfillView(sub.Backfill),
 	}
 	if v.Name == "" {
 		v.Name = firstURL(sub) // imported, not listed yet

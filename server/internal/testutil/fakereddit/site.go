@@ -16,6 +16,7 @@ import (
 	"image/png"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -70,6 +71,8 @@ type Site struct {
 	// arcticMaintenance counts the Arctic Shift requests still to answer
 	// with 503.
 	arcticMaintenance int
+	aggregateFails    bool
+	arcticQueries     []url.Values // the parameters of every Arctic Shift search
 }
 
 // NewSite starts a fake site.
@@ -134,6 +137,34 @@ func ShellPage(target string) []byte {
 
 // SetNativeBlocked makes native pages answer with the block page.
 func (s *Site) SetNativeBlocked(b bool) { s.mu.Lock(); s.nativeBlocked = b; s.mu.Unlock() }
+
+// matches applies the filters of an Arctic Shift search: the time range,
+// the URL prefix and over_18.
+func matches(p *Post, q url.Values) bool {
+	ts := p.Created.Unix()
+	after, _ := strconv.ParseInt(q.Get("after"), 10, 64)
+	before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
+	if (before > 0 && ts >= before) || (after > 0 && ts <= after) {
+		return false
+	}
+	if pre := q.Get("url"); pre != "" && !strings.HasPrefix(contentHref(p), pre) {
+		return false
+	}
+	if o := q.Get("over_18"); o != "" && strconv.FormatBool(p.NSFW) != o {
+		return false
+	}
+	return true
+}
+
+// ArcticSearches returns the parameters of the Arctic Shift searches so far.
+func (s *Site) ArcticSearches() []url.Values {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]url.Values(nil), s.arcticQueries...)
+}
+
+// SetAggregateFails makes the Arctic Shift aggregation time out.
+func (s *Site) SetAggregateFails(b bool) { s.mu.Lock(); s.aggregateFails = b; s.mu.Unlock() }
 
 // ArcticMaintenance makes the next n Arctic Shift requests answer 503
 // "Under maintenance".
@@ -451,7 +482,8 @@ func (s *Site) page(w http.ResponseWriter, sub, sort, after string, first bool) 
 
 func apiPost(p *Post) map[string]any {
 	m := map[string]any{"id": p.ID, "subreddit": p.Subreddit, "author": p.Author, "title": p.Title,
-		"created_utc": p.Created.Unix(), "permalink": permalink(p), "over_18": p.NSFW, "url": contentHref(p)}
+		"created_utc": p.Created.Unix(), "permalink": permalink(p), "over_18": p.NSFW, "url": contentHref(p),
+		"score": p.Score}
 	switch p.Kind {
 	case "image", "gif":
 		m["post_hint"] = "image"
@@ -508,11 +540,8 @@ func (s *Site) arctic(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/posts/search":
 		limit, _ := strconv.Atoi(q.Get("limit"))
-		after, _ := strconv.ParseInt(q.Get("after"), 10, 64)
-		before, _ := strconv.ParseInt(q.Get("before"), 10, 64)
 		for _, p := range s.posts(q.Get("subreddit")) { // newest first
-			ts := p.Created.Unix()
-			if (before > 0 && ts >= before) || (after > 0 && ts <= after) {
+			if !matches(p, q) {
 				continue
 			}
 			if len(out) >= limit {
@@ -520,6 +549,30 @@ func (s *Site) arctic(w http.ResponseWriter, r *http.Request) {
 			}
 			out = append(out, apiPost(p))
 		}
+		s.mu.Lock()
+		s.arcticQueries = append(s.arcticQueries, q)
+		s.mu.Unlock()
+	case "/api/posts/search/aggregate":
+		s.mu.Lock()
+		fails := s.aggregateFails
+		s.mu.Unlock()
+		if fails {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":"Query timed out"}`))
+			return
+		}
+		years := map[int]int{}
+		for _, p := range s.posts(q.Get("subreddit")) {
+			if matches(p, q) {
+				years[p.Created.UTC().Year()]++
+			}
+		}
+		var buckets []map[string]any
+		for y, n := range years {
+			buckets = append(buckets, map[string]any{"created_utc": time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli(), "count": n})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": buckets})
+		return
 	case "/api/posts/ids":
 		s.mu.Lock()
 		for _, id := range strings.Split(q.Get("ids"), ",") {

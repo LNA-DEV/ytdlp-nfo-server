@@ -455,3 +455,36 @@ func TestPruneGoneEntries(t *testing.T) {
 		t.Fatalf("keys after prune: %v", keys)
 	}
 }
+
+func TestBackfillRequest(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, false)
+	sub := &Subscription{Name: "r/example", Mode: ModeManual, Enabled: true, Listing: ListingAuto,
+		Sources: []*Source{{URL: "https://www.reddit.com/r/example/", Canonical: "https://www.reddit.com/r/example/new"}}}
+	if err := s.CreateSubscription(ctx, sub); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Truncate(time.Millisecond)
+	b := &Backfill{ID: 7, Kind: BackfillRange, From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Pending: true, Total: 120}
+	if err := s.SetBackfill(ctx, sub.ID, b, now); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetSubscription(ctx, sub.ID)
+	if got.Backfill == nil || got.Backfill.ID != 7 || !got.Backfill.From.Equal(b.From) || !got.Backfill.Pending ||
+		!got.NextCheckAt.Equal(now) {
+		t.Fatalf("stored: %+v next %v", got.Backfill, got.NextCheckAt)
+	}
+	// Saving the check state doesn't touch the request.
+	if err := s.InTx(ctx, func(tx *Tx) error { return tx.SaveCheckState(ctx, got) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetBackfill(ctx, sub.ID, nil, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = s.GetSubscription(ctx, sub.ID); got.Backfill != nil {
+		t.Fatalf("not removed: %+v", got.Backfill)
+	}
+	if err := s.SetBackfill(ctx, 999, b, now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown subscription: %v", err)
+	}
+}

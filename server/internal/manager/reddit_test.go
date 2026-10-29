@@ -411,3 +411,133 @@ func TestRedditTopSource(t *testing.T) {
 		t.Fatalf("blocked: %s %q %q", sub.ErrorClass, sub.Error, sub.Hint)
 	}
 }
+
+// backfillPosts adds n posts of r/example, one every two days back from
+// base: image, gallery, video and text in turn, scored by score(i).
+func backfillPosts(site *fakereddit.Site, base time.Time, n int, score func(int) int) {
+	kinds := []string{"image", "gallery", "video", "text"}
+	for i := 0; i < n; i++ {
+		p := &fakereddit.Post{ID: fmt.Sprintf("b%d", i), Subreddit: "example", Author: "u", Title: fmt.Sprintf("Old %d", i),
+			Kind: kinds[i%4], Created: base.Add(-time.Duration(i) * 48 * time.Hour), Score: score(i)}
+		switch p.Kind {
+		case "image", "video":
+			p.Media = []string{fmt.Sprintf("bm%d", i)}
+		case "gallery":
+			p.Media = []string{fmt.Sprintf("bg%da", i), fmt.Sprintf("bg%db", i)}
+		}
+		site.Add(p)
+	}
+}
+
+// waitBackfill waits until the subscription's backfill request ran.
+func (w *world) waitBackfill(id int64) *SubscriptionView {
+	w.t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		v, err := w.m.GetSubscription(context.Background(), id)
+		if err == nil && (v.Backfill == nil || !v.Backfill.Pending) && v.State != store.SubChecking {
+			return v
+		}
+		if time.Now().After(deadline) {
+			log, _ := w.m.subs.logs.Read(id)
+			w.t.Fatalf("backfill did not run: %+v\n%s", v.Backfill, log)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Loading older posts of a time range from Arctic Shift (Reddit concept
+// §7.7): counted first, at most backfillMax per run, Continue resumes
+// before the oldest post loaded, and everything ends up in the backlog
+// once, without text posts when the media kinds say so.
+func TestRedditBackfillRange(t *testing.T) {
+	w, site := redditWorld(t)
+	ctx := context.Background()
+	if _, err := w.m.Settings.Update(ctx, func(s *config.Settings) error {
+		s.Reddit.FirstListing, s.Reddit.BackfillMax = 25, 100
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Truncate(time.Second)
+	backfillPosts(site, base, 260, func(i int) int { return i })
+	created := time.Now()
+	v := w.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/example/"}},
+		Filters: &store.Filters{MediaKinds: []string{"image", "gallery"}}})
+	id := sid(v)
+	w.waitChecked(id, created)
+	if n := len(w.entries(id, "")); n != 25 {
+		t.Fatalf("first listing: %d entries", n)
+	}
+
+	// The count uses the filters: images and galleries, half of the posts.
+	c, err := w.m.PreviewBackfill(ctx, id, "", "")
+	sum := 0
+	for _, y := range c.Years {
+		sum += y.Count
+	}
+	if err != nil || !c.Known || c.Total != 130 || sum != 130 || len(c.Years) < 2 || c.BackfillMax != 100 {
+		t.Fatalf("counts: %+v %v", c, err)
+	}
+	if _, err := w.m.PreviewBackfill(ctx, id, "2026-05-01", "2026-04-01"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("reversed range: %v", err)
+	}
+
+	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillRange}); err != nil {
+		t.Fatal(err)
+	}
+	v = w.waitBackfill(id)
+	if b := v.Backfill; b == nil || !b.CanContinue || b.Loaded != 100 || b.Total != 130 {
+		t.Fatalf("first run: %+v", b)
+	}
+	for _, q := range site.ArcticSearches() {
+		if q.Get("url") != "https://i.redd.it/" && q.Get("url") != "https://www.reddit.com/gallery/" {
+			t.Fatalf("search without a media prefix: %v", q)
+		}
+	}
+	for i := 0; i < 3 && v.Backfill != nil; i++ {
+		if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Continue: true}); err != nil {
+			t.Fatal(err)
+		}
+		v = w.waitBackfill(id)
+	}
+	if v.Backfill != nil {
+		t.Fatalf("not done: %+v", v.Backfill)
+	}
+	// 25 from the first listing (with text and video posts) and the other
+	// 130 - (images and galleries among them) older ones; no text post
+	// was transferred, nothing twice.
+	es := w.entries(id, "")
+	keys := map[string]bool{}
+	for _, e := range es {
+		if keys[e.Key] {
+			t.Fatalf("%s twice", e.Key)
+		}
+		keys[e.Key] = true
+	}
+	if len(es) != 25+130-13 || len(w.entries(id, "backlog")) != 130 || len(w.entries(id, "new")) != 0 {
+		t.Fatalf("%d entries, %d backlog", len(es), len(w.entries(id, "backlog")))
+	}
+	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Continue: true}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("continue without a request: %v", err)
+	}
+
+	// A count that times out leaves the total unknown; the request stays
+	// until it runs, and can be cancelled.
+	site.SetAggregateFails(true)
+	if c, _ := w.m.PreviewBackfill(ctx, id, "", ""); c.Known {
+		t.Fatalf("counts after a timeout: %+v", c)
+	}
+	off := false
+	if _, err := w.m.UpdateSubscription(ctx, id, SubscriptionInput{Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	v, err = w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillRange, From: "2025-01-01", To: "2025-12-31"})
+	if err != nil || v.Backfill == nil || !v.Backfill.Pending || v.Backfill.Total != 0 || v.Backfill.From != "2025-01-01" ||
+		v.Backfill.To != "2025-12-31" {
+		t.Fatalf("request: %+v %v", v.Backfill, err)
+	}
+	if v, err = w.m.CancelBackfill(ctx, id); err != nil || v.Backfill != nil {
+		t.Fatalf("cancel: %+v %v", v, err)
+	}
+}

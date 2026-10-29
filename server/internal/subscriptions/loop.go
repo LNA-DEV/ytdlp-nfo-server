@@ -15,6 +15,7 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/joblog"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp/versions"
@@ -313,6 +314,14 @@ func (l *Loop) check(ctx context.Context, sub *store.Subscription, opts config.O
 		}
 		res.Sources = append(res.Sources, r)
 	}
+	if sub.Backfill != nil && sub.Backfill.Pending && res.Cooldown.IsZero() {
+		res.Backfill = l.runBackfill(ctx, sub, log)
+		if ctx.Err() != nil {
+			l.abort(sub.ID)
+			return
+		}
+		_ = failpoint.Check("subscription:backfilled")
+	}
 	_ = failpoint.Check("subscription:listed")
 	l.commit(ctx, res, log)
 }
@@ -350,6 +359,11 @@ func (l *Loop) listSource(ctx context.Context, sub *store.Subscription, src *sto
 	case src.LastFullAt.IsZero() || now.Sub(src.LastFullAt) > time.Duration(s.FullRescanDays)*24*time.Hour:
 	default:
 		window = s.Window
+		if t, ok := reddit.Parse(src.Canonical); ok && t.IsListing() {
+			// The first listing went firstListing deep: a larger window
+			// would reach below it and take older posts for new ones.
+			window = min(window, max(settings.Reddit.FirstListing, 1))
+		}
 	}
 	// A source that was blocked lists with impersonation; once that worked
 	// it keeps it until the options change (§5.4).

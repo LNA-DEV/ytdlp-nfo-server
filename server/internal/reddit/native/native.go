@@ -129,7 +129,7 @@ func (p *Provider) learn(name string) {
 
 // List implements reddit.Provider.
 func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, error) {
-	if !q.After.IsZero() || !q.Before.IsZero() {
+	if q.TimeRange() {
 		return nil, &reddit.Error{Class: ytdlp.ClassPermanent, Reason: "native can't list a time range", Unsupported: true}
 	}
 	q.Target = p.spelled(q.Target)

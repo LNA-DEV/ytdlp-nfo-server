@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -634,5 +635,96 @@ func TestRedditSortedJob(t *testing.T) {
 	j := w.download("https://www.reddit.com/r/example/rising/", config.OptionsRequest{})
 	if j.State != store.JobFailed || !strings.Contains(j.Hint, reddit.HintTopNative) {
 		t.Fatalf("native blocked: %s %q", j.State, j.Hint)
+	}
+}
+
+// Loading the top of a period (native) and the top of a time range
+// (Arctic Shift, ranked locally); "Download them" queues the posts at once
+// in the backlog band (Reddit concept §7.7).
+func TestRedditBackfillTop(t *testing.T) {
+	w, site := redditMediaWorld(t)
+	ctx := context.Background()
+	if _, err := w.m.Settings.Update(ctx, func(s *config.Settings) error {
+		s.Reddit.FirstListing, s.Reddit.BackfillMax = 25, 100
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Truncate(time.Second)
+	best := map[int]int{200: 1000, 204: 900, 208: 800} // old images
+	backfillPosts(site, base, 260, func(i int) int {
+		if s, ok := best[i]; ok {
+			return s
+		}
+		return i % 50
+	})
+	created := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Sources: []SourceInput{{URL: "https://www.reddit.com/r/example/"}}}))
+	w.waitChecked(id, created)
+
+	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillTop, Period: "all", N: 3, Download: true}); err != nil {
+		t.Fatal(err)
+	}
+	if v := w.waitBackfill(id); v.Backfill != nil {
+		t.Fatalf("top: %+v", v.Backfill)
+	}
+	jobs := w.subJobs(id)
+	if len(jobs) != 1 || jobs[0].Band != store.BandBacklog {
+		t.Fatalf("jobs: %+v", jobs)
+	}
+	if j := w.wait(jobs[0].ID, store.JobCompleted, store.JobPartial, store.JobFailed); j.State != store.JobCompleted || len(w.items(j.ID)) != 3 {
+		t.Fatalf("download: %s\n%s", j.State, w.log(j.ID))
+	}
+	if got := w.lib("example/Old 200 [b200]"); len(got) != 2 {
+		t.Fatalf("library: %v", got)
+	}
+
+	// The top 4 of 40 days: the range is listed and ranked by score.
+	day := func(i int) string { return base.Add(-time.Duration(i) * 48 * time.Hour).UTC().Format(time.DateOnly) }
+	before := len(w.entries(id, ""))
+	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillRangeTop, N: 4, From: day(119), To: day(100)}); err != nil {
+		t.Fatal(err)
+	}
+	if v := w.waitBackfill(id); v.Backfill != nil {
+		t.Fatalf("range top: %+v", v.Backfill)
+	}
+	keys := map[string]bool{}
+	for _, e := range w.entries(id, "") {
+		keys[e.Key] = true
+	}
+	if n := len(w.entries(id, "")) - before; n != 4 || !keys["redditmedia bm116"] || !keys["reddit bm118"] || keys["redditmedia bm112"] {
+		t.Fatalf("%d new entries: %v", n, keys)
+	}
+	if len(w.subJobs(id)) != 1 {
+		t.Fatal("a backfill without download queued something")
+	}
+
+	// The top of a range larger than backfillMax is refused up front.
+	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillRangeTop, N: 5, From: day(259), To: day(0)}); !errors.Is(err, ErrInvalid) ||
+		!strings.Contains(err.Error(), "narrow it") {
+		t.Fatalf("too large: %v", err)
+	}
+
+	// Without native, a top list fails; the request stays and is repeated.
+	site.SetNativeBlocked(true)
+	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillTop, Period: "year", N: 5}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		v, _ := w.m.GetSubscription(ctx, id)
+		if b := v.Backfill; b != nil && b.Error != "" {
+			if !b.Pending || !strings.Contains(b.Error, "blocked") {
+				t.Fatalf("failed top: %+v", b)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no failed run: %+v", v.Backfill)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if v, err := w.m.CancelBackfill(ctx, id); err != nil || v.Backfill != nil {
+		t.Fatalf("cancel: %v", err)
 	}
 }

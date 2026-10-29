@@ -17,6 +17,7 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/subscriptions"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp/versions"
 )
 
@@ -240,11 +241,18 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 			}
 		}
 		var keys []string
+		listings := []*ytdlp.Listing{}
 		for _, r := range res.Sources {
-			if r.Listing == nil {
+			listings = append(listings, r.Listing)
+		}
+		if res.Backfill != nil {
+			listings = append(listings, res.Backfill.Listing)
+		}
+		for _, l := range listings {
+			if l == nil {
 				continue
 			}
-			for _, le := range r.Listing.Entries {
+			for _, le := range l.Entries {
 				if k := subscriptions.EntryKey(le); k != "" && !have[k] {
 					keys = append(keys, k)
 				}
@@ -277,6 +285,31 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 					return err
 				}
 				jobs = append(jobs, js...)
+			}
+			// "Download them": the older posts a backfill loaded are queued
+			// at once, in the backlog band (Reddit concept §7.7).
+			if b := res.Backfill; b != nil && b.Download && sub.Backfill != nil && sub.Backfill.ID == b.ID {
+				var cands []*store.Entry
+				for _, e := range out.Backfilled {
+					if !e.Ignored && !e.InArchive && !archived[e.Key] {
+						cands = append(cands, e)
+					}
+				}
+				if len(cands) > 0 {
+					js, err := m.subJobsTx(ctx, tx, sub, opts, store.BandBacklog, cands, archived)
+					if err != nil {
+						return err
+					}
+					jobs = append(jobs, js...)
+					out.Backlog = append(out.Backlog, cands...)
+				}
+			}
+		}
+		// The run's progress replaces the request it ran; a request changed
+		// or cancelled during the check stays as it is.
+		if b := res.Backfill; b != nil && sub.Backfill != nil && sub.Backfill.ID == b.ID {
+			if err := tx.SetBackfill(ctx, sub.ID, b.Next); err != nil {
+				return err
 			}
 		}
 		for _, e := range out.Insert {

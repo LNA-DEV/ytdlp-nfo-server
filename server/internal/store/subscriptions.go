@@ -138,8 +138,38 @@ type Subscription struct {
 	// FullRequested: the next check lists every source completely (Full
 	// rescan). Only RequestFullCheck and ClearFullRequest write it.
 	FullRequested bool
+	// Backfill is a requested loading of older posts (Reddit concept §7.7),
+	// nil if none. Only SetBackfill writes it.
+	Backfill *Backfill
 
 	Sources []*Source
+}
+
+// Kinds of backfill (Reddit concept §7.7).
+const (
+	BackfillTop      = "top"      // the top N of a period, from native
+	BackfillRange    = "range"    // everything in a time range, from Arctic Shift
+	BackfillRangeTop = "rangeTop" // the top N of a time range, sorted locally
+)
+
+// Backfill is a request to load older posts into the backlog, and its
+// progress.
+type Backfill struct {
+	ID     int64     `json:"id"` // when it was requested (Unix ms): a check only updates the request it ran
+	Kind   string    `json:"kind"`
+	Period string    `json:"period,omitempty"` // top: hour … all
+	N      int       `json:"n,omitempty"`      // top, rangeTop
+	From   time.Time `json:"from,omitempty"`   // range, rangeTop; zero: the beginning
+	To     time.Time `json:"to,omitempty"`     // zero: now
+	// Download queues the loaded posts at once in the backlog band.
+	Download bool `json:"download,omitempty"`
+	// Pending: the next check runs it. A range that stopped at backfillMax
+	// waits for Continue, which resumes before the oldest post loaded.
+	Pending bool      `json:"pending"`
+	Before  time.Time `json:"before,omitempty"`
+	Loaded  int       `json:"loaded,omitempty"`
+	Total   int       `json:"total,omitempty"` // about, from the count; 0 = unknown
+	Error   string    `json:"error,omitempty"` // the last run failed
 }
 
 // EffectiveFolder returns the library folder of the subscription's items.
@@ -267,25 +297,33 @@ func (s *Store) InTx(ctx context.Context, fn func(tx *Tx) error) error {
 
 const subCols = `id, name, folder, kind, uploader, thumbnail, mode, enabled, backlog, filters, requested,
 	interval_minutes, listing, notify, state, failures, error, error_class, hint, warning,
-	last_check_at, last_ok_at, next_check_at, created_at, updated_at, full_requested, provider`
+	last_check_at, last_ok_at, next_check_at, created_at, updated_at, full_requested, provider, backfill`
 
 func scanSub(r scanner) (*Subscription, error) {
 	var (
 		s                           Subscription
 		enabled, notify, full       int
 		backlog, filters, requested string
+		backfill                    string
 		lastCheck, lastOK, next     sql.NullInt64
 		created, updated            int64
 	)
 	if err := r.Scan(&s.ID, &s.Name, &s.Folder, &s.Kind, &s.Uploader, &s.Thumbnail, &s.Mode, &enabled, &backlog,
 		&filters, &requested, &s.IntervalMinutes, &s.Listing, &notify, &s.State, &s.Failures, &s.Error,
-		&s.ErrorClass, &s.Hint, &s.Warning, &lastCheck, &lastOK, &next, &created, &updated, &full, &s.Provider); err != nil {
+		&s.ErrorClass, &s.Hint, &s.Warning, &lastCheck, &lastOK, &next, &created, &updated, &full, &s.Provider,
+		&backfill); err != nil {
 		return nil, err
 	}
 	s.Enabled, s.Notify, s.FullRequested = enabled != 0, notify != 0, full != 0
 	_ = json.Unmarshal([]byte(backlog), &s.Backlog)
 	_ = json.Unmarshal([]byte(filters), &s.Filters)
 	_ = json.Unmarshal([]byte(requested), &s.Requested)
+	if backfill != "" {
+		s.Backfill = &Backfill{}
+		if json.Unmarshal([]byte(backfill), s.Backfill) != nil {
+			s.Backfill = nil
+		}
+	}
 	s.LastCheckAt, s.LastOKAt, s.NextCheckAt = fromMs(lastCheck), fromMs(lastOK), fromMs(next)
 	s.CreatedAt, s.UpdatedAt = time.UnixMilli(created), time.UnixMilli(updated)
 	return &s, nil
@@ -551,6 +589,37 @@ func (s *Store) RequestFullCheck(ctx context.Context, id int64, now time.Time) e
 }
 
 // ClearFullRequest records that a full rescan was done.
+// SetBackfill stores a backfill request (nil removes it); with now set,
+// the next check is due at once.
+func (s *Store) SetBackfill(ctx context.Context, id int64, b *Backfill, now time.Time) error {
+	return s.InTx(ctx, func(tx *Tx) error {
+		if err := tx.SetBackfill(ctx, id, b); err != nil {
+			return err
+		}
+		if now.IsZero() {
+			return nil
+		}
+		_, err := tx.tx.ExecContext(ctx, `UPDATE subscriptions SET next_check_at = ? WHERE id = ?`, now.UnixMilli(), id)
+		return err
+	})
+}
+
+// SetBackfill stores a backfill request (nil removes it).
+func (t *Tx) SetBackfill(ctx context.Context, id int64, b *Backfill) error {
+	v := ""
+	if b != nil {
+		v = mustJSON(b)
+	}
+	res, err := t.tx.ExecContext(ctx, `UPDATE subscriptions SET backfill = ? WHERE id = ?`, v, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (t *Tx) ClearFullRequest(ctx context.Context, id int64) error {
 	_, err := t.tx.ExecContext(ctx, `UPDATE subscriptions SET full_requested = 0 WHERE id = ?`, id)
 	return err

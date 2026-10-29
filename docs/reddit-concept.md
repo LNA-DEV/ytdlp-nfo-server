@@ -220,7 +220,7 @@ type ListResult struct {
 |---|---|
 | Canonical URL | `https://www.reddit.com/r/<name lowercase>/new`, `https://www.reddit.com/r/<name lowercase>/top?t=<period>` and `https://www.reddit.com/user/<name>/submitted`. `old.`, `new.`, `np.` and `m.` hosts, `redd.it` and share links resolve to these. The uniqueness constraint prevents duplicate subscriptions. |
 | Order | Newest first, known up front: a new Reddit source is stored with `newest_first = 1, order_known = 1`, so checks use the window from the start. (`tab` is not used, because `ListArgs` derives YouTube arguments from it.) Top sources have a fixed order of their own ([§7.7](#77-history-top-lists-and-gaps)). |
-| Window and gaps | Window `window` (default 50), doubled while it holds no known entry, until the lister is exhausted (native: about 1000 posts). An exhausted listing without a known entry is a gap ([§7.7](#77-history-top-lists-and-gaps)). |
+| Window and gaps | Window `window` (default 50), at most `firstListing` (a larger window would reach below the first listing and take older posts for new ones), doubled while it holds no known entry, until the lister is exhausted (native: about 1000 posts). An exhausted listing without a known entry is a gap ([§7.7](#77-history-top-lists-and-gaps)). |
 | Top sources | Always the top N (`list_limit`), whatever the window. Native only ([§7.7](#77-history-top-lists-and-gaps)). |
 | First listing | The newest `firstListing` posts (default 100) become the backlog. The backlog choice *all* means these posts. Older posts and top lists come in through a backfill ([§7.7](#77-history-top-lists-and-gaps)). |
 | Full rescan | Lists `firstListing` posts and never reports `complete` (R8), so nothing is marked *gone* |
@@ -483,8 +483,12 @@ Reddit subscriptions get the action *Load older…*, which the add dialog offers
   - The next check runs it after its normal listing, under the same rules (one check per site, pacing), and commits its entries in the same transaction. That transaction also clears the request, or stores the position for *Continue*.
   - The entries belong to the subscription's subreddit source and have `backlog = 1`, so auto mode never queues them (S3).
 - **API:**
-  - `POST /api/v1/subscriptions/{id}/backfill` with `{kind: "top" | "range" | "rangeTop", period, n, from, to, download}`;
-  - `POST /api/v1/subscriptions/{id}/backfill/preview` for the counts.
+  - `POST /api/v1/subscriptions/{id}/backfill` with `{kind: "top" | "range" | "rangeTop", period, n, from, to, download}` (`from` and `to` are days, `to` included; an empty `from` is the beginning, an empty `to` now), or `{continue: true}`;
+  - `DELETE /api/v1/subscriptions/{id}/backfill` drops a request;
+  - `POST /api/v1/subscriptions/{id}/backfill/preview` with `{from, to}` for the counts: `{years: [{year, count}], total, known, backfillMax}`.
+  - The subscription shows the request as `backfill` (`pending`, `loaded`, `total`, `canContinue`, `error`).
+- **Failures:** a run that fails for a while (Arctic Shift down, native blocked) is repeated by the next check. One that can't succeed (the top of a range that grew past `backfillMax`) waits with its error until it is changed or dropped.
+- **The count's format** is not documented by Arctic Shift. The server reads a list of time buckets with a count (`created_utc`, `key` or `date`; `count` or `doc_count`); anything else counts as unknown, as a timeout does.
 
 **What to expect from old posts.**
 - `i.redd.it` exists since 2016, `v.redd.it` since 2017, galleries since 2020. Before that, almost all media are links to Imgur, which need phase R-5 ([§7.6](#76-links-to-other-sites)).

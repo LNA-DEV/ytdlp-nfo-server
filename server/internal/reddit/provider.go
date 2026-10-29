@@ -27,6 +27,29 @@ type Query struct {
 	// A time range (Arctic Shift only): posts created after After and
 	// before Before; zero values are open ends.
 	After, Before time.Time
+	// ByTime lists by time even without a range (Arctic Shift only).
+	ByTime bool
+	// Server-side filters of a listing by time (§7.7): posts whose URL
+	// starts with URLPrefix, and NSFW (true) or SFW (false) posts only.
+	URLPrefix string
+	Over18    *bool
+}
+
+// TimeRange reports whether the query lists by time.
+func (q Query) TimeRange() bool {
+	return q.ByTime || !q.After.IsZero() || !q.Before.IsZero() || q.URLPrefix != "" || q.Over18 != nil
+}
+
+// YearCount is the number of posts of one year.
+type YearCount struct {
+	Year  int `json:"year"`
+	Count int `json:"count"`
+}
+
+// Counter counts the posts of a time range per year (Arctic Shift's
+// aggregation, §7.7).
+type Counter interface {
+	Count(ctx context.Context, q Query) ([]YearCount, error)
 }
 
 // Page is the result of a listing.
@@ -247,6 +270,24 @@ func (c *Chain) List(ctx context.Context, q Query) (*Page, string, *Error) {
 		return err
 	})
 	return page, name, err
+}
+
+// Count counts the posts of a time range per year, through the providers
+// of the chain that can.
+func (c *Chain) Count(ctx context.Context, q Query) ([]YearCount, string, *Error) {
+	var out []YearCount
+	name, err := c.run(ctx, func(p Provider) error {
+		cn, ok := p.(Counter)
+		if !ok {
+			return &Error{Class: ytdlp.ClassPermanent, Reason: p.Name() + " can't count posts", Unsupported: true}
+		}
+		ys, err := cn.Count(ctx, q)
+		if err == nil {
+			out = ys
+		}
+		return err
+	})
+	return out, name, err
 }
 
 // Post fetches one post through the chain.

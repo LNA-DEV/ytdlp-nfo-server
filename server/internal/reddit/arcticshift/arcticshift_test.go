@@ -187,3 +187,24 @@ func TestRealWorldShapes(t *testing.T) {
 		}
 	}
 }
+
+// The aggregation's answer is not documented: the usual shapes are read,
+// anything else is unknown.
+func TestParseCounts(t *testing.T) {
+	for raw, want := range map[string]string{
+		`[{"created_utc":1672531200,"count":3},{"created_utc":1704067200000,"count":5},{"created_utc":1706745600,"count":1}]`: "[{2023 3} {2024 6}]",
+		`{"created_utc":[{"key":1672531200000,"doc_count":7}]}`:                                                               "[{2023 7}]",
+		`[{"date":"2022-01-01T00:00:00Z","count":2}]`:                                                                         "[{2022 2}]",
+		`[]`: "[]",
+	} {
+		got, err := parseCounts(json.RawMessage(raw))
+		if err != nil || fmt.Sprint(got) != want {
+			t.Errorf("%s: %v %v", raw, got, err)
+		}
+	}
+	for _, raw := range []string{`{"total":5}`, `[{"bucket":"x","n":1}]`, `"text"`} {
+		if _, err := parseCounts(json.RawMessage(raw)); err == nil {
+			t.Errorf("%s: no error", raw)
+		}
+	}
+}

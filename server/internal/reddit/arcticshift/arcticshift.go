@@ -6,9 +6,11 @@ package arcticshift
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,11 +71,25 @@ func (p *Provider) pace(ctx context.Context) error {
 }
 
 type response struct {
-	Data  []apiPost `json:"data"`
-	Error string    `json:"error"`
+	Data  json.RawMessage `json:"data"`
+	Error string          `json:"error"`
 }
 
 func (p *Provider) get(ctx context.Context, path string, q url.Values) ([]apiPost, error) {
+	raw, err := p.getRaw(ctx, path, q)
+	if err != nil {
+		return nil, err
+	}
+	var posts []apiPost
+	if len(raw) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &posts); err != nil {
+			return nil, &reddit.Error{Class: ytdlp.ClassUnknown, Reason: "Arctic Shift: unreadable answer: " + err.Error()}
+		}
+	}
+	return posts, nil
+}
+
+func (p *Provider) getRaw(ctx context.Context, path string, q url.Values) (json.RawMessage, error) {
 	if err := p.pace(ctx); err != nil {
 		return nil, err
 	}
@@ -135,6 +151,7 @@ func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, erro
 		if !before.IsZero() {
 			v.Set("before", strconv.FormatInt(before.Unix()+1, 10)) // inclusive: posts of the same second
 		}
+		filters(v, q)
 		data, err := p.get(ctx, "/api/posts/search", v)
 		if err != nil {
 			return nil, err
@@ -161,6 +178,108 @@ func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, erro
 		out.Posts = out.Posts[:limit]
 	}
 	return out, nil
+}
+
+// filters adds the server-side filters of a query (§7.7).
+func filters(v url.Values, q reddit.Query) {
+	if q.URLPrefix != "" {
+		v.Set("url", q.URLPrefix)
+	}
+	if q.Over18 != nil {
+		v.Set("over_18", strconv.FormatBool(*q.Over18))
+	}
+}
+
+// Count implements reddit.Counter: the posts of a time range per year,
+// from the aggregation endpoint (§7.7). Its answer is not documented, so
+// the common shapes are read; anything else counts as unknown.
+func (p *Provider) Count(ctx context.Context, q reddit.Query) ([]reddit.YearCount, error) {
+	t := q.Target
+	if !t.IsListing() {
+		return nil, &reddit.Error{Class: ytdlp.ClassPermanent, Reason: "not a listing", Unsupported: true}
+	}
+	v := url.Values{"aggregate": {"created_utc"}, "frequency": {"year"}}
+	if t.Kind == reddit.TargetSubreddit {
+		v.Set("subreddit", t.Subreddit)
+	} else {
+		v.Set("author", t.User)
+	}
+	if !q.After.IsZero() {
+		v.Set("after", strconv.FormatInt(q.After.Unix(), 10))
+	}
+	if !q.Before.IsZero() {
+		v.Set("before", strconv.FormatInt(q.Before.Unix(), 10))
+	}
+	filters(v, q)
+	raw, err := p.getRaw(ctx, "/api/posts/search/aggregate", v)
+	if err != nil {
+		return nil, err
+	}
+	counts, err := parseCounts(raw)
+	if err != nil {
+		return nil, &reddit.Error{Class: ytdlp.ClassUnknown, Reason: "Arctic Shift: " + err.Error()}
+	}
+	return counts, nil
+}
+
+// parseCounts reads time buckets: a list of {created_utc|key|date, count|
+// doc_count}, or such a list under "created_utc".
+func parseCounts(raw json.RawMessage) ([]reddit.YearCount, error) {
+	errFormat := errors.New("unknown format of the post counts")
+	var buckets []map[string]any
+	if json.Unmarshal(raw, &buckets) != nil {
+		var obj map[string][]map[string]any
+		if json.Unmarshal(raw, &obj) != nil {
+			return nil, errFormat
+		}
+		buckets = obj["created_utc"]
+	}
+	byYear := map[int]int{}
+	for _, b := range buckets {
+		at, okT := bucketTime(firstOf(b, "created_utc", "key", "date", "time"))
+		n, okN := firstOf(b, "count", "doc_count").(float64)
+		if !okT || !okN {
+			return nil, errFormat
+		}
+		byYear[at.UTC().Year()] += int(n)
+	}
+	out := make([]reddit.YearCount, 0, len(byYear))
+	for y, n := range byYear {
+		out = append(out, reddit.YearCount{Year: y, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Year < out[j].Year })
+	return out, nil
+}
+
+func firstOf(m map[string]any, keys ...string) any {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+// bucketTime reads a bucket's time: Unix seconds or milliseconds, or an
+// ISO 8601 date.
+func bucketTime(v any) (time.Time, bool) {
+	switch x := v.(type) {
+	case float64:
+		if x > 1e11 {
+			return time.UnixMilli(int64(x)), true
+		}
+		return time.Unix(int64(x), 0), true
+	case string:
+		if n, err := strconv.ParseFloat(x, 64); err == nil {
+			return bucketTime(n)
+		}
+		for _, l := range []string{time.RFC3339Nano, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02", "2006"} {
+			if t, err := time.Parse(l, x); err == nil {
+				return t, true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 // Post implements reddit.Provider.

@@ -306,3 +306,95 @@ func TestIntegrityRedditDuplicateKill(t *testing.T) {
 		})
 	}
 }
+
+// TestIntegrityRedditBackfillKill kills the server while a check runs a
+// backfill, after the posts were listed and right after the commit: the
+// request is still stored or done, a repeated run adds nothing twice, and
+// the backlog ends up complete (Reddit concept §13).
+func TestIntegrityRedditBackfillKill(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integrity test runs the server")
+	}
+	_, fake := buildServer(t)
+	for _, fp := range []string{"subscription:backfilled", "subscription:committed"} {
+		t.Run(fp, func(t *testing.T) {
+			c := newRedditCase(t, fake)
+			base := time.Now().Truncate(time.Second)
+			for i := 0; i < 40; i++ {
+				c.site.Add(&fakereddit.Post{ID: fmt.Sprintf("bk%d", i), Subreddit: "pics", Title: fmt.Sprintf("Old %d", i), Kind: "image",
+					Media: []string{fmt.Sprintf("bkm%d", i)}, Created: base.Add(-time.Duration(i+1) * 48 * time.Hour)})
+			}
+			// 25 posts from the first check; the rest (with the gallery of the
+			// case, 41 in all) is older.
+			p := c.start(t, "")
+			st := p.call(t, "GET", "/api/v1/settings", nil)["settings"].(map[string]any)
+			st["reddit"].(map[string]any)["firstListing"] = 25
+			p.call(t, "PUT", "/api/v1/settings", st)
+			sub := p.call(t, "POST", "/api/v1/subscriptions", map[string]any{"sources": []map[string]any{{"url": "https://www.reddit.com/r/pics/"}}})
+			id := sub["id"].(string)
+			read := func() (*store.Subscription, int) {
+				s, err := store.Open(filepath.Join(c.data, "ytdlp-nfo-server.db"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer s.Close()
+				sid, _ := strconv.ParseInt(id, 10, 64)
+				got, err := s.GetSubscription(context.Background(), sid)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Keys are unique per subscription in the schema; the count
+				// shows that no post was recorded under a second key.
+				es, err := s.ListEntries(context.Background(), store.EntryFilter{SubscriptionID: sid, Limit: 1000}, store.StatusParams{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return got, len(es)
+			}
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				v := p.call(t, "GET", "/api/v1/subscriptions/"+id, nil)
+				if v["lastCheckAt"] != nil && v["state"] != "checking" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("first check did not finish: %v\n%s", v, p.out)
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
+			p.stop(t)
+
+			p = c.start(t, fp)
+			p.call(t, "POST", "/api/v1/subscriptions/"+id+"/backfill", map[string]any{"kind": "range"})
+			waitKilled(t, p, fp)
+			s, n := read()
+			switch fp {
+			case "subscription:backfilled": // nothing committed: the request waits
+				if s.Backfill == nil || !s.Backfill.Pending || n != 25 {
+					t.Fatalf("after the kill: %+v, %d entries", s.Backfill, n)
+				}
+			default: // committed: done
+				if s.Backfill != nil || n != 41 {
+					t.Fatalf("after the kill: %+v, %d entries", s.Backfill, n)
+				}
+			}
+
+			p = c.start(t, "")
+			deadline = time.Now().Add(20 * time.Second)
+			for {
+				v := p.call(t, "GET", "/api/v1/subscriptions/"+id, nil)
+				if v["backfill"] == nil && v["state"] != "checking" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("backfill did not run again: %v\n%s", v, p.out)
+				}
+				time.Sleep(25 * time.Millisecond)
+			}
+			p.stop(t)
+			if s, n := read(); s.Backfill != nil || n != 41 {
+				t.Fatalf("after the restart: %+v, %d entries", s.Backfill, n)
+			}
+		})
+	}
+}
