@@ -663,8 +663,12 @@ func TestSubscriptionFiltersAndForce(t *testing.T) {
 	if n := len(w.entries(id, store.EntryIgnored)); n != 3 || len(w.subJobs(id)) != 0 {
 		t.Fatalf("filtered: %d ignored, %d jobs", n, len(w.subJobs(id)))
 	}
-	if _, err := m.UpdateSubscription(ctx, id, SubscriptionInput{Filters: &store.Filters{}}); err != nil {
+	v, err := m.UpdateSubscription(ctx, id, SubscriptionInput{Filters: &store.Filters{}})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if v.Counts.New != 2 || v.Counts.Backlog != 1 || v.Counts.Ignored != 0 {
+		t.Fatalf("the response must count the re-evaluated entries: %+v", v.Counts)
 	}
 	if got := entryIDs(w.entries(id, "inbox")); got != "v3,v2" || len(w.subJobs(id)) != 0 {
 		t.Fatalf("after clearing the filters: inbox %s, %d jobs", got, len(w.subJobs(id)))
@@ -675,7 +679,7 @@ func TestSubscriptionFiltersAndForce(t *testing.T) {
 	if res, _ := m.DownloadEntries(ctx, DownloadEntriesRequest{IDs: []string{lib[0].ID}}); res.Skipped != 1 {
 		t.Fatal("an entry in the library was downloaded again without force")
 	}
-	res, err := m.DownloadEntries(ctx, DownloadEntriesRequest{IDs: []string{lib[0].ID}, Force: true})
+	res, err = m.DownloadEntries(ctx, DownloadEntriesRequest{IDs: []string{lib[0].ID}, Force: true})
 	if err != nil || len(res.Jobs) != 1 || !res.Jobs[0].Options.Force {
 		t.Fatalf("force: %+v %v", res, err)
 	}

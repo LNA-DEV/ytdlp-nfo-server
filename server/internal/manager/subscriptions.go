@@ -592,6 +592,19 @@ func (m *Manager) recount() {
 	m.publishCounts()
 }
 
+// refreshCounts recounts the entries of one subscription now, so the
+// response to a change already shows its effect (the counts loop still
+// publishes it).
+func (m *Manager) refreshCounts(ctx context.Context, id int64) {
+	c, err := m.Store.CountEntries(ctx, id, m.statusParams())
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	m.subs.counts[id] = c[id]
+	m.mu.Unlock()
+}
+
 func (m *Manager) subCounts(id int64) store.EntryCounts {
 	m.mu.Lock()
 	defer m.mu.Unlock()

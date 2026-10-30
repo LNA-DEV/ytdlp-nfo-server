@@ -554,6 +554,7 @@ func (m *Manager) UpdateSubscription(ctx context.Context, id int64, in Subscript
 	if err != nil {
 		return nil, m.conflict(ctx, err)
 	}
+	m.refreshCounts(ctx, id)
 	m.markCounts(id)
 	m.publishSub(id)
 	if filtersChanged {
