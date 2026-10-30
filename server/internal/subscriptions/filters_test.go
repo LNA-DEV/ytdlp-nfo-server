@@ -37,6 +37,11 @@ func TestFilters(t *testing.T) {
 	if got := anyTitle.Reason(&store.Entry{Duration: 600}); got != "" {
 		t.Errorf("unknown title: %q", got)
 	}
+	long := strings.Repeat("ä", 50)
+	if got, _ := CompileFilters(store.Filters{TitleExclude: long}); got.Reason(&store.Entry{Title: long}) !=
+		`filter: title matches "`+strings.Repeat("ä", 40)+`…"` {
+		t.Errorf("a long pattern must be shortened by characters: %q", got.Reason(&store.Entry{Title: long}))
+	}
 	none, _ := CompileFilters(store.Filters{})
 	if none.Active() || none.Reason(&store.Entry{Duration: 1}) != "" {
 		t.Error("empty filters must pass everything")

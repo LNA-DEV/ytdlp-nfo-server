@@ -90,9 +90,11 @@ func (c *Filter) Reason(e *store.Entry) string {
 	return ""
 }
 
+// quote shortens a pattern to 40 characters (not bytes, so no character
+// is cut in half) and quotes it.
 func quote(s string) string {
-	if len(s) > 40 {
-		s = s[:40] + "…"
+	if r := []rune(s); len(r) > 40 {
+		s = string(r[:40]) + "…"
 	}
 	return `"` + s + `"`
 }
