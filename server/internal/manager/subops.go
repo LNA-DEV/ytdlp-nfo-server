@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/library"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
@@ -329,8 +330,27 @@ func sourcesFromInput(in []SourceInput) ([]*store.Source, error) {
 	return out, nil
 }
 
-// applyInput validates a request against a subscription (new or stored).
+// applyInput validates a request against a subscription (new or stored)
+// and applies it, including that its download options resolve.
 func (m *Manager) applyInput(ctx context.Context, sub *store.Subscription, in SubscriptionInput, creating bool) (optionsChanged, filtersChanged bool, err error) {
+	if optionsChanged, filtersChanged, err = assignInput(sub, in, creating); err != nil {
+		return false, false, err
+	}
+	if creating || optionsChanged {
+		if len(sub.Sources) == 0 {
+			return false, false, invalid("%v", errNoSources)
+		}
+		if _, _, err := m.resolveSub(ctx, sub); err != nil {
+			return false, false, invalid("%v", err)
+		}
+	}
+	return optionsChanged, filtersChanged, nil
+}
+
+// assignInput applies the fields of a request to a subscription and
+// validates their values. It makes no store calls, so it can run inside a
+// transaction.
+func assignInput(sub *store.Subscription, in SubscriptionInput, creating bool) (optionsChanged, filtersChanged bool, err error) {
 	if in.Name != nil {
 		sub.Name = strings.TrimSpace(*in.Name)
 	}
@@ -399,14 +419,6 @@ func (m *Manager) applyInput(ctx context.Context, sub *store.Subscription, in Su
 	}
 	if in.DismissWarning {
 		sub.Warning = ""
-	}
-	if creating || optionsChanged {
-		if len(sub.Sources) == 0 {
-			return false, false, invalid("%v", errNoSources)
-		}
-		if _, _, err := m.resolveSub(ctx, sub); err != nil {
-			return false, false, invalid("%v", err)
-		}
 	}
 	return optionsChanged, filtersChanged, nil
 }
@@ -482,25 +494,36 @@ func (m *Manager) UpdateSubscription(ctx context.Context, id int64, in Subscript
 	if len(sub.Sources) == 0 || len(sub.Sources) > 10 {
 		return nil, invalid("a subscription needs 1 to 10 sources")
 	}
-	oldInterval := sub.IntervalMinutes
-	optionsChanged, filtersChanged, err := m.applyInput(ctx, sub, in, false)
+	// Validated here: resolving the options needs store calls, which can't
+	// run inside the transaction.
+	optionsChanged, _, err := m.applyInput(ctx, sub, in, false)
 	if err != nil {
 		return nil, err
 	}
+	_ = failpoint.Check("subscription:edit")
 	now := time.Now()
-	if optionsChanged || len(added) > 0 {
-		sub.NextCheckAt = now // options first: a fixed option makes the next check succeed
-	}
-	if sub.IntervalMinutes != oldInterval {
-		if next := now.Add(subscriptions.Interval(sub, m.Settings.Settings().Subscriptions)); sub.NextCheckAt.After(next) {
-			sub.NextCheckAt = next
-		}
-	}
+	settings := m.Settings.Settings().Subscriptions
 	p := m.statusParams()
+	filtersChanged := false
 	err = m.Store.InTx(ctx, func(tx *store.Tx) error {
 		cur, err := tx.GetSubscription(ctx, id)
 		if err != nil {
 			return err
+		}
+		// A check may have committed since sub was read: the request is
+		// applied to the current state, so the backlog choice, warning,
+		// next check and name it recorded are not overwritten (§5.5).
+		oldInterval := cur.IntervalMinutes
+		if _, filtersChanged, err = assignInput(cur, in, false); err != nil {
+			return err
+		}
+		if optionsChanged || len(added) > 0 {
+			cur.NextCheckAt = now // options first: a fixed option makes the next check succeed
+		}
+		if cur.IntervalMinutes != oldInterval {
+			if next := now.Add(subscriptions.Interval(cur, settings)); cur.NextCheckAt.After(next) {
+				cur.NextCheckAt = next
+			}
 		}
 		for _, src := range cur.Sources {
 			if removed[src.ID] {
@@ -520,11 +543,11 @@ func (m *Manager) UpdateSubscription(ctx context.Context, id int64, in Subscript
 			}
 		}
 		if filtersChanged {
-			if err := refilterTx(ctx, tx, sub, p); err != nil {
+			if err := refilterTx(ctx, tx, cur, p); err != nil {
 				return err
 			}
 		}
-		return tx.UpdateSubscription(ctx, sub)
+		return tx.UpdateSubscription(ctx, cur)
 	})
 	if err != nil {
 		return nil, m.conflict(ctx, err)

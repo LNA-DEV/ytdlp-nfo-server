@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/subscriptions"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/testutil/scenario"
@@ -763,6 +764,42 @@ func TestSubscriptionEditDuringCheck(t *testing.T) {
 	}
 	if b, _ := m.subs.logs.Read(id); len(b) != 0 {
 		t.Fatalf("check log of the deleted subscription:\n%s", b)
+	}
+}
+
+// An edit that read the subscription before a check committed doesn't
+// overwrite what the check recorded: the backlog choice is applied once.
+func TestSubscriptionEditKeepsCheckState(t *testing.T) {
+	sc := &scenario.Scenario{}
+	channel(sc, 6, newest(1, 6))
+	pl := sc.Playlists["chan"]
+	pl.Probe = []scenario.Behavior{{SleepMs: 300}, {}}
+	sc.Playlists["chan"] = pl
+	w := newWorld(t, sc)
+	m := w.startSubs()
+	ctx := context.Background()
+	start := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("Chan"), Sources: []SourceInput{{URL: chanVideos}},
+		Backlog: &store.BacklogChoice{Mode: store.BacklogLatest, N: 2}}))
+	waitFor(t, func() bool { return m.subs.loop.Running(id) })
+	// The first check commits while the edit is between reading and writing.
+	defer failpoint.SetHook(func(name string) error {
+		if name == "subscription:edit" {
+			w.waitChecked(id, start)
+		}
+		return nil
+	})()
+	notify := true
+	if _, err := m.UpdateSubscription(ctx, id, SubscriptionInput{Notify: &notify}); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := m.Store.GetSubscription(ctx, id)
+	if err != nil || sub.Backlog.Pending() || !sub.Notify || !sub.NextCheckAt.After(time.Now().Add(time.Hour)) {
+		t.Fatalf("the edit overwrote the check state: %+v %v", sub, err)
+	}
+	w.checkNow(id)
+	if jobs := w.subJobs(id); len(jobs) != 1 || itemKeys(w.items(jobs[0].ID)) != "v5,v6" {
+		t.Fatalf("the backlog choice must be applied once: %+v", jobs)
 	}
 }
 
