@@ -834,6 +834,33 @@ func TestSubscriptionEditUnnamed(t *testing.T) {
 	}
 }
 
+// §5.4 extractor_broken: the next check lists with the latest nightly once
+// per breakage; after a listing with the resolved version, a later breakage
+// tries it again.
+func TestSubscriptionNightlyOncePerBreakage(t *testing.T) {
+	const nightly = "2026.10.10.1"
+	sc := &scenario.Scenario{}
+	channel(sc, 1, newest(1, 1))
+	pl := sc.Playlists["chan"]
+	pl.Probe = []scenario.Behavior{{}, {RequireVersion: nightly}, {RequireVersion: nightly}, {}, {RequireVersion: nightly}}
+	sc.Playlists["chan"] = pl
+	w := newWorld(t, sc)
+	w.startSubs()
+	start := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("Chan"), Sources: []SourceInput{{URL: chanVideos}}}))
+	w.waitChecked(id, start)
+	for i, want := range []string{store.SubError, store.SubIdle, store.SubIdle, store.SubError, store.SubIdle} {
+		if sub := w.checkNow(id); sub.State != want {
+			log, _ := w.m.subs.logs.Read(id)
+			t.Fatalf("check %d: state %s, want %s\n%s", i+2, sub.State, want, log)
+		}
+	}
+	log, _ := w.m.subs.logs.Read(id)
+	if n := strings.Count(string(log), "Retrying with yt-dlp "+nightly); n != 2 {
+		t.Fatalf("nightly retries: %d, want 2\n%s", n, log)
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

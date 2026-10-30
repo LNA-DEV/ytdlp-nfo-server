@@ -193,7 +193,7 @@ Each of these queues is a new one-item job in the auto band ([§4.3](#43-how-sub
 | `blocked` | The next check uses impersonation (`any`) if a target is available. If that listing succeeds, the source keeps using impersonation (`impersonate = 1`) until the subscription's options change ([§14](#14-decisions)). Hint as in [overhaul §4.7](overhaul-concept.md#47-failure-handling-and-retries) |
 | `auth_required` | Error "Needs cookies". Checks continue with backoff |
 | `permanent` (channel removed, private playlist) | Error state, checks continue once a day. The subscription is never deleted automatically |
-| `extractor_broken` | Error plus hint. If `nightlyRetryOnBroken` is on, the next check uses the latest nightly once, as a job does ([overhaul §4.7](overhaul-concept.md#47-failure-handling-and-retries)). Later checks go back to the resolved version, which may have been updated in the meantime |
+| `extractor_broken` | Error plus hint. If `nightlyRetryOnBroken` is on, the next check uses the latest nightly once, as a job does ([overhaul §4.7](overhaul-concept.md#47-failure-handling-and-retries)). Once per breakage: after a successful listing with the resolved version, a later breakage tries the nightly again. Later checks go back to the resolved version, which may have been updated in the meantime |
 | `crash` | Error plus hint, backoff |
 | `transient`, `unknown` | Backoff |
 
