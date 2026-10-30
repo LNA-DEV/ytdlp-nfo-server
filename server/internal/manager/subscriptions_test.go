@@ -803,6 +803,37 @@ func TestSubscriptionEditKeepsCheckState(t *testing.T) {
 	}
 }
 
+// A subscription imported without a title can be paused and switched
+// before its first listing names it (the UI sends only the changed field).
+func TestSubscriptionEditUnnamed(t *testing.T) {
+	w := newWorld(t, &scenario.Scenario{})
+	m := w.startSubs()
+	ctx := context.Background()
+	if _, err := m.Settings.Update(ctx, func(s *config.Settings) error {
+		s.Subscriptions.Paused = true // no check names it
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.ImportSubscriptions(ctx, FormatURLs, scenario.PlaylistPrefix+"pl\n")
+	if err != nil || len(res.Created) != 1 {
+		t.Fatalf("import: %+v %v", res, err)
+	}
+	id := mustID(res.Created[0].ID)
+	auto, off := store.ModeAuto, false
+	for _, in := range []SubscriptionInput{{Mode: &auto}, {Enabled: &off}} {
+		if _, err := m.UpdateSubscription(ctx, id, in); err != nil {
+			t.Fatalf("edit of an unnamed subscription: %v", err)
+		}
+	}
+	if sub, _ := m.Store.GetSubscription(ctx, id); sub.Name != "" || sub.Mode != auto || sub.Enabled {
+		t.Fatalf("unnamed subscription after the edits: %+v", sub)
+	}
+	if _, err := m.UpdateSubscription(ctx, id, SubscriptionInput{Name: strp(" ")}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an empty name must be rejected: %v", err)
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

@@ -354,7 +354,9 @@ func assignInput(sub *store.Subscription, in SubscriptionInput, creating bool) (
 	if in.Name != nil {
 		sub.Name = strings.TrimSpace(*in.Name)
 	}
-	if sub.Name == "" || len(sub.Name) > 200 {
+	// A subscription imported without a title has no name until its first
+	// listing names it; changing another field keeps it that way.
+	if sub.Name == "" && (creating || in.Name != nil) || len(sub.Name) > 200 {
 		return false, false, invalid("name is required (at most 200 characters)")
 	}
 	if in.Folder != nil {
