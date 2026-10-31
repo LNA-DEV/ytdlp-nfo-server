@@ -368,6 +368,8 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 		log.Printf("Next check at %s", sub.NextCheckAt.Format("2006-01-02 15:04"))
 	}
 	m.subs.logs.Release(sub.ID)
+	// The counts of the check right away, not after the counts loop.
+	m.refreshCounts(ctx, sub.ID)
 	m.markCounts(sub.ID)
 	m.publishSub(sub.ID)
 	m.Hub.Publish(EventEntries, map[string]any{"subscription": itoa(sub.ID), "changed": len(out.Insert) + len(out.Update)})

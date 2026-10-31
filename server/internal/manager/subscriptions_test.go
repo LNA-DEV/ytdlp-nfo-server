@@ -194,7 +194,7 @@ func TestSubscriptionAutoMode(t *testing.T) {
 		t.Fatalf("inbox: %d", n)
 	}
 	log, _ := m.subs.logs.Read(id)
-	if !strings.Contains(string(log), fmt.Sprintf("Checked 1 source: 33 listed, 3 new, 2 queued (job #%d)", j.ID)) {
+	if !strings.Contains(string(log), fmt.Sprintf("Checked 1 source: 33 listed, 2 new, 1 already in the library, 2 queued (job #%d)", j.ID)) {
 		t.Fatalf("check log:\n%s", log)
 	}
 }

@@ -66,13 +66,15 @@ type Input struct {
 
 // Summary counts what a check did (for the check log).
 type Summary struct {
-	Sources  int
-	Failed   int
-	Listed   int
-	New      int // discovered after the first listing of their source
-	Backlog  int // found by a first listing
-	Filtered int
-	Gone     int
+	Sources int
+	Failed  int
+	Listed  int
+	New     int // discovered after the first listing of their source
+	Backlog int // found by a first listing or a backfill
+	// InLibrary are new entries whose media is already in the library.
+	InLibrary int
+	Filtered  int
+	Gone      int
 }
 
 // Output is the plan of a commit. Entries in Auto, Requeue and Backlog are
@@ -358,10 +360,15 @@ func Apply(in Input) *Output {
 				byKey[key] = e
 				inserted[e] = true
 				out.Insert = append(out.Insert, e)
-				if first {
+				switch {
+				case in.Archived[key]:
+					out.Summary.InLibrary++
+				case first:
 					out.Summary.Backlog++
-				} else {
+				default:
 					out.Summary.New++
+				}
+				if !first {
 					discovered = append(discovered, e)
 					newPos = append(newPos, pos)
 				}
@@ -486,7 +493,11 @@ func Apply(in Input) *Output {
 			inserted[e] = true
 			out.Insert = append(out.Insert, e)
 			out.Backfilled = append(out.Backfilled, e)
-			out.Summary.Backlog++
+			if in.Archived[key] {
+				out.Summary.InLibrary++
+			} else {
+				out.Summary.Backlog++
+			}
 		}
 	}
 

@@ -146,9 +146,10 @@ func (r *RedditLister) Backfill(ctx context.Context, req BackfillRequest) *Backf
 		}
 		seen := map[string]bool{}
 		for _, f := range ServerFilters(req.Filters) {
-			// One more than the cap tells whether the range holds more.
+			// One more than the cap tells whether the range holds more,
+			// besides the posts loaded before that come again.
 			page, name, err := chain.List(ctx, reddit.Query{Target: t, After: b.From, Before: before, ByTime: true,
-				Limit: maxPosts + 1, URLPrefix: f.Prefix, Over18: f.Over18})
+				Limit: maxPosts + 1 + len(b.BeforeIDs), URLPrefix: f.Prefix, Over18: f.Over18})
 			if err != nil {
 				return failErr(err)
 			}
@@ -160,6 +161,9 @@ func (r *RedditLister) Backfill(ctx context.Context, req BackfillRequest) *Backf
 				}
 			}
 		}
+		if len(b.BeforeIDs) > 0 {
+			posts = slices.DeleteFunc(posts, func(p reddit.Post) bool { return slices.Contains(b.BeforeIDs, p.ID) })
+		}
 		sort.SliceStable(posts, func(i, j int) bool { return posts[i].Created.After(posts[j].Created) })
 		switch {
 		case b.Kind == store.BackfillRangeTop && len(posts) > maxPosts:
@@ -169,10 +173,19 @@ func (r *RedditLister) Backfill(ctx context.Context, req BackfillRequest) *Backf
 			sort.SliceStable(posts, func(i, j int) bool { return posts[i].Score > posts[j].Score })
 			posts = posts[:min(len(posts), max(b.N, 1))]
 		case len(posts) > maxPosts:
-			// Stop at the cap; Continue resumes before the oldest post
-			// loaded (the posts of its second come again and are known).
+			// Stop at the cap; Continue resumes with the second of the
+			// oldest post loaded, without the posts of it loaded so far.
 			posts = posts[:maxPosts]
 			next.Before, next.Pending, done = posts[len(posts)-1].Created, false, false
+			next.BeforeIDs = nil
+			if next.Before.Equal(b.Before) {
+				next.BeforeIDs = slices.Clone(b.BeforeIDs)
+			}
+			for _, p := range posts {
+				if p.Created.Equal(next.Before) {
+					next.BeforeIDs = append(next.BeforeIDs, p.ID)
+				}
+			}
 			if next.Total == 0 {
 				next.Total = countRange(ctx, chain, t, b, req.Filters, log.logf)
 			}
@@ -217,16 +230,21 @@ func BackfillDesc(b *store.Backfill) string {
 		}
 		return t.UTC().Format("2006-01-02")
 	}
-	switch b.Kind {
-	case store.BackfillTop:
+	if b.Kind == store.BackfillTop {
 		if b.Period == "all" {
 			return fmt.Sprintf("top %d of all time", b.N)
 		}
 		return fmt.Sprintf("top %d of the %s", b.N, b.Period)
-	case store.BackfillRangeTop:
-		return fmt.Sprintf("top %d of %s – %s", b.N, day(b.From, "the beginning"), day(b.To, "now"))
 	}
-	return fmt.Sprintf("posts of %s – %s", day(b.From, "the beginning"), day(b.To, "now"))
+	// To is the end of the last day.
+	to := "now"
+	if !b.To.IsZero() {
+		to = day(b.To.AddDate(0, 0, -1), "")
+	}
+	if b.Kind == store.BackfillRangeTop {
+		return fmt.Sprintf("top %d of %s – %s", b.N, day(b.From, "the beginning"), to)
+	}
+	return fmt.Sprintf("posts of %s – %s", day(b.From, "the beginning"), to)
 }
 
 // runBackfill runs a pending backfill of a subscription after its normal

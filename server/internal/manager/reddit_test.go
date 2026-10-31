@@ -507,6 +507,9 @@ func TestRedditBackfillRange(t *testing.T) {
 	if v.Backfill != nil {
 		t.Fatalf("not done: %+v", v.Backfill)
 	}
+	if log, _ := w.m.subs.logs.Read(id); !strings.Contains(string(log), "Listed 30 older posts via arcticshift\n") {
+		t.Fatalf("the oldest post of the first run came again:\n%s", log)
+	}
 	// 25 from the first listing (with text and video posts) and the other
 	// 130 - (images and galleries among them) older ones; no text post
 	// was transferred, nothing twice.

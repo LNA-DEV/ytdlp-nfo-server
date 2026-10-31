@@ -537,6 +537,9 @@ func SummaryLine(s Summary, queued int, jobIDs []int64) string {
 	if s.Backlog > 0 {
 		fmt.Fprintf(&b, ", %d backlog", s.Backlog)
 	}
+	if s.InLibrary > 0 {
+		fmt.Fprintf(&b, ", %d already in the library", s.InLibrary)
+	}
 	if queued > 0 {
 		var ids []string
 		for _, id := range jobIDs {

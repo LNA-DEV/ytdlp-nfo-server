@@ -167,9 +167,12 @@ type Backfill struct {
 	// waits for Continue, which resumes before the oldest post loaded.
 	Pending bool      `json:"pending"`
 	Before  time.Time `json:"before,omitempty"`
-	Loaded  int       `json:"loaded,omitempty"`
-	Total   int       `json:"total,omitempty"` // about, from the count; 0 = unknown
-	Error   string    `json:"error,omitempty"` // the last run failed
+	// BeforeIDs are the posts of Before's second that were loaded: Continue
+	// lists that second again and skips them.
+	BeforeIDs []string `json:"beforeIds,omitempty"`
+	Loaded    int      `json:"loaded,omitempty"`
+	Total     int      `json:"total,omitempty"` // about, from the count; 0 = unknown
+	Error     string   `json:"error,omitempty"` // the last run failed
 	// Failures counts the runs in a row that failed for a while; the next
 	// check comes sooner than the regular one (Reddit concept §7.7).
 	Failures int `json:"failures,omitempty"`
