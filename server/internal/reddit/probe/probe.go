@@ -105,7 +105,7 @@ func Main(args []string, stdout io.Writer) int {
 	}
 	arc := arcticshift.New(c)
 	if testDial != nil {
-		nat.PageDelay, arc.MinInterval = nil, 0
+		nat.PageDelay, nat.MinGap, arc.MinInterval = nil, 0, 0
 	}
 	var providers []reddit.Provider
 	switch *provider {

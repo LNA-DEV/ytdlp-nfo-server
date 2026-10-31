@@ -35,7 +35,7 @@ func newProvider(t *testing.T, fake *fakereddit.Server) *Provider {
 	}
 	t.Cleanup(c.Close)
 	p := New(c)
-	p.PageDelay = nil
+	p.PageDelay, p.MinGap = nil, 0
 	return p
 }
 
@@ -352,5 +352,57 @@ func TestQuarantine(t *testing.T) {
 	tg, _ = reddit.Parse("https://www.reddit.com/r/gated/")
 	if _, err := p.List(ctx, reddit.Query{Target: tg, Limit: 10}); reddit.AsError(err).Class != ytdlp.ClassAuthRequired {
 		t.Fatalf("quarantined: %v", err)
+	}
+}
+
+// Through a chain, native notes its steps in the chain's log: the pages
+// of a listing, a script redirect and an answered check. Page loads keep
+// MinGap apart, also across requests.
+func TestStepsAndGap(t *testing.T) {
+	fake := fakereddit.New(t)
+	fake.Handle("www.reddit.com", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Query().Get("solution") == "ok":
+			w.Write(fixture(t, "post_video.html"))
+		case r.URL.Path == "/r/videos/comments/vid2/":
+			w.Write(fakereddit.ShellPage("/r/videos/comments/vid2/clip/"))
+		case r.URL.Path == "/r/videos/comments/vid2/clip/":
+			w.Write(fakereddit.ChallengePage("seed", "token", r.URL.Path))
+		case r.URL.Path == "/r/EarthPorn/new/":
+			w.Write(fixture(t, "listing.html"))
+		case strings.HasPrefix(r.URL.Path, "/svc/shreddit/community-more-posts/new/") && r.URL.Query().Get("after") == "dDNfbG5rMQ==":
+			w.Write(fixture(t, "more.html"))
+		case strings.HasPrefix(r.URL.Path, "/svc/shreddit/"):
+			w.Write([]byte(""))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	p := newProvider(t, fake)
+	p.Solve = func(_ context.Context, _ []byte, u *url.URL) (string, error) {
+		return u.String() + "?solution=ok", nil
+	}
+	p.MinGap = 40 * time.Millisecond
+	var lines []string
+	chain := &reddit.Chain{Providers: []reddit.Provider{p}, Logf: func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }}
+	start := time.Now()
+	if _, _, err := chain.Post(context.Background(), "vid2", "videos"); err != nil {
+		t.Fatal(err)
+	}
+	tg, _ := reddit.Parse("https://www.reddit.com/r/EarthPorn/")
+	if _, _, err := chain.List(context.Background(), reddit.Query{Target: tg, Limit: 100}); err != nil {
+		t.Fatal(err)
+	}
+	log := strings.Join(lines, "\n")
+	for _, want := range []string{"native: /r/videos/comments/vid2/ redirects to /r/videos/comments/vid2/clip/",
+		"native: answered Reddit's JavaScript check", "native: page 1, ", "native: page 2, "} {
+		if !strings.Contains(log, want) {
+			t.Errorf("%q missing:\n%s", want, log)
+		}
+	}
+	// 2 loads of the post (the answer to the check is part of the
+	// second), 3 of the listing: 4 gaps.
+	if d := time.Since(start); d < 4*p.MinGap {
+		t.Fatalf("5 page loads in %v", d)
 	}
 }

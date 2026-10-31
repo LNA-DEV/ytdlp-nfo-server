@@ -26,12 +26,16 @@ type Provider struct {
 	// PageDelay is the pause between two pages of one listing (2–5 s,
 	// random, §5.1). Tests set it to zero.
 	PageDelay func() time.Duration
+	// MinGap is the least time between two page loads, also of different
+	// requests (the posts of a job, §5.1). Tests set it to zero.
+	MinGap time.Duration
 	// Solve answers a JavaScript check page and returns the URL its form
 	// submits to (package jschallenge); nil, or ErrNoAnswer, leaves such
 	// pages blocked.
 	Solve func(ctx context.Context, page []byte, pageURL *url.URL) (string, error)
 
-	mu sync.Mutex
+	mu   sync.Mutex
+	last time.Time // when the last page load started
 	// spelling maps lower-cased subreddit names to their own spelling:
 	// Reddit renders a feed only for that one (§5.3).
 	spelling map[string]string
@@ -43,9 +47,18 @@ var ErrNoAnswer = errors.New("checks are not answered")
 
 // New creates the provider.
 func New(c *browser.Client) *Provider {
-	return &Provider{Client: c, PageDelay: func() time.Duration {
+	return &Provider{Client: c, MinGap: 2 * time.Second, PageDelay: func() time.Duration {
 		return 2*time.Second + time.Duration(rand.Int64N(int64(3*time.Second)))
 	}}
+}
+
+// pace waits until MinGap has passed since the last page load.
+func (p *Provider) pace(ctx context.Context) error {
+	p.mu.Lock()
+	wait := max(time.Until(p.last.Add(p.MinGap)), 0)
+	p.last = time.Now().Add(wait)
+	p.mu.Unlock()
+	return sleep(ctx, func() time.Duration { return wait })
 }
 
 // Name implements reddit.Provider.
@@ -153,8 +166,10 @@ func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, erro
 		var err error
 		if n == 0 {
 			resp, u, pg, err = p.load(ctx, next, func(pg page) bool { return pg.feed || len(pg.posts) > 0 })
-		} else if resp, err = p.Client.Partial(ctx, next, referer, MaxPage); err == nil {
-			u, pg = parsed(resp, next)
+		} else if err = p.pace(ctx); err == nil {
+			if resp, err = p.Client.Partial(ctx, next, referer, MaxPage); err == nil {
+				u, pg = parsed(resp, next)
+			}
 		}
 		if err != nil {
 			return nil, transport(err)
@@ -195,6 +210,7 @@ func (p *Provider) List(ctx context.Context, q reddit.Query) (*reddit.Page, erro
 			out.Posts = append(out.Posts, ps)
 			added++
 		}
+		reddit.Logf(ctx, "native: page %d, %d new posts", n+1, added)
 		if len(out.Posts) >= limit {
 			out.Posts = out.Posts[:limit]
 			break
@@ -267,6 +283,7 @@ func (p *Provider) load(ctx context.Context, u string, done func(page) bool) (*b
 	if err != nil || target.Scheme != "https" || !strings.EqualFold(target.Host, base.Host) || target.String() == base.String() {
 		return resp, base, pg, nil
 	}
+	reddit.Logf(ctx, "native: %s redirects to %s", base.Path, target.Path)
 	if resp, err = p.document(ctx, target.String(), base.String()); err != nil {
 		return nil, nil, page{}, err
 	}
@@ -299,6 +316,9 @@ func subredditOf(pg page, u *url.URL) string {
 // answered once if Solve is set; the page that follows is classified as
 // usual, and another check there counts as blocked.
 func (p *Provider) document(ctx context.Context, u, referer string) (*browser.Response, error) {
+	if err := p.pace(ctx); err != nil {
+		return nil, err
+	}
 	resp, err := p.Client.Document(ctx, u, referer, MaxPage)
 	if err != nil || p.Solve == nil || !isChallenge(resp.Body) {
 		return resp, err
@@ -319,6 +339,7 @@ func (p *Provider) document(ctx context.Context, u, referer string) (*browser.Re
 		return nil, &reddit.Error{Class: ytdlp.ClassBlocked, Reason: "Reddit's JavaScript check could not be answered: " + err.Error(),
 			Hint: reddit.HintChallengeFailed}
 	}
+	reddit.Logf(ctx, "native: answered Reddit's JavaScript check")
 	resp, err = p.Client.Document(ctx, submit, pageURL.String(), MaxPage)
 	if err == nil && isChallenge(resp.Body) {
 		p.Client.Jar().Reset()

@@ -163,11 +163,24 @@ func (c *Chain) logf(format string, args ...any) {
 	}
 }
 
+type logKey struct{}
+
+// Logf writes a line to the log of the chain that called the provider
+// (the job or check log); providers note their steps with it.
+func Logf(ctx context.Context, format string, args ...any) {
+	if f, ok := ctx.Value(logKey{}).(func(string, ...any)); ok {
+		f(format, args...)
+	}
+}
+
 // run calls fn for each provider until one succeeds or an error doesn't
 // fall through. It returns the name of the provider that answered.
-func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Error) {
+func (c *Chain) run(ctx context.Context, fn func(context.Context, Provider) error) (string, *Error) {
 	if len(c.Providers) == 0 {
 		return "", &Error{Class: ytdlp.ClassPermanent, Reason: "no Reddit provider enabled", Hint: HintNoProviders}
+	}
+	if c.Logf != nil {
+		ctx = context.WithValue(ctx, logKey{}, c.Logf)
 	}
 	var first *Error
 	var tried []string
@@ -200,7 +213,7 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 				continue
 			}
 		}
-		err := fn(p)
+		err := fn(ctx, p)
 		if err == nil {
 			return p.Name(), nil
 		}
@@ -263,7 +276,7 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 // List lists through the chain.
 func (c *Chain) List(ctx context.Context, q Query) (*Page, string, *Error) {
 	var page *Page
-	name, err := c.run(ctx, func(p Provider) error {
+	name, err := c.run(ctx, func(ctx context.Context, p Provider) error {
 		pg, err := p.List(ctx, q)
 		if err == nil {
 			page = pg
@@ -277,7 +290,7 @@ func (c *Chain) List(ctx context.Context, q Query) (*Page, string, *Error) {
 // of the chain that can.
 func (c *Chain) Count(ctx context.Context, q Query) ([]YearCount, string, *Error) {
 	var out []YearCount
-	name, err := c.run(ctx, func(p Provider) error {
+	name, err := c.run(ctx, func(ctx context.Context, p Provider) error {
 		cn, ok := p.(Counter)
 		if !ok {
 			return &Error{Class: ytdlp.ClassPermanent, Reason: p.Name() + " can't count posts", Unsupported: true}
@@ -294,7 +307,7 @@ func (c *Chain) Count(ctx context.Context, q Query) ([]YearCount, string, *Error
 // Post fetches one post through the chain.
 func (c *Chain) Post(ctx context.Context, id, subreddit string) (*Post, string, *Error) {
 	var post *Post
-	name, err := c.run(ctx, func(p Provider) error {
+	name, err := c.run(ctx, func(ctx context.Context, p Provider) error {
 		ps, err := p.Post(ctx, id, subreddit)
 		if err == nil {
 			post = ps

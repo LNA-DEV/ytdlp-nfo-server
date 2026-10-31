@@ -74,7 +74,7 @@ func (m *Manager) redditProviders() map[string]reddit.Provider {
 		}
 		r.arctic = arcticshift.New(c)
 		if r.testOpts != nil {
-			r.arctic.MinInterval = 0
+			r.native.MinGap, r.arctic.MinInterval = 0, 0
 		}
 	}
 	if r.testOpts != nil {

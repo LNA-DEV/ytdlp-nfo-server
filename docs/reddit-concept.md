@@ -114,7 +114,7 @@ The next-page requests are what third parties observed for `/new`. `reddit-probe
 | Headers | In Chrome's order: `User-Agent`, `sec-ch-ua`, `sec-ch-ua-mobile`, `sec-ch-ua-platform`, `Accept`, `Accept-Encoding`, `Accept-Language`, `Sec-Fetch-Site`, `Sec-Fetch-Mode`, `Sec-Fetch-Dest`, `Sec-Fetch-User`, `Upgrade-Insecure-Requests`, `Priority`. All of them belong to the same Chrome version as the TLS profile. |
 | Navigation | The listing page as a top-level navigation (`Sec-Fetch-Mode: navigate`). Further pages as the page's script requests them (`Sec-Fetch-Mode: cors`, `Referer` = the listing page). Post pages as navigations from the listing. |
 | Cookies | One persistent cookie jar, like a returning logged-out visitor: what Reddit sets itself (`loid`, `csv`, `edgebucket`, `session_tracker`, …) plus `over18=1`. Stored in `DATA_DIR/reddit/cookies.json` (0600). It is reset after a block, and by hand with *Reset Reddit session* in Settings → Reddit (`POST /api/v1/reddit/reset`), which also ends a pause of native after a block or check. A jar that holds an answered check lets native in without answering again until Reddit lets the cookies expire. |
-| Timing | Pages of one listing 2–5 s apart (random), about as fast as a person scrolls |
+| Timing | Pages of one listing 2–5 s apart (random), about as fast as a person scrolls. Any two page loads at least 2 s apart, also of different requests (the posts of a job one after the other). |
 
 - **Library**: [`Noooste/azuretls-client`](https://github.com/Noooste/azuretls-client) (MIT). It brings Chrome's TLS and HTTP/2 fingerprints and controls the header order, and it works with the Go version the image builds with today (1.26). [`bogdanfinn/tls-client`](https://github.com/bogdanfinn/tls-client) (BSD-3) has more profiles (Chrome up to 152, Firefox, Safari) but needs Go 1.27, so the implementation uses `azuretls-client`. `reddit-probe` compares it with a plain `net/http` client.
 - **Profile updates**: the browser profile comes with the library and is updated with it. User-Agent, client hints and TLS profile always come from the same profile: a Chrome 150 User-Agent on a Chrome 131 fingerprint is more conspicuous than either alone.
@@ -130,6 +130,7 @@ The next-page requests are what third parties observed for `/new`. `reddit-probe
 - **Media**:
   - Images from `i.redd.it` use the same client and identity, with `Sec-Fetch-Dest: image` and `Referer: https://www.reddit.com/`.
   - Videos go through yt-dlp, which gets `--impersonate chrome` for `v.redd.it` from the first try when the yt-dlp build has a target (`v.redd.it` answers plain clients with 403).
+- **Log**: through the provider chain, native notes its steps in the job or check log: each page of a listing with its number of new posts, a script redirect (`/r/<sub>/comments/<id>/ redirects to …`) and an answered check.
 - **Pacing beyond one listing**: the subscription loop already allows one check per site at a time and waits `siteDelaySeconds` between checks of a site ([subscriptions §5.4](subscriptions-concept.md#54-politeness-errors-and-rate-limits)).
 - **Limits**: 5 MB per HTML document, 30 s per request, redirects only to allowlisted hosts ([§10](#10-security)).
 
