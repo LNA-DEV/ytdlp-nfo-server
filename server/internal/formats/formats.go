@@ -163,13 +163,22 @@ func Describe(formats []map[string]any, formatID string) Components {
 
 // AudioOnlySource reports whether no format of the video carries video,
 // e.g. podcasts or music. Verification then does not require a video stream.
+// Only a format known to have no video counts: yt-dlp's video_ext "none",
+// or vcodec "none". A format without codec fields is video to yt-dlp (it
+// sets video_ext from its ext), unlike in SelectAudioTracks, which keeps the
+// rule of ytdlp-nfo.
 func AudioOnlySource(formats []map[string]any) bool {
 	if len(formats) == 0 {
 		return false
 	}
 	for _, f := range formats {
-		vc, known := codec(f, "vcodec")
-		if !known || vc != "none" {
+		if ve, ok := f["video_ext"].(string); ok {
+			if ve != "none" {
+				return false
+			}
+			continue
+		}
+		if vc, ok := f["vcodec"].(string); !ok || vc != "none" {
 			return false
 		}
 	}

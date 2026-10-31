@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/subscriptions"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/testutil/scenario"
@@ -662,8 +663,12 @@ func TestSubscriptionFiltersAndForce(t *testing.T) {
 	if n := len(w.entries(id, store.EntryIgnored)); n != 3 || len(w.subJobs(id)) != 0 {
 		t.Fatalf("filtered: %d ignored, %d jobs", n, len(w.subJobs(id)))
 	}
-	if _, err := m.UpdateSubscription(ctx, id, SubscriptionInput{Filters: &store.Filters{}}); err != nil {
+	v, err := m.UpdateSubscription(ctx, id, SubscriptionInput{Filters: &store.Filters{}})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if v.Counts.New != 2 || v.Counts.Backlog != 1 || v.Counts.Ignored != 0 {
+		t.Fatalf("the response must count the re-evaluated entries: %+v", v.Counts)
 	}
 	if got := entryIDs(w.entries(id, "inbox")); got != "v3,v2" || len(w.subJobs(id)) != 0 {
 		t.Fatalf("after clearing the filters: inbox %s, %d jobs", got, len(w.subJobs(id)))
@@ -674,7 +679,7 @@ func TestSubscriptionFiltersAndForce(t *testing.T) {
 	if res, _ := m.DownloadEntries(ctx, DownloadEntriesRequest{IDs: []string{lib[0].ID}}); res.Skipped != 1 {
 		t.Fatal("an entry in the library was downloaded again without force")
 	}
-	res, err := m.DownloadEntries(ctx, DownloadEntriesRequest{IDs: []string{lib[0].ID}, Force: true})
+	res, err = m.DownloadEntries(ctx, DownloadEntriesRequest{IDs: []string{lib[0].ID}, Force: true})
 	if err != nil || len(res.Jobs) != 1 || !res.Jobs[0].Options.Force {
 		t.Fatalf("force: %+v %v", res, err)
 	}
@@ -764,6 +769,139 @@ func TestSubscriptionEditDuringCheck(t *testing.T) {
 	if b, _ := m.subs.logs.Read(id); len(b) != 0 {
 		t.Fatalf("check log of the deleted subscription:\n%s", b)
 	}
+}
+
+// An edit that read the subscription before a check committed doesn't
+// overwrite what the check recorded: the backlog choice is applied once.
+func TestSubscriptionEditKeepsCheckState(t *testing.T) {
+	sc := &scenario.Scenario{}
+	channel(sc, 6, newest(1, 6))
+	pl := sc.Playlists["chan"]
+	pl.Probe = []scenario.Behavior{{SleepMs: 300}, {}}
+	sc.Playlists["chan"] = pl
+	w := newWorld(t, sc)
+	m := w.startSubs()
+	ctx := context.Background()
+	start := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("Chan"), Sources: []SourceInput{{URL: chanVideos}},
+		Backlog: &store.BacklogChoice{Mode: store.BacklogLatest, N: 2}}))
+	waitFor(t, func() bool { return m.subs.loop.Running(id) })
+	// The first check commits while the edit is between reading and writing.
+	defer failpoint.SetHook(func(name string) error {
+		if name == "subscription:edit" {
+			w.waitChecked(id, start)
+		}
+		return nil
+	})()
+	notify := true
+	if _, err := m.UpdateSubscription(ctx, id, SubscriptionInput{Notify: &notify}); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := m.Store.GetSubscription(ctx, id)
+	if err != nil || sub.Backlog.Pending() || !sub.Notify || !sub.NextCheckAt.After(time.Now().Add(time.Hour)) {
+		t.Fatalf("the edit overwrote the check state: %+v %v", sub, err)
+	}
+	w.checkNow(id)
+	if jobs := w.subJobs(id); len(jobs) != 1 || itemKeys(w.items(jobs[0].ID)) != "v5,v6" {
+		t.Fatalf("the backlog choice must be applied once: %+v", jobs)
+	}
+}
+
+// A subscription imported without a title can be paused and switched
+// before its first listing names it (the UI sends only the changed field).
+func TestSubscriptionEditUnnamed(t *testing.T) {
+	w := newWorld(t, &scenario.Scenario{})
+	m := w.startSubs()
+	ctx := context.Background()
+	if _, err := m.Settings.Update(ctx, func(s *config.Settings) error {
+		s.Subscriptions.Paused = true // no check names it
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.ImportSubscriptions(ctx, FormatURLs, scenario.PlaylistPrefix+"pl\n")
+	if err != nil || len(res.Created) != 1 {
+		t.Fatalf("import: %+v %v", res, err)
+	}
+	id := mustID(res.Created[0].ID)
+	auto, off := store.ModeAuto, false
+	for _, in := range []SubscriptionInput{{Mode: &auto}, {Enabled: &off}} {
+		if _, err := m.UpdateSubscription(ctx, id, in); err != nil {
+			t.Fatalf("edit of an unnamed subscription: %v", err)
+		}
+	}
+	if sub, _ := m.Store.GetSubscription(ctx, id); sub.Name != "" || sub.Mode != auto || sub.Enabled {
+		t.Fatalf("unnamed subscription after the edits: %+v", sub)
+	}
+	if _, err := m.UpdateSubscription(ctx, id, SubscriptionInput{Name: strp(" ")}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("an empty name must be rejected: %v", err)
+	}
+}
+
+// §5.4 extractor_broken: the next check lists with the latest nightly once
+// per breakage; after a listing with the resolved version, a later breakage
+// tries it again.
+func TestSubscriptionNightlyOncePerBreakage(t *testing.T) {
+	const nightly = "2026.10.10.1"
+	sc := &scenario.Scenario{}
+	channel(sc, 1, newest(1, 1))
+	pl := sc.Playlists["chan"]
+	pl.Probe = []scenario.Behavior{{}, {RequireVersion: nightly}, {RequireVersion: nightly}, {}, {RequireVersion: nightly}}
+	sc.Playlists["chan"] = pl
+	w := newWorld(t, sc)
+	w.startSubs()
+	start := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("Chan"), Sources: []SourceInput{{URL: chanVideos}}}))
+	w.waitChecked(id, start)
+	for i, want := range []string{store.SubError, store.SubIdle, store.SubIdle, store.SubError, store.SubIdle} {
+		if sub := w.checkNow(id); sub.State != want {
+			log, _ := w.m.subs.logs.Read(id)
+			t.Fatalf("check %d: state %s, want %s\n%s", i+2, sub.State, want, log)
+		}
+	}
+	log, _ := w.m.subs.logs.Read(id)
+	if n := strings.Count(string(log), "Retrying with yt-dlp "+nightly); n != 2 {
+		t.Fatalf("nightly retries: %d, want 2\n%s", n, log)
+	}
+}
+
+// An extractor that lists complete metadata reports the media URL of each
+// entry in "url": items download the video page instead, so they get the
+// video's archive key and metadata (a pasted playlist and a subscription).
+func TestResolvedListingDownloadsPages(t *testing.T) {
+	sc := &scenario.Scenario{Videos: map[string]scenario.Video{}, Playlists: map[string]scenario.Playlist{
+		"res":  {ID: "res", Title: "Res", Entries: []string{"r1", "r2"}, Resolved: true},
+		"res2": {ID: "res2", Title: "Res 2", Entries: []string{"r3", "r4"}, Resolved: true},
+	}}
+	for _, id := range []string{"r1", "r2", "r3", "r4"} {
+		sc.Videos[id] = vid(id, "Video "+id)
+	}
+	w := newWorld(t, sc)
+	w.startSubs()
+	check := func(what string, j *store.Job) {
+		t.Helper()
+		its := w.items(j.ID)
+		if j.State != store.JobCompleted || len(its) != 2 {
+			t.Fatalf("%s: %s with %d items\n%s", what, j.State, len(its), w.log(j.ID))
+		}
+		for _, it := range its {
+			if it.URL != scenario.VideoPrefix+it.VideoID || it.ArchiveKey != "fake "+it.VideoID {
+				t.Fatalf("%s: item %+v", what, it)
+			}
+		}
+	}
+	j := w.submit(scenario.PlaylistPrefix+"res", config.OptionsRequest{})
+	check("playlist job", w.wait(j.ID, store.JobCompleted, store.JobPartial, store.JobFailed))
+
+	start := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("Res"), Backlog: &store.BacklogChoice{Mode: store.BacklogAll},
+		Sources: []SourceInput{{URL: scenario.PlaylistPrefix + "res2"}}}))
+	w.waitChecked(id, start)
+	jobs := w.subJobs(id)
+	if len(jobs) != 1 {
+		t.Fatalf("backlog jobs: %d", len(jobs))
+	}
+	check("subscription job", w.wait(jobs[0].ID, store.JobCompleted, store.JobPartial, store.JobFailed))
 }
 
 func waitFor(t *testing.T, cond func() bool) {

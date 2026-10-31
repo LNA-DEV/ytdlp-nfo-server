@@ -75,7 +75,15 @@ func TestDescribe(t *testing.T) {
 	if AudioOnlySource(f) {
 		t.Fatal("has video")
 	}
-	if !AudioOnlySource(parse(t, `[{"format_id":"a","vcodec":"none"}]`)) {
+	if !AudioOnlySource(parse(t, `[{"format_id":"a","vcodec":"none"}]`)) ||
+		!AudioOnlySource(parse(t, `[{"format_id":"a","ext":"m4a","video_ext":"none","audio_ext":"m4a"}]`)) {
 		t.Fatal("audio only")
+	}
+	// Formats without codec fields (sites that only list a file per
+	// quality): video to yt-dlp, so not audio only.
+	for _, fs := range []string{`[{"format_id":"hd","ext":"mp4","video_ext":"mp4","audio_ext":"none"}]`, `[{"format_id":"hd","ext":"mp4"}]`} {
+		if AudioOnlySource(parse(t, fs)) {
+			t.Fatalf("no codec fields counted as audio only: %s", fs)
+		}
 	}
 }

@@ -70,6 +70,11 @@ type Playlist struct {
 	Uploader     string     `json:"uploader,omitempty"`
 	Count        int        `json:"count,omitempty"` // reported playlist_count
 	Probe        []Behavior `json:"probe,omitempty"`
+
+	// Resolved lists complete video entries instead of url entries, as
+	// extractors do that get all metadata from one API call: yt-dlp then
+	// reports the media URL in "url" and the page in webpage_url.
+	Resolved bool `json:"resolved,omitempty"`
 }
 
 // Scenario is the whole fake world.

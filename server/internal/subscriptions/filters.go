@@ -69,7 +69,7 @@ func CompileFilters(f store.Filters) (*Filter, error) {
 func (c *Filter) Active() bool { return c != nil && c.isActive }
 
 // Reason returns why an entry is filtered out ("" if it passes). Filters
-// use listing data only: an unknown duration or upload date passes.
+// use listing data only: an unknown duration, upload date or title passes.
 func (c *Filter) Reason(e *store.Entry) string {
 	if !c.Active() {
 		return ""
@@ -80,9 +80,9 @@ func (c *Filter) Reason(e *store.Entry) string {
 		return FilterPrefix + "shorter than " + clock(f.MinDuration)
 	case f.MaxDuration > 0 && e.Duration > 0 && e.Duration > f.MaxDuration:
 		return FilterPrefix + "longer than " + clock(f.MaxDuration)
-	case c.include != nil && !c.include.MatchString(e.Title):
+	case c.include != nil && e.Title != "" && !c.include.MatchString(e.Title):
 		return FilterPrefix + "title does not match " + quote(f.TitleInclude)
-	case c.exclude != nil && c.exclude.MatchString(e.Title):
+	case c.exclude != nil && e.Title != "" && c.exclude.MatchString(e.Title):
 		return FilterPrefix + "title matches " + quote(f.TitleExclude)
 	case f.PublishedAfter != "" && e.UploadDate != "" && e.UploadDate < f.PublishedAfter:
 		return FilterPrefix + "published before " + f.PublishedAfter[:4] + "-" + f.PublishedAfter[4:6] + "-" + f.PublishedAfter[6:]
@@ -90,9 +90,11 @@ func (c *Filter) Reason(e *store.Entry) string {
 	return ""
 }
 
+// quote shortens a pattern to 40 characters (not bytes, so no character
+// is cut in half) and quotes it.
 func quote(s string) string {
-	if len(s) > 40 {
-		s = s[:40] + "…"
+	if r := []rune(s); len(r) > 40 {
+		s = string(r[:40]) + "…"
 	}
 	return `"` + s + `"`
 }

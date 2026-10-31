@@ -286,6 +286,13 @@ func (l *Loop) check(ctx context.Context, sub *store.Subscription, opts config.O
 			l.abort(sub.ID)
 			return
 		}
+		if r.Err == nil && !r.Nightly {
+			// Listed with the resolved version again: if the extractor
+			// breaks later, the next check tries the nightly once more.
+			l.mu.Lock()
+			delete(l.nightlyTried, src.ID)
+			l.mu.Unlock()
+		}
 		if r.Err != nil && r.Err.Class == ytdlp.ClassRateLimited {
 			res.Cooldown = l.d.Now().Add(time.Duration(settings.RateLimitCooldownMinutes) * time.Minute)
 			l.d.Host.SetCooldown(site, res.Cooldown)

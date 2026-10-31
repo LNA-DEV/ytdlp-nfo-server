@@ -306,7 +306,15 @@ func querySubs(ctx context.Context, q querier, where string, args ...any) ([]*Su
 	if err := rows.Err(); err != nil || len(subs) == 0 {
 		return subs, err
 	}
-	srcs, err := querySources(ctx, q, `ORDER BY id`)
+	// Only the sources of these subscriptions (all of them for a long list).
+	srcWhere, srcArgs := `ORDER BY id`, []any(nil)
+	if len(subs) <= 500 {
+		for _, sub := range subs {
+			srcArgs = append(srcArgs, sub.ID)
+		}
+		srcWhere = `WHERE subscription_id IN (` + placeholders(len(subs)) + `) ORDER BY id`
+	}
+	srcs, err := querySources(ctx, q, srcWhere, srcArgs...)
 	if err != nil {
 		return nil, err
 	}

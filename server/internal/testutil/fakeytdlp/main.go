@@ -202,6 +202,10 @@ func playlistJSON(sc *scenario.Scenario, pl scenario.Playlist, ids []string) map
 			v = scenario.Video{ID: id, Title: id}
 		}
 		e := map[string]any{"_type": "url", "ie_key": "Fake", "id": id, "url": scenario.VideoPrefix + id, "title": v.Title}
+		if pl.Resolved {
+			e = map[string]any{"id": id, "extractor_key": "Fake", "title": v.Title, "webpage_url": scenario.VideoPrefix + id,
+				"url": "https://fake.test/media/" + id + ".mp4", "format_id": "hd", "ext": "mp4"}
+		}
 		if v.Duration > 0 {
 			e["duration"] = v.Duration
 		}

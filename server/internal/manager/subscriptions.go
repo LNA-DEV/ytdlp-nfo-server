@@ -561,7 +561,6 @@ func (m *Manager) recount() {
 		return
 	}
 	p := m.statusParams()
-	var ids []int64
 	if all {
 		counts, err := m.Store.CountEntries(m.ctx, 0, p)
 		if err != nil {
@@ -570,10 +569,6 @@ func (m *Manager) recount() {
 		m.mu.Lock()
 		m.subs.counts = counts
 		m.mu.Unlock()
-		subs, _ := m.Store.ListSubscriptions(m.ctx)
-		for _, s := range subs {
-			ids = append(ids, s.ID)
-		}
 	} else {
 		for id := range dirty {
 			c, err := m.Store.CountEntries(m.ctx, id, p)
@@ -583,13 +578,31 @@ func (m *Manager) recount() {
 			m.mu.Lock()
 			m.subs.counts[id] = c[id]
 			m.mu.Unlock()
-			ids = append(ids, id)
 		}
 	}
-	for _, id := range ids {
-		m.publishSub(id)
+	// One listing for all views: each view compares its folder with the
+	// other subscriptions (SharedWith).
+	if subs, err := m.Store.ListSubscriptions(m.ctx); err == nil {
+		for _, s := range subs {
+			if all || dirty[s.ID] {
+				m.Hub.Publish(EventSubscription, m.subView(s, subs))
+			}
+		}
 	}
 	m.publishCounts()
+}
+
+// refreshCounts recounts the entries of one subscription now, so the
+// response to a change already shows its effect (the counts loop still
+// publishes it).
+func (m *Manager) refreshCounts(ctx context.Context, id int64) {
+	c, err := m.Store.CountEntries(ctx, id, m.statusParams())
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	m.subs.counts[id] = c[id]
+	m.mu.Unlock()
 }
 
 func (m *Manager) subCounts(id int64) store.EntryCounts {

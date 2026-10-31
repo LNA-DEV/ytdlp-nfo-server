@@ -56,6 +56,24 @@ func isHTTP(u string) bool {
 	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
 }
 
+// entryURL returns the page URL of a playlist entry. A flat "url" entry
+// names it in url. An entry the extractor resolved completely carries the
+// media URL of its best format there (yt-dlp processes it like a video even
+// with --flat-playlist); its page is webpage_url, unless that is only the
+// playlist's page, which yt-dlp fills in for entries without one.
+func entryURL(e map[string]any, playlistURL string) string {
+	u := s(e, "url")
+	if t := s(e, "_type"); t != "url" && t != "url_transparent" {
+		if w := s(e, "webpage_url", "original_url"); isHTTP(w) && w != playlistURL && w != s(e, "playlist_webpage_url") {
+			return w
+		}
+	}
+	if isHTTP(u) {
+		return u
+	}
+	return s(e, "webpage_url", "original_url")
+}
+
 // nestedPlaylist guesses whether a flat "url" entry points to another
 // playlist (channel tabs, playlists of playlists).
 func nestedPlaylist(e map[string]any) bool {
@@ -128,16 +146,12 @@ func flatten(m map[string]any, out *[]Entry, depth int) {
 			flatten(e, out, depth+1)
 			continue
 		}
-		u := s(e, "url")
-		if !isHTTP(u) {
-			u = s(e, "webpage_url", "original_url")
-		}
 		id := s(e, "id")
 		if n, ok := e["id"].(json.Number); ok && id == "" {
 			id = n.String()
 		}
 		*out = append(*out, Entry{
-			URL:          u,
+			URL:          entryURL(e, s(m, "webpage_url", "original_url")),
 			ExtractorKey: s(e, "ie_key", "extractor_key"),
 			ID:           id,
 			Title:        s(e, "title"),

@@ -114,7 +114,7 @@ func ParseListing(data []byte) (*Listing, error) {
 	t := s(m, "_type")
 	if _, hasEntries := m["entries"]; !hasEntries && t != "playlist" && t != "multi_video" {
 		l.Thumbnail = thumbnailOf(m, false)
-		l.Entries = []ListEntry{entryOf(m)}
+		l.Entries = []ListEntry{entryOf(m, "")}
 		if l.Entries[0].URL == "" {
 			l.Entries[0].URL = l.WebpageURL
 		}
@@ -128,16 +128,13 @@ func ParseListing(data []byte) (*Listing, error) {
 		if !ok || e == nil {
 			continue
 		}
-		l.Entries = append(l.Entries, entryOf(e))
+		l.Entries = append(l.Entries, entryOf(e, l.WebpageURL))
 	}
 	return l, nil
 }
 
-func entryOf(e map[string]any) ListEntry {
-	u := s(e, "url")
-	if !isHTTP(u) {
-		u = s(e, "webpage_url", "original_url")
-	}
+func entryOf(e map[string]any, listingURL string) ListEntry {
+	u := entryURL(e, listingURL)
 	id := s(e, "id")
 	if n, ok := e["id"].(json.Number); ok && id == "" {
 		id = n.String()
