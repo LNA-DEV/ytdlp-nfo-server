@@ -26,6 +26,7 @@ type Store struct {
 	db     *sql.DB
 	path   string
 	memory bool
+	hashes hashList // dHashes of the media index
 }
 
 // Open opens (and migrates) the database at path. An empty path opens a
@@ -290,6 +291,39 @@ UPDATE subscription_sources SET newest_first = 1, order_known = 1 WHERE tab != '
 	// 5: a requested full rescan survives a restart (subscriptions concept §5.4)
 	`
 ALTER TABLE subscriptions ADD COLUMN full_requested INTEGER NOT NULL DEFAULT 0;
+`,
+	// 6: Reddit sources: the provider chain of a subscription, the media
+	// kind and NSFW flag of an entry (Reddit concept §9)
+	`
+ALTER TABLE subscriptions ADD COLUMN provider TEXT NOT NULL DEFAULT '';
+ALTER TABLE subscription_entries ADD COLUMN media_kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE subscription_entries ADD COLUMN nsfw INTEGER NOT NULL DEFAULT 0;
+`,
+	// 7: the media index of Reddit items: every file of a finalized item
+	// and the media keys of skipped duplicates (Reddit concept §7.5)
+	`
+CREATE TABLE media_index (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	archive_key TEXT NOT NULL REFERENCES archive(key) ON DELETE CASCADE,
+	media_key TEXT NOT NULL,
+	path TEXT NOT NULL,
+	sha256 TEXT NOT NULL DEFAULT '',
+	dhash INTEGER,
+	alias INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX media_index_media ON media_index(media_key);
+CREATE INDEX media_index_sha ON media_index(sha256);
+CREATE INDEX media_index_archive ON media_index(archive_key);
+`,
+	// 8: top lists as sources: N of a top source, 0 for all other sources
+	// (Reddit concept §7.7)
+	`
+ALTER TABLE subscription_sources ADD COLUMN list_limit INTEGER NOT NULL DEFAULT 0;
+`,
+	// 9: a requested backfill (loading older posts) survives a restart,
+	// with its position for Continue (Reddit concept §7.7)
+	`
+ALTER TABLE subscriptions ADD COLUMN backfill TEXT NOT NULL DEFAULT '';
 `,
 }
 

@@ -21,28 +21,37 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/manager"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/privdrop"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/jschallenge"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/probe"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp/versions"
 	"github.com/LNA-DEV/ytdlp-nfo-server/web"
 )
 
 func main() {
+	if os.Getenv(jschallenge.ChildEnv) != "" { // answering one Reddit check, nothing else
+		os.Exit(jschallenge.ChildMain(os.Stdin, os.Stdout))
+	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "healthcheck":
 			os.Exit(healthcheck())
 		case "bundle":
 			os.Exit(bundle(os.Args[2:]))
+		case "reddit-probe":
+			os.Exit(probe.Main(os.Args[2:], os.Stdout))
 		case "version", "--version", "-v":
 			fmt.Println("ytdlp-nfo-server " + buildinfo.String())
 			return
 		}
 	}
-	if err := run(); err != nil {
+	if err := run(nil); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run() error {
+// run runs the server until SIGTERM or SIGINT. tweak adjusts the manager
+// options (tests: a fake Reddit).
+func run(tweak func(*manager.Options)) error {
 	env, err := config.LoadEnv()
 	if err != nil {
 		return err
@@ -62,7 +71,11 @@ func run() error {
 		return err
 	}
 
-	m, err := manager.New(manager.Options{Env: env})
+	opts := manager.Options{Env: env}
+	if tweak != nil {
+		tweak(&opts)
+	}
+	m, err := manager.New(opts)
 	if err != nil {
 		return err
 	}

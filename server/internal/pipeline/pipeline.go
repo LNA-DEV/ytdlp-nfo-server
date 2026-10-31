@@ -18,6 +18,7 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/joblog"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/library"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
@@ -81,6 +82,7 @@ type Deps struct {
 	CacheDir    string
 	ServerInfo  string // "v2.0.0 (commit …)"
 	MetaMaxAge  time.Duration
+	Reddit      RedditAccess            // nil: Reddit post URLs go to yt-dlp
 	TweakPolicy func(*scheduler.Policy) // tests: shorter backoff
 	Now         func() time.Time
 }
@@ -122,6 +124,7 @@ type runCtx struct {
 	itemCount   int
 	lastPublish time.Time
 	impWarned   bool
+	proxy       string // set while a Reddit video is fetched
 }
 
 func (rc *runCtx) callOpts(p *Pipeline) ytdlp.CallOptions {
@@ -132,6 +135,7 @@ func (rc *runCtx) callOpts(p *Pipeline) ytdlp.CallOptions {
 		SleepRequests: rc.job.Options.SleepRequests,
 		SleepInterval: rc.job.Options.SleepInterval,
 		CacheDir:      p.d.CacheDir,
+		Proxy:         rc.proxy,
 	}
 }
 
@@ -165,6 +169,22 @@ func (p *Pipeline) saveItem(it *store.Item) {
 // JobWorkDir returns the work directory of a job.
 func JobWorkDir(env *config.Env, jobID int64) string {
 	return filepath.Join(env.WorkRoot(), strconv.FormatInt(jobID, 10))
+}
+
+// removeEmptyDirs removes the empty item work dirs of a job that keeps
+// its work for a retry (items that failed before writing anything), and
+// the job's dir if nothing is left. A retry creates them again.
+func removeEmptyDirs(jobDir string) {
+	entries, err := os.ReadDir(jobDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			os.Remove(filepath.Join(jobDir, e.Name())) // fails unless empty
+		}
+	}
+	os.Remove(jobDir)
 }
 
 // ItemWorkDir returns the work directory of an item.
@@ -244,7 +264,11 @@ func (p *Pipeline) Run(ctx context.Context, jobID int64) scheduler.Outcome {
 	if len(items) == 0 {
 		job.State = store.JobProbing
 		p.saveJob(job)
-		out, ok := p.probe(ctx, rc)
+		probe := p.probe
+		if t, ok := reddit.Parse(job.URL); ok && p.d.Reddit != nil {
+			probe = func(ctx context.Context, rc *runCtx) (scheduler.Outcome, bool) { return p.redditPlan(ctx, rc, t) }
+		}
+		out, ok := probe(ctx, rc)
 		if !ok {
 			return out
 		}
@@ -566,7 +590,7 @@ func (p *Pipeline) newItems(rc *runCtx, entries []ytdlp.Entry, startIndex int, p
 }
 
 func (p *Pipeline) inArchive(key string) bool {
-	ok, _ := p.d.Store.HasArchive(bg, key)
+	ok, _ := p.d.Store.InLibrary(bg, key)
 	return ok
 }
 
@@ -724,6 +748,9 @@ func (p *Pipeline) finishJob(rc *runCtx, items []*store.Item) scheduler.Outcome 
 	msg := fmt.Sprintf("=== Job %s: %d done, %d already in library, %d failed ===", job.State, done, skipped, failed)
 	if job.Hint != "" && job.State == store.JobCompleted {
 		msg = fmt.Sprintf("=== Job completed: %s ===", job.Hint)
+	}
+	if job.State != store.JobCompleted {
+		removeEmptyDirs(JobWorkDir(p.d.Env, job.ID)) // before the job shows as finished
 	}
 	rc.log.Line(msg)
 	p.saveJob(job)

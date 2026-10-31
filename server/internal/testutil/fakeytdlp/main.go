@@ -176,6 +176,9 @@ func videoJSON(v scenario.Video) map[string]any {
 	if v.ChannelURL != "" {
 		m["channel_url"] = v.ChannelURL
 	}
+	if v.ExtractorKey != "" {
+		m["extractor_key"], m["extractor"] = v.ExtractorKey, strings.ToLower(v.ExtractorKey)
+	}
 	if v.SizeBytes > 0 {
 		m["filesize_approx"] = v.SizeBytes
 	}

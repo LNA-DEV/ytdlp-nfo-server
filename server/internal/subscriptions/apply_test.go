@@ -125,8 +125,9 @@ func TestApplyFirstListingIsBacklogThenNewAreQueued(t *testing.T) {
 
 	// Second check (windowed): 2 new videos, one already in the archive.
 	out = w.check(map[string]bool{"fake v33": true}, ok(1, false, listing(append([]string{"v33", "v32", "v31"}, first[:5]...)...)))
-	if out.Summary.New != 3 || ids(out.Auto) != "v31,v32" || len(out.Update) != 5 {
-		t.Fatalf("second check: new %d auto %s update %d", out.Summary.New, ids(out.Auto), len(out.Update))
+	if out.Summary.New != 2 || out.Summary.InLibrary != 1 || ids(out.Auto) != "v31,v32" || len(out.Update) != 5 {
+		t.Fatalf("second check: new %d in library %d auto %s update %d", out.Summary.New, out.Summary.InLibrary, ids(out.Auto),
+			len(out.Update))
 	}
 	if w.entry("fake v31").Backlog || out.Summary.Gone != 0 {
 		t.Fatal("a windowed check must not mark entries gone, new entries are not backlog")

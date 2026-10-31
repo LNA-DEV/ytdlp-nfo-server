@@ -61,6 +61,16 @@ function readOptions(root) {
 
 function stateLabel(s) { return s.replace('_', ' '); }
 
+// warningTag shows an item warning; "Looks like <path>" (a similar image,
+// Reddit concept §7.5) links to the archive entry of that folder.
+function warningTag(w) {
+  const m = /^(?:Image \d+ looks|Looks) like (.+)$/.exec(w);
+  const tag = h('span', { class: 'warn-tag', style: 'margin-right:.3rem' }, w);
+  if (!m) return tag;
+  const folder = m[1].includes('/') ? m[1].slice(0, m[1].lastIndexOf('/')) : m[1];
+  return h('a', { href: '#/archive?q=' + encodeURIComponent(folder), title: 'Show in the archive' }, tag);
+}
+
 export class JobsView {
   constructor({ tab, focus }) {
     this.tab = tab || 'active';
@@ -510,7 +520,7 @@ export class JobsView {
           it.title || it.url,
           info.length ? h('div', { class: 'p' }, info.join(' · ')) : null,
           (it.state === 'failed' || it.state === 'pending') && it.error ? h('div', { class: 'e' }, `${it.errorClass ? it.errorClass + ': ' : ''}${it.error}`, it.hint && it.state === 'failed' ? ` — ${it.hint}` : '') : null,
-          (it.warnings || []).map((w) => h('span', { class: 'warn-tag', style: 'margin-right:.3rem' }, w))),
+          (it.warnings || []).map(warningTag)),
         it.state === 'done' && (it.warnings || []).length ? h('button', { class: 'btn small', onclick: async (e) => {
           e.target.disabled = true;
           try { await post(`/jobs/${c.job.id}/items/${it.id}/extras`); toast('Extras updated', 'ok'); } catch (ex) { toast(ex.message, 'err'); }

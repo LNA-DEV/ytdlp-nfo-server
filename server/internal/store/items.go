@@ -177,7 +177,7 @@ func (s *Store) DeleteItemsForJob(ctx context.Context, jobID int64) error {
 // FinalizeItem records the archive entry and marks the item done in one
 // transaction (§4.5 step 4, invariant 4). Subscription entries linked to a
 // re-keyed item follow its new key in the same transaction.
-func (s *Store) FinalizeItem(ctx context.Context, it *Item, e ArchiveEntry) error {
+func (s *Store) FinalizeItem(ctx context.Context, it *Item, e ArchiveEntry, media ...MediaRow) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -188,6 +188,13 @@ func (s *Store) FinalizeItem(ctx context.Context, it *Item, e ArchiveEntry) erro
 			VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET path = excluded.path, job_id = excluded.job_id,
 			finalized_at = excluded.finalized_at, source = excluded.source`,
 			e.Key, e.Extractor, e.VideoID, e.Path, e.JobID, e.FinalizedAt.UnixMilli(), e.Source); err != nil {
+			return err
+		}
+	}
+	var changed mediaChange
+	if len(media) > 0 {
+		var err error
+		if changed, err = putMedia(ctx, tx, e.Key, media); err != nil {
 			return err
 		}
 	}
@@ -209,7 +216,11 @@ func (s *Store) FinalizeItem(ctx context.Context, it *Item, e ArchiveEntry) erro
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.hashes.apply(changed)
+	return nil
 }
 
 // URLsByArchiveKey returns the most recent item URL per archive key.

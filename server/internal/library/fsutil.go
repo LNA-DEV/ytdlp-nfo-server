@@ -101,7 +101,8 @@ func WriteFileAtomic(p string, data []byte, perm os.FileMode) error {
 	return SyncPath(filepath.Dir(p))
 }
 
-// CopyFileSync copies src to dst (replacing a partial dst) and fsyncs dst.
+// CopyFileSync copies src to dst (replacing a partial dst), keeps the
+// modification time of src and fsyncs dst.
 func CopyFileSync(src, dst string) error {
 	sf, err := os.Open(src)
 	if err != nil {
@@ -117,6 +118,12 @@ func CopyFileSync(src, dst string) error {
 		return err
 	}
 	if _, err := io.Copy(df, sf); err != nil {
+		df.Close()
+		return err
+	}
+	// Keep the modification time, as a rename does: Reddit media carry
+	// the post time (Reddit concept §8). The fsync below persists it.
+	if err := os.Chtimes(dst, info.ModTime(), info.ModTime()); err != nil {
 		df.Close()
 		return err
 	}

@@ -21,6 +21,9 @@ type Options struct {
 	SleepRequests float64 `json:"sleepRequests,omitempty"`
 	SleepInterval float64 `json:"sleepInterval,omitempty"`
 	SiteRuleID    int64   `json:"siteRuleId,omitempty"`
+	// RedditProviders is a subscription's Reddit provider chain override
+	// ("native,arcticshift"); empty uses the global chain (Reddit concept §9).
+	RedditProviders string `json:"redditProviders,omitempty"`
 }
 
 // OptionsRequest carries explicitly requested options. Nil means "not set",

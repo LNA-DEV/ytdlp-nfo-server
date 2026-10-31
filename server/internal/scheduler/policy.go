@@ -115,6 +115,9 @@ func (p Policy) Decide(rs *store.RetryState, s Situation) Decision {
 	}
 	switch c.Class {
 	case ytdlp.ClassBlocked:
+		if c.FromServer {
+			return Decision{Why: "access is denied"}
+		}
 		if c.MediaForbidden && !rs.Refetched403 {
 			rs.Refetched403 = true
 			return Decision{Retry: true, Escalate: EscalateRefetch, Why: "re-extracting fresh media URLs"}
@@ -128,6 +131,9 @@ func (p Policy) Decide(rs *store.RetryState, s Situation) Decision {
 		}
 		return Decision{Why: "access is still denied"}
 	case ytdlp.ClassExtractorBroken:
+		if c.FromServer {
+			return Decision{Why: "the site's pages changed; the server needs an update"}
+		}
 		if p.NightlyOnBroken && !rs.NightlyTried && s.NightlyCanHelp {
 			rs.NightlyTried = true
 			return Decision{Retry: true, Escalate: EscalateNightly, Why: "retrying with the latest nightly"}

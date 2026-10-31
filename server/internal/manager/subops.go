@@ -1,11 +1,13 @@
 package manager
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,10 +16,12 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/library"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/subscriptions"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp/versions"
 )
 
 // ErrUnprocessable is returned when a URL cannot be subscribed to (a video
@@ -55,6 +59,7 @@ type SourceView struct {
 	OrderKnown  bool       `json:"orderKnown"`
 	Error       string     `json:"error,omitempty"`
 	ErrorClass  string     `json:"errorClass,omitempty"`
+	ListLimit   int        `json:"listLimit,omitempty"` // N of a Reddit top list
 }
 
 // SubscriptionView is the API representation of a subscription.
@@ -76,6 +81,7 @@ type SubscriptionView struct {
 	EffectiveInterval int                   `json:"effectiveIntervalMinutes"`
 	Listing           string                `json:"listing"`
 	Notify            bool                  `json:"notify"`
+	Provider          string                `json:"provider,omitempty"` // Reddit provider chain override
 	State             string                `json:"state"`
 	Failures          int                   `json:"failures"`
 	Error             string                `json:"error,omitempty"`
@@ -89,6 +95,8 @@ type SubscriptionView struct {
 	Sources           []SourceView          `json:"sources"`
 	Counts            store.EntryCounts     `json:"counts"`
 	SharedWith        []string              `json:"sharedWith,omitempty"` // subscriptions using the same folder
+	// Backfill is a request to load older posts (Reddit concept §7.7).
+	Backfill *BackfillView `json:"backfill,omitempty"`
 }
 
 func (m *Manager) subView(sub *store.Subscription, all []*store.Subscription) SubscriptionView {
@@ -99,9 +107,10 @@ func (m *Manager) subView(sub *store.Subscription, all []*store.Subscription) Su
 		Uploader: sub.Uploader, Thumbnail: sub.Thumbnail, Mode: sub.Mode, Enabled: sub.Enabled, Backlog: sub.Backlog,
 		Filters: sub.Filters, Options: sub.Requested, Library: lib, IntervalMinutes: sub.IntervalMinutes,
 		EffectiveInterval: int(subscriptions.Interval(sub, settings.Subscriptions) / time.Minute), Listing: sub.Listing,
-		Notify: sub.Notify, State: sub.State, Failures: sub.Failures, Error: sub.Error, ErrorClass: sub.ErrorClass,
+		Notify: sub.Notify, Provider: sub.Provider, State: sub.State, Failures: sub.Failures, Error: sub.Error, ErrorClass: sub.ErrorClass,
 		Hint: sub.Hint, Warning: sub.Warning, LastCheckAt: tptr(sub.LastCheckAt), LastOKAt: tptr(sub.LastOKAt),
 		NextCheckAt: tptr(sub.NextCheckAt), CreatedAt: sub.CreatedAt, Sources: []SourceView{}, Counts: m.subCounts(sub.ID),
+		Backfill: backfillView(sub.Backfill),
 	}
 	if v.Name == "" {
 		v.Name = firstURL(sub) // imported, not listed yet
@@ -113,7 +122,7 @@ func (m *Manager) subView(sub *store.Subscription, all []*store.Subscription) Su
 		v.Sources = append(v.Sources, SourceView{ID: itoa(src.ID), URL: src.URL, Canonical: src.Canonical, Tab: src.Tab,
 			AddedAt: src.AddedAt, FirstOKAt: tptr(src.FirstOKAt), LastOKAt: tptr(src.LastOKAt), LastFullAt: tptr(src.LastFullAt),
 			Impersonate: src.Impersonate, NewestFirst: src.NewestFirst, OrderKnown: src.OrderKnown, Error: src.Error,
-			ErrorClass: src.ErrorClass})
+			ErrorClass: src.ErrorClass, ListLimit: src.ListLimit})
 	}
 	if all == nil {
 		all, _ = m.Store.ListSubscriptions(context.Background())
@@ -152,6 +161,8 @@ type EntryView struct {
 	Thumbnail      string     `json:"thumbnail,omitempty"`
 	LiveStatus     string     `json:"liveStatus,omitempty"`
 	Availability   string     `json:"availability,omitempty"`
+	MediaKind      string     `json:"mediaKind,omitempty"` // Reddit
+	NSFW           bool       `json:"nsfw,omitempty"`
 	SourceID       string     `json:"sourceId,omitempty"`
 	Backlog        bool       `json:"backlog"`
 	FirstSeenAt    time.Time  `json:"firstSeenAt"`
@@ -169,7 +180,8 @@ type EntryView struct {
 func entryView(e *store.Entry, names map[int64]string) EntryView {
 	v := EntryView{ID: itoa(e.ID), SubscriptionID: itoa(e.SubscriptionID), Subscription: names[e.SubscriptionID],
 		Key: e.Key, URL: e.URL, Title: e.Title, Duration: e.Duration, UploadDate: e.UploadDate, SortDate: e.SortDate,
-		Thumbnail: e.Thumbnail, LiveStatus: e.LiveStatus, Availability: e.Availability, Backlog: e.Backlog,
+		Thumbnail: e.Thumbnail, LiveStatus: e.LiveStatus, Availability: e.Availability, MediaKind: e.MediaKind, NSFW: e.NSFW,
+		Backlog:     e.Backlog,
 		FirstSeenAt: e.FirstSeenAt, GoneAt: tptr(e.GoneAt), Ignored: e.Ignored, IgnoreReason: e.IgnoreReason,
 		Status: e.Status, ItemState: string(e.ItemState)}
 	if e.SourceID != 0 {
@@ -272,6 +284,8 @@ func (m *Manager) ListEntries(ctx context.Context, f EntryListFilter) ([]EntryVi
 type SourceInput struct {
 	URL       string `json:"url"`
 	Canonical string `json:"canonical,omitempty"`
+	// ListLimit is N of a Reddit top list (default: topDefault).
+	ListLimit int `json:"listLimit,omitempty"`
 }
 
 // SubscriptionInput creates (POST) or changes (PATCH) a subscription. Nil
@@ -290,7 +304,12 @@ type SubscriptionInput struct {
 	IntervalMinutes *int                   `json:"intervalMinutes,omitempty"`
 	Listing         *string                `json:"listing,omitempty"`
 	Notify          *bool                  `json:"notify,omitempty"`
-	DismissWarning  bool                   `json:"dismissWarning,omitempty"`
+	// Provider overrides the Reddit provider chain: "" (global),
+	// "native", "arcticshift" or both joined by a comma.
+	Provider       *string `json:"provider,omitempty"`
+	DismissWarning bool    `json:"dismissWarning,omitempty"`
+	// ListLimits changes N of top-list sources, by source id.
+	ListLimits map[string]int `json:"listLimits,omitempty"`
 }
 
 func invalid(format string, args ...any) error {
@@ -301,13 +320,20 @@ func invalid(format string, args ...any) error {
 // YouTube channel root stands for its Videos tab, as in the add dialog. A
 // canonical URL from the preview is accepted if it is the one the URL
 // itself gives, or the channel-ID form of the same tab.
-func sourcesFromInput(in []SourceInput) ([]*store.Source, error) {
+func sourcesFromInput(in []SourceInput, topDefault int) ([]*store.Source, error) {
 	var out []*store.Source
 	seen := map[string]bool{}
 	for _, s := range in {
 		u := strings.TrimSpace(s.URL)
 		if err := config.ValidateURL(u); err != nil {
 			return nil, invalid("source %q: %v", s.URL, err)
+		}
+		if !subscriptions.Subscribable(u) {
+			return nil, invalid("source %q: hot, rising and controversial reorder all the time; subscribe to new posts or a top list, or paste the URL as a download", s.URL)
+		}
+		top := subscriptions.IsTopList(u)
+		if s.ListLimit != 0 && (!top || s.ListLimit < 1 || s.ListLimit > reddit.MaxListing) {
+			return nil, invalid("source %q: listLimit is N of a Reddit top list (1–%d)", s.URL, reddit.MaxListing)
 		}
 		if base, tab, ok := subscriptions.YouTubeChannel(u); ok && tab == "" {
 			u = subscriptions.TabURL(base, subscriptions.TabVideos)
@@ -325,7 +351,11 @@ func sourcesFromInput(in []SourceInput) ([]*store.Source, error) {
 			return nil, invalid("source %q is listed twice", s.URL)
 		}
 		seen[canon] = true
-		out = append(out, &store.Source{URL: u, Canonical: canon, Tab: tab})
+		src := subscriptions.NewSource(u, canon, tab)
+		if top {
+			src.ListLimit = cmp.Or(s.ListLimit, topDefault)
+		}
+		out = append(out, src)
 	}
 	return out, nil
 }
@@ -358,6 +388,15 @@ func assignInput(sub *store.Subscription, in SubscriptionInput, creating bool) (
 	// listing names it; changing another field keeps it that way.
 	if sub.Name == "" && (creating || in.Name != nil) || len(sub.Name) > 200 {
 		return false, false, invalid("name is required (at most 200 characters)")
+	}
+	if in.Provider != nil {
+		p := strings.ReplaceAll(strings.TrimSpace(*in.Provider), " ", "")
+		if p != "" {
+			if err := config.ValidateRedditChain(strings.Split(p, ",")); err != nil {
+				return false, false, invalid("%v", err)
+			}
+		}
+		sub.Provider = p
 	}
 	if in.Folder != nil {
 		sub.Folder = strings.TrimSpace(*in.Folder)
@@ -394,7 +433,7 @@ func assignInput(sub *store.Subscription, in SubscriptionInput, creating bool) (
 		if _, err := subscriptions.CompileFilters(*in.Filters); err != nil {
 			return false, false, invalid("filters: %v", err)
 		}
-		filtersChanged = *in.Filters != sub.Filters
+		filtersChanged = !reflect.DeepEqual(*in.Filters, sub.Filters)
 		sub.Filters = *in.Filters
 	}
 	if in.Options != nil {
@@ -443,7 +482,7 @@ func (m *Manager) CreateSubscription(ctx context.Context, in SubscriptionInput) 
 	if m.shuttingDown() {
 		return nil, ErrShuttingDown
 	}
-	srcs, err := sourcesFromInput(in.Sources)
+	srcs, err := sourcesFromInput(in.Sources, m.Settings.Settings().Reddit.TopDefault)
 	if err != nil {
 		return nil, err
 	}
@@ -452,6 +491,26 @@ func (m *Manager) CreateSubscription(ctx context.Context, in SubscriptionInput) 
 	}
 	sub := &store.Subscription{Mode: store.ModeManual, Enabled: true, Listing: store.ListingAuto, Sources: srcs,
 		NextCheckAt: time.Now()}
+	if t, ok := reddit.Parse(srcs[0].URL); ok && t.IsListing() {
+		// Reddit defaults (§7.1): r/<name> as entered, a folder without
+		// the slash, and the library marked for Reddit.
+		if in.Name == nil || strings.TrimSpace(*in.Name) == "" {
+			name := t.Name()
+			in.Name = &name
+		}
+		if in.Folder == nil || strings.TrimSpace(*in.Folder) == "" {
+			folder := subscriptions.FolderFromName(*in.Name)
+			in.Folder = &folder
+		}
+		if lib := m.Settings.Settings().Reddit.DefaultLibrary; lib != "" && (in.Options == nil || in.Options.Library == nil) {
+			opts := config.OptionsRequest{}
+			if in.Options != nil {
+				opts = *in.Options
+			}
+			opts.Library = &lib
+			in.Options = &opts
+		}
+	}
 	if in.Name == nil || strings.TrimSpace(*in.Name) == "" {
 		name := srcs[0].URL
 		in.Name = &name
@@ -477,9 +536,23 @@ func (m *Manager) UpdateSubscription(ctx context.Context, id int64, in Subscript
 	if err != nil {
 		return nil, err
 	}
-	added, err := sourcesFromInput(in.AddSources)
+	added, err := sourcesFromInput(in.AddSources, m.Settings.Settings().Reddit.TopDefault)
 	if err != nil {
 		return nil, err
+	}
+	limits := map[int64]int{}
+	for sid, n := range in.ListLimits {
+		id, _ := strconv.ParseInt(sid, 10, 64)
+		var src *store.Source
+		for _, s := range sub.Sources {
+			if s.ID == id {
+				src = s
+			}
+		}
+		if src == nil || src.ListLimit == 0 || n < 1 || n > reddit.MaxListing {
+			return nil, invalid("listLimits: source %s is not a top list, or N is not between 1 and %d", sid, reddit.MaxListing)
+		}
+		limits[id] = n
 	}
 	removed := map[int64]bool{}
 	for _, s := range in.RemoveSources {
@@ -536,6 +609,11 @@ func (m *Manager) UpdateSubscription(ctx context.Context, id int64, in Subscript
 		}
 		if len(added) > 0 {
 			if err := tx.AddSources(ctx, id, added); err != nil {
+				return err
+			}
+		}
+		for sid, n := range limits {
+			if err := tx.SetListLimit(ctx, id, sid, n); err != nil {
 				return err
 			}
 		}
@@ -796,7 +874,7 @@ func (m *Manager) DownloadEntries(ctx context.Context, req DownloadEntriesReques
 			groups[e.SubscriptionID] = append(groups[e.SubscriptionID], e)
 		}
 		for _, sid := range order {
-			j, err := m.subJobTx(ctx, tx, subs[sid], opts[sid], band, groups[sid], nil)
+			js, err := m.subJobsTx(ctx, tx, subs[sid], opts[sid], band, groups[sid], nil)
 			if err != nil {
 				return err
 			}
@@ -805,7 +883,7 @@ func (m *Manager) DownloadEntries(ctx context.Context, req DownloadEntriesReques
 					return err
 				}
 			}
-			jobs = append(jobs, j)
+			jobs = append(jobs, js...)
 			res.Queued += len(groups[sid])
 		}
 		return nil
@@ -880,6 +958,7 @@ type PreviewSource struct {
 	Selected     bool   `json:"selected"`
 	Subscription string `json:"subscriptionId,omitempty"` // already subscribed in
 	Name         string `json:"subscriptionName,omitempty"`
+	ListLimit    int    `json:"listLimit,omitempty"` // N of a Reddit top list
 }
 
 // Preview is the result of POST /subscriptions/preview.
@@ -895,6 +974,9 @@ type Preview struct {
 	Entries      []PreviewEntry  `json:"entries"`
 	InLibrary    int             `json:"inLibrary"`
 	Sources      []PreviewSource `json:"sources"`
+	Folder       string          `json:"folder,omitempty"`  // suggested folder (Reddit: the name without "r/")
+	Site         string          `json:"site,omitempty"`    // "reddit" for Reddit listings
+	Library      string          `json:"library,omitempty"` // suggested library
 }
 
 // PreviewError carries a classified listing failure.
@@ -915,9 +997,14 @@ func (m *Manager) PreviewSubscription(ctx context.Context, raw string) (*Preview
 	if err != nil {
 		return nil, invalid("%v", err)
 	}
-	bin, release, err := m.resolver.Acquire(ctx, opts.YtdlpVersion)
-	if err != nil {
-		return nil, err
+	_, isReddit := reddit.Parse(raw)
+	var bin versions.Binary
+	release := func() {}
+	if !isReddit { // Reddit listings need no yt-dlp
+		bin, release, err = m.resolver.Acquire(ctx, opts.YtdlpVersion)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer release()
 	call := ytdlp.CallOptions{Impersonate: opts.Impersonate, SleepRequests: opts.SleepRequests,
@@ -932,23 +1019,16 @@ func (m *Manager) PreviewSubscription(ctx context.Context, raw string) (*Preview
 		}
 	}
 	list := func(u string) (*ytdlp.Listing, error) {
-		lctx, cancel := context.WithTimeout(ctx, subscriptions.PreviewTimeout)
-		defer cancel()
 		_, tab, _ := subscriptions.YouTubeChannel(u)
-		res := ytdlp.Run(lctx, ytdlp.Call{Bin: bin.Path, CaptureStdout: true,
-			Args: ytdlp.ListArgs(u, ytdlp.ListSpec{Window: 10, YouTubeTab: tab != ""}, call)})
-		if !res.OK() {
-			cls := subscriptions.ListingClass(ytdlp.Classify(res))
-			if lctx.Err() != nil && ctx.Err() == nil {
-				cls = ytdlp.Classification{Class: ytdlp.ClassTransient, Reason: "the preview timed out"}
+		res, cls := m.listerFor(u).List(ctx, subscriptions.ListRequest{URL: u, Tab: tab, Window: 10,
+			Timeout: subscriptions.PreviewTimeout, Bin: bin, Call: call})
+		if cls != nil {
+			if res.TimedOut {
+				cls = &ytdlp.Classification{Class: ytdlp.ClassTransient, Reason: "the preview timed out"}
 			}
-			return nil, &PreviewError{Class: cls}
+			return nil, &PreviewError{Class: *cls}
 		}
-		l, err := ytdlp.ParseListing(res.Stdout)
-		if err != nil {
-			return nil, &PreviewError{Class: ytdlp.Classification{Class: ytdlp.ClassUnknown, Reason: err.Error()}}
-		}
-		return l, nil
+		return res.Listing, nil
 	}
 	target := raw
 	if base, tab, ok := subscriptions.YouTubeChannel(raw); ok && tab == "" {
@@ -989,7 +1069,7 @@ func (m *Manager) PreviewSubscription(ctx context.Context, raw string) (*Preview
 			break
 		}
 		key := subscriptions.EntryKey(le)
-		in, _ := m.Store.HasArchive(ctx, key)
+		in, _ := m.Store.InLibrary(ctx, key)
 		if in {
 			p.InLibrary++
 		}
@@ -1011,11 +1091,18 @@ func (m *Manager) PreviewSubscription(ctx context.Context, raw string) (*Preview
 			p.Sources = append(p.Sources, PreviewSource{Tab: t, URL: u, Canonical: c, Selected: t == tab})
 		}
 	} else {
-		p.Sources = append(p.Sources, PreviewSource{URL: target, Canonical: canon, Selected: true})
+		ps := PreviewSource{URL: target, Canonical: canon, Selected: true}
+		if subscriptions.IsTopList(target) {
+			ps.ListLimit = settings.Reddit.TopDefault // a top URL preselects a top list (§7.7)
+		}
+		p.Sources = append(p.Sources, ps)
 	}
 	var canons []string
 	for _, s := range p.Sources {
 		canons = append(canons, s.Canonical)
+	}
+	if t, ok := reddit.Parse(target); ok && t.IsListing() {
+		p.Site, p.Folder, p.Library = "reddit", subscriptions.FolderFromName(p.Name), settings.Reddit.DefaultLibrary
 	}
 	existing, err := m.Store.SourcesByCanonical(ctx, canons)
 	if err != nil {

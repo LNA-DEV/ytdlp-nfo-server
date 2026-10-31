@@ -20,6 +20,7 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/library"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/notify"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/pipeline"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/browser"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp/versions"
@@ -46,6 +47,9 @@ type Options struct {
 	Logf        func(format string, args ...any)
 	// DisableBackground turns off the auto-updater and pruning loops (tests).
 	DisableBackground bool
+	// Reddit points the Reddit client at a fake (tests): RootCAs, Dial and
+	// Hosts are used.
+	Reddit *browser.Options
 }
 
 // Manager is the application service.
@@ -71,6 +75,7 @@ type Manager struct {
 
 	mu        sync.Mutex
 	subs      subState
+	reddit    redditState
 	rules     []config.SiteRule
 	live      map[int64]pipeline.Live
 	warnings  map[string]Warning
@@ -99,6 +104,7 @@ func New(o Options) (*Manager, error) {
 	}
 	m := &Manager{Env: env, logf: logf, opts: o, live: map[int64]pipeline.Live{}, warnings: map[string]Warning{},
 		sysSignal: make(chan struct{}, 1)}
+	m.reddit.testOpts = o.Reddit
 
 	m.dataDir = env.DataDir
 	if m.dataDir == "" {
@@ -179,7 +185,7 @@ func New(o Options) (*Manager, error) {
 		Store: st, Env: env, Settings: m.Settings.Settings, SiteRules: m.siteRules,
 		Versions: m.resolver, Logs: logs, Pub: m, Sched: m.Sched, Finalizer: m.Finalizer, Archive: m.Archive,
 		CookieDir: m.cookieDir, CacheDir: filepath.Join(m.dataDir, "ytdlp", "cache"),
-		ServerInfo: buildinfo.String(), TweakPolicy: o.TweakPolicy,
+		ServerInfo: buildinfo.String(), TweakPolicy: o.TweakPolicy, Reddit: redditAccess{m},
 	})
 	if err := m.initSubscriptions(); err != nil {
 		return nil, err
@@ -225,6 +231,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		m.cancel()
 	}
 	m.bgWG.Wait()
+	m.closeReddit()
 	m.Hub.Close()
 	if cerr := m.Store.Close(); err == nil {
 		err = cerr

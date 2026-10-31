@@ -315,9 +315,13 @@ func (f *Finalizer) CleanupUnreferenced(root string, referenced func(uid string)
 
 var uniqueIDRe = regexp.MustCompile(`(?s)<uniqueid[^>]*>(.*?)</uniqueid>`)
 
-// FolderVideoID returns the video id recorded in a library folder's
-// movie.nfo, or "" if unknown.
+// FolderVideoID returns the video id recorded in a library folder: the id
+// part of a Reddit marker's key, else the <uniqueid> of its movie.nfo; ""
+// if unknown.
 func FolderVideoID(dir string) string {
+	if m := ReadMarker(dir); m != nil {
+		return m.ID()
+	}
 	f, err := os.Open(filepath.Join(dir, "movie.nfo"))
 	if err != nil {
 		return ""

@@ -85,7 +85,25 @@ type Filters struct {
 	TitleInclude   string  `json:"titleInclude,omitempty"`   // RE2, case-insensitive
 	TitleExclude   string  `json:"titleExclude,omitempty"`   // RE2, case-insensitive
 	PublishedAfter string  `json:"publishedAfter,omitempty"` // YYYYMMDD
+	// Reddit sources (Reddit concept §7.1): media kinds to keep (image,
+	// gallery, video, gif, linked; empty = all) and NSFW: include (""),
+	// exclude or only.
+	MediaKinds []string `json:"mediaKinds,omitempty"`
+	NSFW       string   `json:"nsfw,omitempty"`
 }
+
+// Empty reports whether no filter is set.
+func (f Filters) Empty() bool {
+	return f.MinDuration == 0 && f.MaxDuration == 0 && f.TitleInclude == "" && f.TitleExclude == "" &&
+		f.PublishedAfter == "" && len(f.MediaKinds) == 0 && (f.NSFW == "" || f.NSFW == NSFWInclude)
+}
+
+// NSFW filter values.
+const (
+	NSFWInclude = "include"
+	NSFWExclude = "exclude"
+	NSFWOnly    = "only"
+)
 
 // Subscription watches one or more listing URLs (sources).
 type Subscription struct {
@@ -114,11 +132,50 @@ type Subscription struct {
 	NextCheckAt     time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	// Provider overrides the Reddit provider chain ("" = the global one,
+	// else providers joined by commas; Reddit concept §9).
+	Provider string
 	// FullRequested: the next check lists every source completely (Full
 	// rescan). Only RequestFullCheck and ClearFullRequest write it.
 	FullRequested bool
+	// Backfill is a requested loading of older posts (Reddit concept §7.7),
+	// nil if none. Only SetBackfill writes it.
+	Backfill *Backfill
 
 	Sources []*Source
+}
+
+// Kinds of backfill (Reddit concept §7.7).
+const (
+	BackfillTop      = "top"      // the top N of a period, from native
+	BackfillRange    = "range"    // everything in a time range, from Arctic Shift
+	BackfillRangeTop = "rangeTop" // the top N of a time range, sorted locally
+)
+
+// Backfill is a request to load older posts into the backlog, and its
+// progress.
+type Backfill struct {
+	ID     int64     `json:"id"` // when it was requested (Unix ms): a check only updates the request it ran
+	Kind   string    `json:"kind"`
+	Period string    `json:"period,omitempty"` // top: hour … all
+	N      int       `json:"n,omitempty"`      // top, rangeTop
+	From   time.Time `json:"from,omitempty"`   // range, rangeTop; zero: the beginning
+	To     time.Time `json:"to,omitempty"`     // zero: now
+	// Download queues the loaded posts at once in the backlog band.
+	Download bool `json:"download,omitempty"`
+	// Pending: the next check runs it. A range that stopped at backfillMax
+	// waits for Continue, which resumes before the oldest post loaded.
+	Pending bool      `json:"pending"`
+	Before  time.Time `json:"before,omitempty"`
+	// BeforeIDs are the posts of Before's second that were loaded: Continue
+	// lists that second again and skips them.
+	BeforeIDs []string `json:"beforeIds,omitempty"`
+	Loaded    int      `json:"loaded,omitempty"`
+	Total     int      `json:"total,omitempty"` // about, from the count; 0 = unknown
+	Error     string   `json:"error,omitempty"` // the last run failed
+	// Failures counts the runs in a row that failed for a while; the next
+	// check comes sooner than the regular one (Reddit concept §7.7).
+	Failures int `json:"failures,omitempty"`
 }
 
 // EffectiveFolder returns the library folder of the subscription's items.
@@ -150,6 +207,9 @@ type Source struct {
 	OrderKnown  bool
 	Error       string
 	ErrorClass  string
+	// ListLimit is N of a top list (Reddit concept §7.7): every check lists
+	// exactly the top N. 0 for all other sources.
+	ListLimit int
 }
 
 // Entry is one video seen in a source. Status and the Item* fields are
@@ -171,6 +231,9 @@ type Entry struct {
 	Thumbnail    string
 	LiveStatus   string
 	Availability string
+	// MediaKind and NSFW come from Reddit listings ("" and false elsewhere).
+	MediaKind    string
+	NSFW         bool
 	SourceID     int64
 	Position     int
 	Backlog      bool
@@ -240,32 +303,40 @@ func (s *Store) InTx(ctx context.Context, fn func(tx *Tx) error) error {
 
 const subCols = `id, name, folder, kind, uploader, thumbnail, mode, enabled, backlog, filters, requested,
 	interval_minutes, listing, notify, state, failures, error, error_class, hint, warning,
-	last_check_at, last_ok_at, next_check_at, created_at, updated_at, full_requested`
+	last_check_at, last_ok_at, next_check_at, created_at, updated_at, full_requested, provider, backfill`
 
 func scanSub(r scanner) (*Subscription, error) {
 	var (
 		s                           Subscription
 		enabled, notify, full       int
 		backlog, filters, requested string
+		backfill                    string
 		lastCheck, lastOK, next     sql.NullInt64
 		created, updated            int64
 	)
 	if err := r.Scan(&s.ID, &s.Name, &s.Folder, &s.Kind, &s.Uploader, &s.Thumbnail, &s.Mode, &enabled, &backlog,
 		&filters, &requested, &s.IntervalMinutes, &s.Listing, &notify, &s.State, &s.Failures, &s.Error,
-		&s.ErrorClass, &s.Hint, &s.Warning, &lastCheck, &lastOK, &next, &created, &updated, &full); err != nil {
+		&s.ErrorClass, &s.Hint, &s.Warning, &lastCheck, &lastOK, &next, &created, &updated, &full, &s.Provider,
+		&backfill); err != nil {
 		return nil, err
 	}
 	s.Enabled, s.Notify, s.FullRequested = enabled != 0, notify != 0, full != 0
 	_ = json.Unmarshal([]byte(backlog), &s.Backlog)
 	_ = json.Unmarshal([]byte(filters), &s.Filters)
 	_ = json.Unmarshal([]byte(requested), &s.Requested)
+	if backfill != "" {
+		s.Backfill = &Backfill{}
+		if json.Unmarshal([]byte(backfill), s.Backfill) != nil {
+			s.Backfill = nil
+		}
+	}
 	s.LastCheckAt, s.LastOKAt, s.NextCheckAt = fromMs(lastCheck), fromMs(lastOK), fromMs(next)
 	s.CreatedAt, s.UpdatedAt = time.UnixMilli(created), time.UnixMilli(updated)
 	return &s, nil
 }
 
 const sourceCols = `id, subscription_id, url, canonical, tab, added_at, first_ok_at, last_ok_at, last_full_at,
-	impersonate, newest_first, order_known, error, error_class`
+	impersonate, newest_first, order_known, error, error_class, list_limit`
 
 func scanSource(r scanner) (*Source, error) {
 	var (
@@ -275,7 +346,7 @@ func scanSource(r scanner) (*Source, error) {
 		imp, newest, known     int
 	)
 	if err := r.Scan(&src.ID, &src.SubscriptionID, &src.URL, &src.Canonical, &src.Tab, &added, &firstOK, &lastOK,
-		&lastF, &imp, &newest, &known, &src.Error, &src.ErrorClass); err != nil {
+		&lastF, &imp, &newest, &known, &src.Error, &src.ErrorClass, &src.ListLimit); err != nil {
 		return nil, err
 	}
 	src.NewestFirst, src.OrderKnown = newest != 0, known != 0
@@ -390,10 +461,11 @@ func insertSources(ctx context.Context, q querier, subID int64, srcs []*Source) 
 			src.AddedAt = now
 		}
 		res, err := q.ExecContext(ctx, `INSERT INTO subscription_sources (subscription_id, url, canonical, tab, added_at,
-			first_ok_at, last_ok_at, last_full_at, impersonate, newest_first, order_known, error, error_class)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			first_ok_at, last_ok_at, last_full_at, impersonate, newest_first, order_known, error, error_class, list_limit)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			subID, src.URL, src.Canonical, src.Tab, src.AddedAt.UnixMilli(), ms(src.FirstOKAt), ms(src.LastOKAt),
-			ms(src.LastFullAt), b2i(src.Impersonate), b2i(src.NewestFirst), b2i(src.OrderKnown), src.Error, src.ErrorClass)
+			ms(src.LastFullAt), b2i(src.Impersonate), b2i(src.NewestFirst), b2i(src.OrderKnown), src.Error, src.ErrorClass,
+			src.ListLimit)
 		if err != nil {
 			return err
 		}
@@ -425,12 +497,12 @@ func (t *Tx) CreateSubscription(ctx context.Context, sub *Subscription) error {
 	}
 	res, err := t.tx.ExecContext(ctx, `INSERT INTO subscriptions (name, folder, kind, uploader, thumbnail, mode, enabled,
 		backlog, filters, requested, interval_minutes, listing, notify, state, failures, error, error_class, hint, warning,
-		last_check_at, last_ok_at, next_check_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		last_check_at, last_ok_at, next_check_at, created_at, updated_at, provider)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sub.Name, sub.Folder, sub.Kind, sub.Uploader, sub.Thumbnail, sub.Mode, b2i(sub.Enabled), mustJSON(sub.Backlog),
 		mustJSON(sub.Filters), mustJSON(sub.Requested), sub.IntervalMinutes, sub.Listing, b2i(sub.Notify), sub.State,
 		sub.Failures, sub.Error, sub.ErrorClass, sub.Hint, sub.Warning, ms(sub.LastCheckAt), ms(sub.LastOKAt),
-		ms(sub.NextCheckAt), sub.CreatedAt.UnixMilli(), sub.UpdatedAt.UnixMilli())
+		ms(sub.NextCheckAt), sub.CreatedAt.UnixMilli(), sub.UpdatedAt.UnixMilli(), sub.Provider)
 	if err != nil {
 		return err
 	}
@@ -484,10 +556,10 @@ func updateSub(ctx context.Context, q querier, sub *Subscription) error {
 	sub.UpdatedAt = time.Now()
 	res, err := q.ExecContext(ctx, `UPDATE subscriptions SET name = ?, folder = ?, mode = ?, enabled = ?, backlog = ?,
 		filters = ?, requested = ?, interval_minutes = ?, listing = ?, notify = ?, warning = ?, next_check_at = ?,
-		updated_at = ? WHERE id = ?`,
+		updated_at = ?, provider = ? WHERE id = ?`,
 		sub.Name, sub.Folder, sub.Mode, b2i(sub.Enabled), mustJSON(sub.Backlog), mustJSON(sub.Filters),
 		mustJSON(sub.Requested), sub.IntervalMinutes, sub.Listing, b2i(sub.Notify), sub.Warning, ms(sub.NextCheckAt),
-		sub.UpdatedAt.UnixMilli(), sub.ID)
+		sub.UpdatedAt.UnixMilli(), sub.Provider, sub.ID)
 	if err != nil {
 		return err
 	}
@@ -531,18 +603,56 @@ func (s *Store) RequestFullCheck(ctx context.Context, id int64, now time.Time) e
 }
 
 // ClearFullRequest records that a full rescan was done.
+// SetBackfill stores a backfill request (nil removes it); with now set,
+// the next check is due at once.
+func (s *Store) SetBackfill(ctx context.Context, id int64, b *Backfill, now time.Time) error {
+	return s.InTx(ctx, func(tx *Tx) error {
+		if err := tx.SetBackfill(ctx, id, b); err != nil {
+			return err
+		}
+		if now.IsZero() {
+			return nil
+		}
+		_, err := tx.tx.ExecContext(ctx, `UPDATE subscriptions SET next_check_at = ? WHERE id = ?`, now.UnixMilli(), id)
+		return err
+	})
+}
+
+// SetBackfill stores a backfill request (nil removes it).
+func (t *Tx) SetBackfill(ctx context.Context, id int64, b *Backfill) error {
+	v := ""
+	if b != nil {
+		v = mustJSON(b)
+	}
+	res, err := t.tx.ExecContext(ctx, `UPDATE subscriptions SET backfill = ? WHERE id = ?`, v, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (t *Tx) ClearFullRequest(ctx context.Context, id int64) error {
 	_, err := t.tx.ExecContext(ctx, `UPDATE subscriptions SET full_requested = 0 WHERE id = ?`, id)
+	return err
+}
+
+// SetListLimit changes N of a top-list source.
+func (t *Tx) SetListLimit(ctx context.Context, subID, sourceID int64, n int) error {
+	_, err := t.tx.ExecContext(ctx, `UPDATE subscription_sources SET list_limit = ? WHERE id = ? AND subscription_id = ?`,
+		n, sourceID, subID)
 	return err
 }
 
 // SaveSource writes the check state of a source.
 func (t *Tx) SaveSource(ctx context.Context, src *Source) error {
 	_, err := t.tx.ExecContext(ctx, `UPDATE subscription_sources SET canonical = ?, tab = ?, first_ok_at = ?,
-		last_ok_at = ?, last_full_at = ?, impersonate = ?, newest_first = ?, order_known = ?, error = ?, error_class = ?
-		WHERE id = ?`,
+		last_ok_at = ?, last_full_at = ?, impersonate = ?, newest_first = ?, order_known = ?, error = ?, error_class = ?,
+		list_limit = ? WHERE id = ?`,
 		src.Canonical, src.Tab, ms(src.FirstOKAt), ms(src.LastOKAt), ms(src.LastFullAt), b2i(src.Impersonate),
-		b2i(src.NewestFirst), b2i(src.OrderKnown), src.Error, src.ErrorClass, src.ID)
+		b2i(src.NewestFirst), b2i(src.OrderKnown), src.Error, src.ErrorClass, src.ListLimit, src.ID)
 	return err
 }
 
@@ -684,12 +794,17 @@ func statusExpr(p StatusParams) string {
 		ELSE 'backlog' END`
 }
 
-const entryFrom = ` FROM subscription_entries e LEFT JOIN items i ON i.id = e.item_id LEFT JOIN archive a ON a.key = e.key `
+// entryFrom joins an entry with its item and its archive entry: its own,
+// or the one whose file the media index lists under the entry's key (a
+// crosspost, an image of a gallery, a skipped duplicate; Reddit concept
+// §7.5).
+const entryFrom = ` FROM subscription_entries e LEFT JOIN items i ON i.id = e.item_id LEFT JOIN archive a ON a.key =
+	COALESCE((SELECT m.archive_key FROM media_index m WHERE m.media_key = e.key LIMIT 1), e.key) `
 
 func entrySelect(p StatusParams) string {
 	return `SELECT e.id, e.subscription_id, e.key, e.listing_key, e.url, e.title, e.duration, e.upload_date, e.sort_date, e.thumbnail,
-		e.live_status, e.availability, COALESCE(e.source_id, 0), e.position, e.backlog, e.first_seen_at, e.last_seen_at,
-		e.gone_at, e.ignored, e.ignore_reason, COALESCE(e.item_id, 0), COALESCE(i.state, ''), COALESCE(i.error, ''),
+		e.live_status, e.availability, e.media_kind, e.nsfw, COALESCE(e.source_id, 0), e.position, e.backlog, e.first_seen_at,
+		e.last_seen_at, e.gone_at, e.ignored, e.ignore_reason, COALESCE(e.item_id, 0), COALESCE(i.state, ''), COALESCE(i.error, ''),
 		COALESCE(i.error_class, ''), COALESCE(i.hint, ''), COALESCE(i.job_id, 0), a.key IS NOT NULL, ` +
 		statusExpr(p) + ` AS status` + entryFrom
 }
@@ -700,16 +815,17 @@ func scanEntry(r scanner) (*Entry, error) {
 		sortDate, first, last   int64
 		gone                    sql.NullInt64
 		backlog, ignored, inArc int
+		nsfw                    int
 		itemState               string
 	)
 	if err := r.Scan(&e.ID, &e.SubscriptionID, &e.Key, &e.ListingKey, &e.URL, &e.Title, &e.Duration, &e.UploadDate, &sortDate,
-		&e.Thumbnail, &e.LiveStatus, &e.Availability, &e.SourceID, &e.Position, &backlog, &first, &last, &gone,
+		&e.Thumbnail, &e.LiveStatus, &e.Availability, &e.MediaKind, &nsfw, &e.SourceID, &e.Position, &backlog, &first, &last, &gone,
 		&ignored, &e.IgnoreReason, &e.ItemID, &itemState, &e.ItemError, &e.ItemErrorClass, &e.ItemHint, &e.JobID,
 		&inArc, &e.Status); err != nil {
 		return nil, err
 	}
 	e.SortDate, e.FirstSeenAt, e.LastSeenAt, e.GoneAt = time.UnixMilli(sortDate), time.UnixMilli(first), time.UnixMilli(last), fromMs(gone)
-	e.Backlog, e.Ignored, e.InArchive = backlog != 0, ignored != 0, inArc != 0
+	e.Backlog, e.Ignored, e.InArchive, e.NSFW = backlog != 0, ignored != 0, inArc != 0, nsfw != 0
 	e.ItemState = ItemState(itemState)
 	return &e, nil
 }
@@ -788,11 +904,12 @@ func entriesByID(ctx context.Context, q querier, ids []int64, p StatusParams) ([
 // InsertEntry adds an entry and sets its ID.
 func (t *Tx) InsertEntry(ctx context.Context, e *Entry) error {
 	res, err := t.tx.ExecContext(ctx, `INSERT INTO subscription_entries (subscription_id, key, listing_key, url, title,
-		duration, upload_date, sort_date, thumbnail, live_status, availability, source_id, position, backlog, first_seen_at,
-		last_seen_at, gone_at, ignored, ignore_reason, item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		duration, upload_date, sort_date, thumbnail, live_status, availability, media_kind, nsfw, source_id, position, backlog,
+		first_seen_at, last_seen_at, gone_at, ignored, ignore_reason, item_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.SubscriptionID, e.Key, e.ListingKey, e.URL, e.Title, e.Duration, e.UploadDate, e.SortDate.UnixMilli(), e.Thumbnail,
-		e.LiveStatus, e.Availability, nullID(e.SourceID), e.Position, b2i(e.Backlog), e.FirstSeenAt.UnixMilli(),
-		e.LastSeenAt.UnixMilli(), ms(e.GoneAt), b2i(e.Ignored), e.IgnoreReason, nullID(e.ItemID))
+		e.LiveStatus, e.Availability, e.MediaKind, b2i(e.NSFW), nullID(e.SourceID), e.Position, b2i(e.Backlog),
+		e.FirstSeenAt.UnixMilli(), e.LastSeenAt.UnixMilli(), ms(e.GoneAt), b2i(e.Ignored), e.IgnoreReason, nullID(e.ItemID))
 	if err != nil {
 		return err
 	}
@@ -803,15 +920,16 @@ func (t *Tx) InsertEntry(ctx context.Context, e *Entry) error {
 // UpdateEntry writes all stored fields of an entry.
 func (t *Tx) UpdateEntry(ctx context.Context, e *Entry) error {
 	_, err := t.tx.ExecContext(ctx, `UPDATE subscription_entries SET url = ?, title = ?, duration = ?, upload_date = ?,
-		sort_date = ?, thumbnail = ?, live_status = ?, availability = ?, source_id = ?, position = ?, backlog = ?,
-		last_seen_at = ?, gone_at = ?, ignored = ?, ignore_reason = ?, item_id = ? WHERE id = ?`,
+		sort_date = ?, thumbnail = ?, live_status = ?, availability = ?, media_kind = ?, nsfw = ?, source_id = ?, position = ?,
+		backlog = ?, last_seen_at = ?, gone_at = ?, ignored = ?, ignore_reason = ?, item_id = ? WHERE id = ?`,
 		e.URL, e.Title, e.Duration, e.UploadDate, e.SortDate.UnixMilli(), e.Thumbnail, e.LiveStatus, e.Availability,
-		nullID(e.SourceID), e.Position, b2i(e.Backlog), e.LastSeenAt.UnixMilli(), ms(e.GoneAt), b2i(e.Ignored),
-		e.IgnoreReason, nullID(e.ItemID), e.ID)
+		e.MediaKind, b2i(e.NSFW), nullID(e.SourceID), e.Position, b2i(e.Backlog), e.LastSeenAt.UnixMilli(), ms(e.GoneAt),
+		b2i(e.Ignored), e.IgnoreReason, nullID(e.ItemID), e.ID)
 	return err
 }
 
-// ArchivedKeys returns which of the keys are in the archive.
+// ArchivedKeys returns which of the keys are in the archive or the media
+// index.
 func (t *Tx) ArchivedKeys(ctx context.Context, keys []string) (map[string]bool, error) {
 	out := map[string]bool{}
 	for start := 0; start < len(keys); start += 500 {
@@ -820,7 +938,9 @@ func (t *Tx) ArchivedKeys(ctx context.Context, keys []string) (map[string]bool, 
 		for i, k := range chunk {
 			args[i] = k
 		}
-		rows, err := t.tx.QueryContext(ctx, `SELECT key FROM archive WHERE key IN (`+placeholders(len(chunk))+`)`, args...)
+		in := placeholders(len(chunk))
+		rows, err := t.tx.QueryContext(ctx, `SELECT key FROM archive WHERE key IN (`+in+`)
+			UNION SELECT media_key FROM media_index WHERE media_key IN (`+in+`)`, append(args, args...)...)
 		if err != nil {
 			return nil, err
 		}
@@ -871,7 +991,8 @@ func (s *Store) SetIgnored(ctx context.Context, ids []int64, ignored bool) (int,
 // never downloaded (no linked item, not in the archive).
 func (s *Store) PruneGoneEntries(ctx context.Context, before time.Time) (int, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM subscription_entries WHERE gone_at IS NOT NULL AND gone_at < ?
-		AND item_id IS NULL AND NOT EXISTS (SELECT 1 FROM archive a WHERE a.key = subscription_entries.key)`, before.UnixMilli())
+		AND item_id IS NULL AND NOT EXISTS (SELECT 1 FROM archive a WHERE a.key = subscription_entries.key)
+		AND NOT EXISTS (SELECT 1 FROM media_index m WHERE m.media_key = subscription_entries.key)`, before.UnixMilli())
 	if err != nil {
 		return 0, err
 	}

@@ -9,6 +9,7 @@ const SECTIONS = [
   ['naming', 'Naming'],
   ['libraries', 'Libraries'],
   ['subscriptions', 'Subscriptions'],
+  ['reddit', 'Reddit'],
   ['notifications', 'Notifications'],
   ['extras', 'Extras'],
   ['security', 'Security'],
@@ -83,7 +84,7 @@ export class SettingsView {
     const b = clear(this.body);
     const fn = {
       general: this.general, ytdlp: this.ytdlp, sites: this.sites, cookies: this.cookies, naming: this.naming,
-      libraries: this.libraries, subscriptions: this.subscriptions, notifications: this.notifications, extras: this.extras, security: this.security,
+      libraries: this.libraries, subscriptions: this.subscriptions, reddit: this.reddit, notifications: this.notifications, extras: this.extras, security: this.security,
     }[this.section] || this.general;
     b.append(fn.call(this));
   }
@@ -303,6 +304,54 @@ export class SettingsView {
           field('Background slots', num('backgroundSlots', 1, 50), 'Downloads of new videos and backlogs together; they give way to downloads started by hand'),
           field('Retry "not available yet" for (days)', num('upcomingDays', 1, 30), 'Premieres without a live status are tried again by every check'),
           field('Forget removed videos after (days)', num('pruneGoneDays', 0, 3650), '0 = never. Only videos that were never downloaded'))),
+      this.saveBtn());
+  }
+
+  // --- Reddit (Reddit concept §9) ---
+  reddit() {
+    const r = this.s.reddit;
+    const chains = [['native,arcticshift', 'Native, then Arctic Shift'], ['native', 'Native only'],
+      ['arcticshift,native', 'Arctic Shift, then native'], ['arcticshift', 'Arctic Shift only']];
+    const chain = { value: (r.providers || []).join(',') };
+    const sel = bindSelect(chain, 'value', chains);
+    sel.addEventListener('change', () => { r.providers = chain.value.split(','); });
+    const num = (key, min, max) => bindText(r, key, { type: 'number', min, max });
+    const libs = [['', 'None'], ['default', 'default'], ...(this.s.libraries || []).map((l) => [l.name, l.name])];
+    return h('div', {},
+      h('div', { class: 'section' }, h('h2', {}, 'Providers'),
+        h('p', { class: 'muted' }, 'Native reads the pages Reddit shows a logged-out browser. Arctic Shift is a third-party archive without guarantees; it sees the subreddits and posts the server asks for. A provider that is blocked or rate-limited hands over to the next one.'),
+        h('div', { class: 'grid' },
+          field('Order', sel, 'Subscriptions can override it'),
+          field('Proxy', bindText(r, 'proxy', { placeholder: 'socks5://host:1080' }), 'Reddit, Arctic Shift and media downloads go through it (http://, https:// or socks5://)'),
+          field('Pause between native pages (s)', num('pageDelaySeconds', 1, 60), '±20 % jitter')),
+        h('div', { class: 'btn-row', style: 'margin-top:.8rem' }, bindCheck(r, 'solveChallenge', "Answer Reddit's JavaScript check")),
+        h('p', { class: 'muted small' }, 'Reddit shows logged-out visitors a JavaScript check instead of the page; without an answer, native gets nothing. With this on (the default), its script runs in a sandbox without network or file access, in a separate process with time and memory limits, and the answer is sent like a browser would. Reddit uses the check to keep automated clients out, so answering it may go against its terms. Off: Arctic Shift takes over while native is blocked.'),
+        h('div', { class: 'btn-row', style: 'margin-top:.8rem' },
+          h('button', { class: 'btn small', onclick: async (e) => {
+            e.target.disabled = true;
+            try { await post('/reddit/reset'); toast('Reddit session reset', 'ok'); } catch (ex) { toast(ex.message, 'err'); }
+            e.target.disabled = false;
+          } }, 'Reset Reddit session')),
+        h('p', { class: 'muted small' }, 'Forgets the cookies Reddit set (including an answered check) and ends the pause of native after a block, so the next check starts like a new visitor.')),
+      h('div', { class: 'section' }, h('h2', {}, 'Listings'),
+        h('div', { class: 'grid' },
+          field('First listing (posts)', num('firstListing', 25, 1000), 'Depth of the first check and of a full rescan; native lists at most 1000'),
+          field('Posts of a pasted subreddit URL', num('jobListLimit', 1, 1000)),
+          field('Top list size', num('topDefault', 1, 1000), 'N of a new top-list source ("the top N of the week"); each subscription can change it'),
+          field('Library for new Reddit subscriptions', bindSelect(r, 'defaultLibrary', libs), 'Use a Jellyfin library of the type "Home videos and photos": movie libraries don\'t show images')),
+        h('div', { class: 'btn-row', style: 'margin-top:.8rem' }, bindCheck(r, 'gapFill', 'Fill gaps from Arctic Shift when more posts appeared than native can list')),
+        h('div', { class: 'grid' }, field('Posts per gap fill or older-posts run', num('backfillMax', 100, 50000), 'From Arctic Shift; Continue loads more'))),
+      h('div', { class: 'section' }, h('h2', {}, 'Links to other sites'),
+        h('p', { class: 'muted' }, 'Link posts to these sites are downloaded from the site they link to, with its site rule, like a pasted URL; other link posts are left out. One host per line; *.example.com also covers example.com. YouTube, Redgifs, Streamable and Imgur links are recognized by their video id, so a video already in the library is not downloaded again.'),
+        h('textarea', { rows: 6, style: 'width:100%', class: 'mono', value: (r.externalHosts || []).join('\n'),
+          oninput: (e) => { r.externalHosts = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean); } })),
+      h('div', { class: 'section' }, h('h2', {}, 'Duplicates'),
+        h('p', { class: 'muted' }, 'Crossposts and images already in the library are always recognized by their media id. These checks look at the downloaded file; Force re-download skips them.'),
+        h('div', { class: 'btn-row', style: 'margin-bottom:.8rem' }, bindCheck(r.duplicates, 'contentHash', 'Skip files identical to a library file (re-uploads under a new id)')),
+        h('div', { class: 'grid' },
+          field('Similar images', bindSelect(r.duplicates, 'similar', [['warn', 'Warn'], ['skip', 'Skip'], ['off', 'Off']]),
+            'Resized or recompressed reposts. A match can be wrong (memes on the same template), so the default only warns'),
+          field('Similarity (bits)', bindText(r.duplicates, 'similarDistance', { type: 'number', min: 0, max: 16 }), 'How far two image hashes may differ; 0–16, default 6'))),
       this.saveBtn());
   }
 

@@ -38,6 +38,7 @@ A self-hosted download server for [yt-dlp](https://github.com/yt-dlp/yt-dlp) tha
 - **Library-safe downloads**: an item only appears in the library after it was downloaded, verified with `ffprobe` and fsynced; it is moved in with a single atomic rename. Nothing in the library is overwritten by a different video.
 - **Per-item tracking**: a playlist job has one item per video, each with its own state, retries and log. A failed video never affects the ones that already finished.
 - **Subscriptions**: watch channels (with a choice of tabs) and playlists. New videos are downloaded automatically or land in an inbox to pick from; existing videos are only downloaded if asked. Checks are cheap and gentle on sites, and automatic downloads always give way to the ones you start by hand.
+- **Reddit** (in testing): images, GIFs, galleries and videos from posts, subreddits and user profiles, without a Reddit account, plus the YouTube, Redgifs, Streamable and Imgur links in them. Pages are read like a logged-out browser does, with Arctic Shift as a fallback; crossposts and identical re-uploads are downloaded only once.
 - **Smart retries**: errors are classified (permanent, blocked, rate-limited, extractor broken, crash, transient). Permanent errors are not retried, backoff is capped at 15 minutes, and every failed attempt is explained in the log.
 - **yt-dlp version manager**: choose stable, nightly or master and a specific version in the UI, with SHA-256 verification, smoke test, auto-update and one-click rollback. Verified builds are bundled in the image, so it works offline on first start.
 - **Impersonation** (`curl_cffi`) per job, per site rule, and as an automatic one-time escalation when a site blocks access.
@@ -148,6 +149,23 @@ A thumbnail or subtitle problem never fails a video; the item completes with a w
 - Existing videos (the **backlog**) are not downloaded unless you choose *latest N* or *all*, now or later with **Download backlog…**.
 
 Subscriptions are checked every 6 hours by default (15 minutes to 7 days per subscription); for exact times, call `POST /api/v1/subscriptions/check` from a cron job. Checks list only the newest 50 videos of a channel tab, run one at a time per site and respect rate limits. Each subscription has its own folder in the library (its name by default); filters by duration, title and date keep the inbox clean. Downloads of new videos and backlogs run in the background and give way to downloads you start by hand. Subscriptions can be imported from a URL list, OPML or the CSV of a YouTube subscriptions export, and exported as a URL list or OPML. See [`docs/subscriptions-concept.md`](docs/subscriptions-concept.md) for the details.
+
+### Reddit
+
+Paste a post, share link, subreddit or user URL as a download, or subscribe to a subreddit or user like to a channel. Posts are listed and fetched by two providers, tried in order (**Settings → Reddit**):
+
+- **native** reads the pages Reddit shows a logged-out browser, with a browser's TLS and HTTP/2 fingerprint and headers; NSFW posts are read through the blur.
+- **Arctic Shift** is a third-party archive (no guarantees; it sees which subreddits and posts the server asks for). It answers when native is blocked and fills gaps when more posts appeared between two checks than native can list.
+
+Reddit shows logged-out visitors a JavaScript check instead of the page. **Answer Reddit's JavaScript check** (on by default) runs the check's script in a sandbox: an embedded JavaScript engine in a child process, without network or file access, with time and memory limits. It still runs code from Reddit on your server, and Reddit's terms don't allow automated access. Turned off, native pauses for 30 minutes whenever it meets the check, and Arctic Shift answers. **Reset Reddit session** forgets Reddit's cookies and ends such a pause.
+
+Besides new posts, a subscription can follow a **top list** (paste e.g. `https://www.reddit.com/r/<name>/top/?t=week`): every check takes the top N of that period (default 10, **Settings → Reddit**), and only native can rank, so it doesn't fall back to Arctic Shift. **Load older posts…** in a subscription's menu adds older posts to its backlog once: the top N of a period, everything in a time range, or the top N of a time range, counted per year first. A range loads at most *Posts per gap fill or older-posts run* at a time; *Continue* loads more. A pasted top, hot, rising or controversial URL downloads that list in its order.
+
+Link posts to YouTube, Redgifs, Streamable and Imgur (more sites in **Settings → Reddit**) are downloaded from the site they link to, in a job of their own with that site's rule, and a video already in the library is not downloaded again; other link posts are left out.
+
+Images keep their type (`.jpg`, `.png`, `.gif`, …) and are checked by their content; galleries become `Title [id] - 01.jpg`, `- 02.jpg`, … in one folder; videos get `movie.nfo` and `folder.jpg` like any video. Every file gets the post time as its date. A hidden `.ytdlp-nfo.json` in each folder lists the files, so a re-download replaces the folder and **Archive → Check library** finds image folders. Crossposts, posts already in the library under another subscription and identical re-uploads are skipped; a gallery that partly exists stores only its new images. Resized or recompressed reposts get a warning ("Looks like …") or, if you choose, are skipped as well. Use a Jellyfin library of the type *Home videos and photos*: movie libraries don't show images.
+
+`ytdlp-nfo-server reddit-probe <subreddit or post URL>` shows what each provider gets from your network (statuses, JavaScript checks, block pages, parsed posts, media reachability); `--solve` answers the JavaScript check like the setting, and `--fixtures DIR` saves the pages anonymized for bug reports. See [`docs/reddit-concept.md`](docs/reddit-concept.md).
 
 ### Browser add-on
 

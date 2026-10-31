@@ -13,9 +13,11 @@ import (
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/failpoint"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/joblog"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/notify"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/subscriptions"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp/versions"
 )
 
@@ -52,6 +54,7 @@ func (m *Manager) initSubscriptions() error {
 	m.subs.loop = subscriptions.NewLoop(subscriptions.Deps{
 		Store: m.Store, Host: subHost{m}, Logs: logs, Logf: m.logf,
 		CacheDir: filepath.Join(m.dataDir, "ytdlp", "cache"), TmpDir: tmp,
+		ListerFor: m.listerFor,
 	})
 	return nil
 }
@@ -238,11 +241,18 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 			}
 		}
 		var keys []string
+		listings := []*ytdlp.Listing{}
 		for _, r := range res.Sources {
-			if r.Listing == nil {
+			listings = append(listings, r.Listing)
+		}
+		if res.Backfill != nil {
+			listings = append(listings, res.Backfill.Listing)
+		}
+		for _, l := range listings {
+			if l == nil {
 				continue
 			}
-			for _, le := range r.Listing.Entries {
+			for _, le := range l.Entries {
 				if k := subscriptions.EntryKey(le); k != "" && !have[k] {
 					keys = append(keys, k)
 				}
@@ -256,25 +266,50 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 			Result: res, Settings: settings.Subscriptions, HasCookies: opts.CookieProfile != ""})
 		if res.OptionsErr == nil {
 			if len(out.Auto) > 0 {
-				j, err := m.subJobTx(ctx, tx, sub, opts, store.BandAuto, out.Auto, archived)
+				js, err := m.subJobsTx(ctx, tx, sub, opts, store.BandAuto, out.Auto, archived)
 				if err != nil {
 					return err
 				}
-				jobs = append(jobs, j)
+				jobs = append(jobs, js...)
 			}
 			for _, e := range out.Requeue {
-				j, err := m.subJobTx(ctx, tx, sub, opts, store.BandAuto, []*store.Entry{e}, archived)
+				js, err := m.subJobsTx(ctx, tx, sub, opts, store.BandAuto, []*store.Entry{e}, archived)
 				if err != nil {
 					return err
 				}
-				jobs = append(jobs, j)
+				jobs = append(jobs, js...)
 			}
 			if len(out.Backlog) > 0 {
-				j, err := m.subJobTx(ctx, tx, sub, opts, store.BandBacklog, out.Backlog, archived)
+				js, err := m.subJobsTx(ctx, tx, sub, opts, store.BandBacklog, out.Backlog, archived)
 				if err != nil {
 					return err
 				}
-				jobs = append(jobs, j)
+				jobs = append(jobs, js...)
+			}
+			// "Download them": the older posts a backfill loaded are queued
+			// at once, in the backlog band (Reddit concept §7.7).
+			if b := res.Backfill; b != nil && b.Download && sub.Backfill != nil && sub.Backfill.ID == b.ID {
+				var cands []*store.Entry
+				for _, e := range out.Backfilled {
+					if !e.Ignored && !e.InArchive && !archived[e.Key] {
+						cands = append(cands, e)
+					}
+				}
+				if len(cands) > 0 {
+					js, err := m.subJobsTx(ctx, tx, sub, opts, store.BandBacklog, cands, archived)
+					if err != nil {
+						return err
+					}
+					jobs = append(jobs, js...)
+					out.Backlog = append(out.Backlog, cands...)
+				}
+			}
+		}
+		// The run's progress replaces the request it ran; a request changed
+		// or cancelled during the check stays as it is.
+		if b := res.Backfill; b != nil && sub.Backfill != nil && sub.Backfill.ID == b.ID {
+			if err := tx.SetBackfill(ctx, sub.ID, b.Next); err != nil {
+				return err
 			}
 		}
 		for _, e := range out.Insert {
@@ -333,6 +368,8 @@ func (m *Manager) commitCheck(ctx context.Context, res *subscriptions.Result) er
 		log.Printf("Next check at %s", sub.NextCheckAt.Format("2006-01-02 15:04"))
 	}
 	m.subs.logs.Release(sub.ID)
+	// The counts of the check right away, not after the counts loop.
+	m.refreshCounts(ctx, sub.ID)
 	m.markCounts(sub.ID)
 	m.publishSub(sub.ID)
 	m.Hub.Publish(EventEntries, map[string]any{"subscription": itoa(sub.ID), "changed": len(out.Insert) + len(out.Update)})
@@ -453,21 +490,71 @@ func removeSource(srcs []*store.Source, id int64) []*store.Source {
 // subJobTx creates one job with pre-planned items for entries of a
 // subscription and links the entries to the items (§4.3). Items run oldest
 // first; items whose key is in the archive are created as skipped.
+// subJobsTx queues entries as jobs. A Reddit subscription gets one job
+// per site (Reddit concept §7.6): Reddit-hosted media in one job, the link
+// posts of each other site in a job of their own, with the options
+// resolved for that site (subscription option > site rule of the target >
+// default), so its site rule, limits and cooldowns apply. Other
+// subscriptions keep one job: their videos may be served from another
+// host than the subscribed URL.
+func (m *Manager) subJobsTx(ctx context.Context, tx *store.Tx, sub *store.Subscription, opts config.Options, band store.Band,
+	entries []*store.Entry, archived map[string]bool) ([]*store.Job, error) {
+	_, isReddit := reddit.Parse(firstURL(sub))
+	own := config.SiteKey(config.Host(firstURL(sub)))
+	groups := map[string][]*store.Entry{}
+	var order []string
+	for _, e := range entries {
+		site := config.SiteKey(config.Host(e.URL))
+		if !isReddit || site == "" || site == own {
+			site = ""
+		}
+		if groups[site] == nil {
+			order = append(order, site)
+		}
+		groups[site] = append(groups[site], e)
+	}
+	settings := m.Settings.Settings()
+	var jobs []*store.Job
+	for _, site := range order {
+		o, u := opts, ""
+		if site != "" {
+			u = groups[site][0].URL
+			if r, err := config.Resolve(sub.Requested, &settings, m.siteRules(), u); err == nil {
+				o = r
+			}
+		}
+		j, err := m.subJobTx(ctx, tx, sub, o, band, groups[site], archived, u)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, nil
+}
+
+// subJobTx queues entries as one job; u is the job's URL if they are on
+// another site than the subscription ("" for its own site).
 func (m *Manager) subJobTx(ctx context.Context, tx *store.Tx, sub *store.Subscription, opts config.Options, band store.Band,
-	entries []*store.Entry, archived map[string]bool) (*store.Job, error) {
+	entries []*store.Entry, archived map[string]bool, u string) (*store.Job, error) {
 	srcByID := map[int64]*store.Source{}
 	for _, src := range sub.Sources {
 		srcByID[src.ID] = src
 	}
 	entries = append([]*store.Entry(nil), entries...)
 	subscriptions.SortOldestFirst(entries, srcByID)
-	u := firstURL(sub)
+	linkedSite := ""
+	if u != "" {
+		linkedSite = config.SiteKey(config.Host(u))
+	} else {
+		u = firstURL(sub)
+	}
 	j := &store.Job{URL: u, Site: m.siteGroup(u, opts), State: store.JobQueued, Requested: sub.Requested, Options: opts,
-		SubscriptionID: sub.ID, Band: band, Title: subJobTitle(sub.Name, band, entries), Uploader: sub.Uploader,
+		SubscriptionID: sub.ID, Band: band, Title: subJobTitle(sub.Name, band, entries, linkedSite), Uploader: sub.Uploader,
 		Thumbnail: sub.Thumbnail, IsPlaylist: len(entries) > 1}
 	if len(entries) == 1 && entries[0].Thumbnail != "" {
 		j.Thumbnail = entries[0].Thumbnail
 	}
+	j.Options.RedditProviders = sub.Provider
 	if err := tx.CreateJob(ctx, j); err != nil {
 		return nil, err
 	}
@@ -499,14 +586,18 @@ func (m *Manager) subJobTx(ctx context.Context, tx *store.Tx, sub *store.Subscri
 	return j, nil
 }
 
-// subJobTitle names a subscription job (§4.3).
-func subJobTitle(name string, band store.Band, entries []*store.Entry) string {
+// subJobTitle names a subscription job (§4.3); linkedSite is the site of
+// the link posts it downloads, if any.
+func subJobTitle(name string, band store.Band, entries []*store.Entry, linkedSite string) string {
 	if len(entries) == 1 {
 		t := entries[0].Title
 		if t == "" {
 			t = entries[0].URL
 		}
 		return name + ": " + t
+	}
+	if linkedSite != "" {
+		return fmt.Sprintf("%s: %d linked videos (%s)", name, len(entries), linkedSite)
 	}
 	switch band {
 	case store.BandAuto:

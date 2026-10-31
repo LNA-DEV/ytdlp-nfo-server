@@ -70,6 +70,41 @@ func TestParseListing(t *testing.T) {
 	}
 }
 
+// Some extractors return complete videos as playlist entries: their "url"
+// is the media file of the chosen format, their page is "webpage_url".
+// Listings and probes take the page, which keeps the site's extractor and
+// key (a download of the file would be "generic <id>").
+func TestCompleteEntriesUsePageURL(t *testing.T) {
+	raw := []byte(`{"_type": "playlist", "id": "someone", "title": "someone", "entries": [
+		{"_type": "url", "ie_key": "Example", "id": "flat1", "url": "https://example.com/watch/flat1"},
+		{"id": "full2", "extractor_key": "Example", "title": "Full", "webpage_url": "https://example.com/watch/full2",
+		 "url": "https://media.example.com/Full2.mp4", "formats": [{"url": "https://media.example.com/Full2.mp4"}]},
+		{"id": "full3", "extractor_key": "Example", "url": "https://example.com/watch/full3"}
+	]}`)
+	l, err := ParseListing(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://example.com/watch/flat1", "https://example.com/watch/full2", "https://example.com/watch/full3"}
+	for i, e := range l.Entries {
+		if e.URL != want[i] {
+			t.Errorf("listing entry %d: %s, want %s", i, e.URL, want[i])
+		}
+	}
+	pr, err := ParseProbe(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, e := range pr.Entries {
+		if e.URL != want[i] {
+			t.Errorf("probe entry %d: %s, want %s", i, e.URL, want[i])
+		}
+	}
+	if pr.Entries[1].Key() != "example full2" {
+		t.Errorf("key %q", pr.Entries[1].Key())
+	}
+}
+
 // An extractor that lists complete metadata: yt-dlp puts the media URL of
 // the best format into "url", the page is webpage_url. An entry without its
 // own page gets the playlist's page filled in, so it keeps its url.

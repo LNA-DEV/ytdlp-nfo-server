@@ -2,7 +2,9 @@ package subscriptions
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,7 +18,19 @@ const FilterPrefix = "filter: "
 const (
 	ReasonNotAVideo   = "not a video"
 	ReasonNeedsCookie = "needs cookies"
+	ReasonNoMedia     = "no media"
+	ReasonLinkPrefix  = "link to "
+	// MediaLinked is the media kind of a link post to a followed site.
+	MediaLinked = "linked"
 )
+
+// linkHost returns the host of a link post's target, for its ignore reason.
+func linkHost(raw string) string {
+	if u, err := url.Parse(raw); err == nil && u.Hostname() != "" {
+		return strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+	}
+	return "another site"
+}
 
 // maxPattern limits title patterns (§4.1).
 const maxPattern = 200
@@ -61,7 +75,19 @@ func CompileFilters(f store.Filters) (*Filter, error) {
 			return nil, fmt.Errorf("publishedAfter must be YYYYMMDD")
 		}
 	}
-	c.isActive = f != (store.Filters{})
+	for _, k := range f.MediaKinds {
+		switch k {
+		case "image", "gallery", "video", "gif", "linked":
+		default:
+			return nil, fmt.Errorf("unknown media kind %q", k)
+		}
+	}
+	switch f.NSFW {
+	case "", store.NSFWInclude, store.NSFWExclude, store.NSFWOnly:
+	default:
+		return nil, fmt.Errorf("nsfw must be include, exclude or only")
+	}
+	c.isActive = !f.Empty()
 	return c, nil
 }
 
@@ -86,8 +112,23 @@ func (c *Filter) Reason(e *store.Entry) string {
 		return FilterPrefix + "title matches " + quote(f.TitleExclude)
 	case f.PublishedAfter != "" && e.UploadDate != "" && e.UploadDate < f.PublishedAfter:
 		return FilterPrefix + "published before " + f.PublishedAfter[:4] + "-" + f.PublishedAfter[4:6] + "-" + f.PublishedAfter[6:]
+	case len(f.MediaKinds) > 0 && e.MediaKind != "" && !slices.Contains(f.MediaKinds, filterKind(e.MediaKind)):
+		return FilterPrefix + filterKind(e.MediaKind)
+	case f.NSFW == store.NSFWExclude && e.NSFW:
+		return FilterPrefix + "NSFW"
+	case f.NSFW == store.NSFWOnly && !e.NSFW && e.MediaKind != "":
+		return FilterPrefix + "not NSFW"
 	}
 	return ""
+}
+
+// filterKind maps an entry's media kind to its filter name: a link post's
+// media is "linked".
+func filterKind(k string) string {
+	if k == "link" {
+		return "linked"
+	}
+	return k
 }
 
 // quote shortens a pattern to 40 characters (not bytes, so no character

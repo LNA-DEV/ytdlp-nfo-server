@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/ytdlp"
 )
 
@@ -80,6 +82,9 @@ func ChannelTabURL(channelID, tab string) string {
 // source and a renamed handle doesn't break the subscription. Other URLs
 // are normalized like job URLs.
 func Canonical(raw string, l *ytdlp.Listing) (canonical, tab string) {
+	if t, ok := reddit.Parse(raw); ok && t.IsListing() {
+		return t.Canonical(), "" // Reddit concept §7.1
+	}
 	base, tab, ok := YouTubeChannel(raw)
 	if !ok || tab == "" {
 		return config.NormalizeURL(raw), ""
@@ -102,6 +107,42 @@ func Canonical(raw string, l *ytdlp.Listing) (canonical, tab string) {
 		return ChannelTabURL(id, tab), tab
 	}
 	return config.NormalizeURL(raw), tab
+}
+
+// NewSource returns a new source. A Reddit listing of new posts lists
+// newest first, known up front, so checks use the window from the start
+// (Reddit concept §7.1). A top list has a fixed order of its own (§7.7);
+// the caller sets its N.
+func NewSource(u, canonical, tab string) *store.Source {
+	src := &store.Source{URL: u, Canonical: canonical, Tab: tab}
+	if t, ok := reddit.Parse(canonical); ok && t.IsListing() {
+		switch t.EffectiveSort() {
+		case reddit.SortNew:
+			src.NewestFirst, src.OrderKnown = true, true
+		case reddit.SortTop:
+			src.OrderKnown = true
+		}
+	}
+	return src
+}
+
+// IsTopList reports whether a URL is a Reddit top list (Reddit concept
+// §7.7).
+func IsTopList(u string) bool {
+	t, ok := reddit.Parse(u)
+	return ok && t.IsListing() && t.EffectiveSort() == reddit.SortTop
+}
+
+// Subscribable reports whether a Reddit listing can be a source: new posts
+// or a top list. Hot, rising and controversial reorder all the time, so
+// they are for one-off jobs only (Reddit concept §7.7).
+func Subscribable(u string) bool {
+	t, ok := reddit.Parse(u)
+	if !ok || !t.IsListing() {
+		return true
+	}
+	s := t.EffectiveSort()
+	return s == reddit.SortNew || s == reddit.SortTop
 }
 
 // Kind returns "channel" if the listing is a channel (its id is the

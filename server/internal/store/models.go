@@ -182,6 +182,11 @@ type FileMove struct {
 	Src  string `json:"src"`
 	Dst  string `json:"dst"`
 	Size int64  `json:"size,omitempty"`
+	// Media and SHA256 describe a Reddit media file; finalize records them
+	// in the media index (Reddit concept §7.5).
+	Media  string  `json:"media,omitempty"`
+	SHA256 string  `json:"sha256,omitempty"`
+	DHash  *uint64 `json:"dhash,omitempty"`
 }
 
 // Item is one video of a job.

@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/config"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/browser"
+	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit/jschallenge"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/scheduler"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/store"
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/testutil"
@@ -26,6 +28,9 @@ import (
 var fakeDir string
 
 func TestMain(m *testing.M) {
+	if os.Getenv(jschallenge.ChildEnv) != "" { // the Reddit check child of a test
+		os.Exit(jschallenge.ChildMain(os.Stdin, os.Stdout))
+	}
 	dir, err := testutil.FakeBin()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "building fake yt-dlp:", err)
@@ -60,6 +65,7 @@ type world struct {
 	sc       *scenario.Scenario
 	resolver *fakeResolver
 	state    string
+	reddit   *browser.Options // set to use a fake Reddit
 }
 
 func newWorld(t *testing.T, sc *scenario.Scenario) *world {
@@ -98,7 +104,7 @@ func newWorld(t *testing.T, sc *scenario.Scenario) *world {
 func (w *world) start() *Manager {
 	w.t.Helper()
 	m, err := New(Options{
-		Env: w.env, Resolver: w.resolver, DisableBackground: true, Logf: w.t.Logf,
+		Env: w.env, Resolver: w.resolver, DisableBackground: true, Logf: w.t.Logf, Reddit: w.reddit,
 		TweakPolicy: func(p *scheduler.Policy) {
 			p.Base, p.Cap, p.RateLimitCooldown = 20*time.Millisecond, 100*time.Millisecond, 150*time.Millisecond
 		},
@@ -679,6 +685,9 @@ func TestForceRedownloadReplaces(t *testing.T) {
 	files := w.libFiles()
 	if len(files) != 3 || !strings.Contains(strings.Join(files, "\n"), "Force [fr]/Force [fr].mkv") {
 		t.Fatalf("library: %v", files)
+	}
+	if n := strings.Count(w.archiveFile(), " fr\n"); n != 1 {
+		t.Fatalf("the key is %d times in the archive file:\n%s", n, w.archiveFile())
 	}
 }
 

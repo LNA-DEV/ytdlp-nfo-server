@@ -24,6 +24,15 @@ type SourceResult struct {
 	Impersonated bool // listed with escalated impersonation
 	Nightly      bool // listed with the latest nightly
 	Output       []string
+	Provider     string // the Reddit provider that answered
+	// Gap: the listing reached its limit without a known entry (Reddit
+	// concept §7.7). GapFilled: the posts in between were listed by time;
+	// GapLeft < 0: the fill stopped at its limit.
+	Gap        bool
+	GapFilled  bool
+	GapLeft    int
+	GapListed  int
+	GapSuggest time.Duration
 }
 
 // Result is the outcome of the listing phase of a check.
@@ -38,6 +47,8 @@ type Result struct {
 	Cooldown   time.Time // rate-limited: no check before this
 	Ytdlp      string    // version id used
 	Full       bool      // a requested full rescan
+	// Backfill is the run of a requested backfill (Reddit concept §7.7).
+	Backfill *BackfillResult
 }
 
 // Input is everything Apply needs; Sub and Entries are read in the commit
@@ -55,13 +66,15 @@ type Input struct {
 
 // Summary counts what a check did (for the check log).
 type Summary struct {
-	Sources  int
-	Failed   int
-	Listed   int
-	New      int // discovered after the first listing of their source
-	Backlog  int // found by a first listing
-	Filtered int
-	Gone     int
+	Sources int
+	Failed  int
+	Listed  int
+	New     int // discovered after the first listing of their source
+	Backlog int // found by a first listing or a backfill
+	// InLibrary are new entries whose media is already in the library.
+	InLibrary int
+	Filtered  int
+	Gone      int
 }
 
 // Output is the plan of a commit. Entries in Auto, Requeue and Backlog are
@@ -72,7 +85,9 @@ type Output struct {
 	Auto    []*store.Entry // one auto job
 	Requeue []*store.Entry // one one-item auto job each (§5.3)
 	Backlog []*store.Entry // one backlog job (the backlog choice)
-	Sources []*store.Source
+	// Backfilled are the entries a backfill added (Reddit concept §7.7).
+	Backfilled []*store.Entry
+	Sources    []*store.Source
 	// Ordered lists the sources whose order this check confirmed or
 	// changed (for the check log).
 	Ordered []*store.Source
@@ -159,6 +174,14 @@ func classRank(c ytdlp.Class) int {
 
 // Hint returns the hint shown with a check error.
 func Hint(c ytdlp.Classification) string {
+	switch c.Hint {
+	case "", ytdlp.HintPermanent, ytdlp.HintAuthRequired, ytdlp.HintBlocked, ytdlp.HintExtractorBroken,
+		ytdlp.HintRateLimited, ytdlp.HintCrash:
+	default:
+		if c.Class != ytdlp.ClassUnknown && c.Class != ytdlp.ClassTransient {
+			return c.Hint // a specific hint, e.g. from a Reddit provider
+		}
+	}
 	switch c.Class {
 	case ytdlp.ClassPermanent:
 		if c.Hint != "" && c.Hint != ytdlp.HintPermanent {
@@ -283,6 +306,9 @@ func Apply(in Input) *Output {
 		wasNewest, wasKnown := src.NewestFirst, src.OrderKnown
 		newest, dated := listingOrder(src, r.Listing)
 		switch {
+		case src.ListLimit > 0:
+			// A top list ranks by score: its dates say nothing about its
+			// order (Reddit concept §7.7).
 		case dated:
 			src.NewestFirst, src.OrderKnown = newest, true
 		case !src.OrderKnown:
@@ -307,23 +333,42 @@ func Apply(in Input) *Output {
 			}
 			date, sortTime := listingDate(le)
 			e := byKey[key]
+			if e == nil && le.AltKey != "" {
+				e = byKey[le.AltKey]
+			}
 			if e == nil {
 				e = &store.Entry{SubscriptionID: sub.ID, Key: key, URL: le.URL, SourceID: src.ID, Position: pos,
 					Backlog: first, FirstSeenAt: now, LastSeenAt: now, SortDate: now}
+				if le.AltKey != "" && le.AltKey != key {
+					// Another provider may list it under this key (Reddit
+					// concept §7.5).
+					e.ListingKey = le.AltKey
+					byKey[le.AltKey] = e
+				}
 				if sortTime.IsZero() {
 					// Unknown dates keep the listing order.
 					e.SortDate = undatedSort(now, pos, len(entries), src.NewestFirst)
 				}
-				if le.Nested {
+				switch {
+				case le.Nested:
 					e.Ignored, e.IgnoreReason = true, ReasonNotAVideo
+				case le.MediaKind == "text":
+					e.Ignored, e.IgnoreReason = true, ReasonNoMedia
+				case le.MediaKind == "link":
+					e.Ignored, e.IgnoreReason = true, ReasonLinkPrefix+linkHost(le.Link)
 				}
 				byKey[key] = e
 				inserted[e] = true
 				out.Insert = append(out.Insert, e)
-				if first {
+				switch {
+				case in.Archived[key]:
+					out.Summary.InLibrary++
+				case first:
 					out.Summary.Backlog++
-				} else {
+				default:
 					out.Summary.New++
+				}
+				if !first {
 					discovered = append(discovered, e)
 					newPos = append(newPos, pos)
 				}
@@ -362,6 +407,16 @@ func Apply(in Input) *Output {
 				e.Thumbnail = le.Thumbnail
 			}
 			e.LiveStatus, e.Availability = le.LiveStatus, le.Availability
+			if le.MediaKind != "" {
+				e.MediaKind = le.MediaKind
+			}
+			// A link post that was left out is followed now (a host was
+			// added to the allowlist).
+			if le.MediaKind == MediaLinked && e.Ignored && strings.HasPrefix(e.IgnoreReason, ReasonLinkPrefix) {
+				e.Ignored, e.IgnoreReason = false, ""
+				changed[e] = true
+			}
+			e.NSFW = e.NSFW || le.NSFW
 		}
 		// Where new entries appeared in a complete listing confirms the
 		// order of a source whose listing has no dates.
@@ -386,7 +441,9 @@ func Apply(in Input) *Output {
 			src.FirstOKAt = now
 		}
 		src.LastOKAt = now
-		if r.Complete {
+		// A listing without a window went as deep as the lister goes, even
+		// where that isn't complete (Reddit, R8).
+		if r.Complete || r.Window == 0 {
 			src.LastFullAt = now
 		}
 		if r.Impersonated {
@@ -401,6 +458,45 @@ func Apply(in Input) *Output {
 			}
 			if l.Thumbnail != "" {
 				sub.Thumbnail = l.Thumbnail
+			}
+		}
+	}
+
+	// Older posts of a backfill (Reddit concept §7.7): new ones become
+	// backlog entries of the source it ran on; known ones stay as they are.
+	if b := in.Result.Backfill; b != nil && b.Listing != nil && srcByID[b.SourceID] != nil {
+		entries := b.Listing.Entries
+		for pos := len(entries) - 1; pos >= 0; pos-- { // oldest first
+			le := entries[pos]
+			key := EntryKey(le)
+			if key == "" || byKey[key] != nil || le.AltKey != "" && byKey[le.AltKey] != nil {
+				continue
+			}
+			date, sortTime := listingDate(le)
+			e := &store.Entry{SubscriptionID: sub.ID, Key: key, URL: le.URL, SourceID: b.SourceID, Position: pos, Backlog: true,
+				FirstSeenAt: now, LastSeenAt: now, SortDate: now, Title: le.Title, Duration: le.Duration, UploadDate: date,
+				Thumbnail: le.Thumbnail, MediaKind: le.MediaKind, NSFW: le.NSFW}
+			if !sortTime.IsZero() {
+				e.SortDate = sortTime
+			}
+			if le.AltKey != "" && le.AltKey != key {
+				e.ListingKey = le.AltKey
+				byKey[le.AltKey] = e
+			}
+			switch le.MediaKind {
+			case "text":
+				e.Ignored, e.IgnoreReason = true, ReasonNoMedia
+			case "link":
+				e.Ignored, e.IgnoreReason = true, ReasonLinkPrefix+linkHost(le.Link)
+			}
+			byKey[key] = e
+			inserted[e] = true
+			out.Insert = append(out.Insert, e)
+			out.Backfilled = append(out.Backfilled, e)
+			if in.Archived[key] {
+				out.Summary.InLibrary++
+			} else {
+				out.Summary.Backlog++
 			}
 		}
 	}
@@ -464,6 +560,17 @@ func Apply(in Input) *Output {
 			}
 			out.Auto = cands
 		}
+	}
+	// Gaps are reported until a check without one (Reddit concept §7.7);
+	// a cap warning takes precedence.
+	if g := gapOf(in.Result); g != nil {
+		if !IsCapWarning(sub.Warning) {
+			sub.Warning = GapWarning(g.GapListed, g.GapFilled, g.GapLeft, g.GapSuggest)
+		}
+	} else if IsGapWarning(sub.Warning) && ok > 0 {
+		sub.Warning = ""
+	}
+	if auto {
 		// Upcoming entries that became available, and the classifier path
 		// ("not available yet" without live_status), each get a new
 		// one-item job: the only queueing after discovery (S3).
@@ -538,7 +645,26 @@ func Apply(in Input) *Output {
 	if in.Result.Cooldown.After(sub.NextCheckAt) {
 		sub.NextCheckAt = in.Result.Cooldown
 	}
+	// A backfill that failed for a while doesn't wait for the regular
+	// check (Reddit concept §7.7).
+	if b := in.Result.Backfill; b != nil && b.Next != nil && b.Next.Pending && b.Next.Failures > 0 &&
+		sub.Backfill != nil && sub.Backfill.ID == b.ID {
+		if at := backfillRetry(now, b); at.Before(sub.NextCheckAt) {
+			sub.NextCheckAt = at
+		}
+	}
 	return out
+}
+
+// backfillRetry is when a backfill that failed for a while runs again: 5
+// minutes after the first failure, doubling up to 4 hours, and not before
+// the pause of the provider that failed ends.
+func backfillRetry(now time.Time, b *BackfillResult) time.Time {
+	d := 5 * time.Minute
+	for i := 1; i < b.Next.Failures && d < 4*time.Hour; i++ {
+		d *= 2
+	}
+	return now.Add(max(min(d, 4*time.Hour), b.RetryAfter))
 }
 
 func allFirstOK(sub *store.Subscription) bool {

@@ -30,6 +30,9 @@ type Classification struct {
 	// MediaForbidden is set for HTTP 403 on the media URL itself: signed
 	// URLs may have expired, so the pipeline re-extracts once first.
 	MediaForbidden bool
+	// FromServer marks an error of the server's own code (the Reddit
+	// providers) rather than of yt-dlp: no yt-dlp escalation applies.
+	FromServer bool
 }
 
 type rule struct {

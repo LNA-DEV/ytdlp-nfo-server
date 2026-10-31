@@ -192,6 +192,7 @@ type Settings struct {
 	AgeRules                 []AgeRule            `json:"ageRules"`
 	MinFreeSpaceMB           int                  `json:"minFreeSpaceMB"`
 	Subscriptions            SubscriptionSettings `json:"subscriptions"`
+	Reddit                   RedditSettings       `json:"reddit"`
 	PasswordHash             string               `json:"passwordHash,omitempty"`
 
 	// Locked lists settings fixed by environment variables. Not persisted.
@@ -241,6 +242,7 @@ func DefaultSettings(migrated bool) Settings {
 		},
 		MinFreeSpaceMB: 1024,
 		Subscriptions:  DefaultSubscriptionSettings(),
+		Reddit:         DefaultRedditSettings(),
 	}
 	if migrated {
 		s.Naming.Preset = NamingLegacy
@@ -347,6 +349,7 @@ func (s *Settings) Normalize() {
 			*f.v = *f.d
 		}
 	}
+	s.Reddit.normalize()
 }
 
 // Validate checks user-editable settings.
@@ -428,7 +431,10 @@ func (s *Settings) Validate() error {
 			return fmt.Errorf("age rules need a match and a rating")
 		}
 	}
-	return s.Subscriptions.Validate()
+	if err := s.Subscriptions.Validate(); err != nil {
+		return err
+	}
+	return s.Reddit.Validate(seen)
 }
 
 func validName(s string) bool {

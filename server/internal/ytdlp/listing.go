@@ -40,6 +40,14 @@ type ListEntry struct {
 	Availability string
 	// Nested marks an entry that is itself a listing (a tab or playlist).
 	Nested bool
+	// Reddit listings (Reddit concept §7.1): the post's media kind ("" =
+	// unknown), NSFW flag, and the target of a link post.
+	MediaKind string
+	NSFW      bool
+	Link      string
+	// AltKey is another key the same entry may be listed under: a Reddit
+	// post's key when the entry is keyed by its media.
+	AltKey string
 }
 
 // Key returns the archive key of the entry ("" if the listing has no
@@ -114,7 +122,7 @@ func ParseListing(data []byte) (*Listing, error) {
 	t := s(m, "_type")
 	if _, hasEntries := m["entries"]; !hasEntries && t != "playlist" && t != "multi_video" {
 		l.Thumbnail = thumbnailOf(m, false)
-		l.Entries = []ListEntry{entryOf(m, "")}
+		l.Entries = []ListEntry{entryOf(m)}
 		if l.Entries[0].URL == "" {
 			l.Entries[0].URL = l.WebpageURL
 		}
@@ -128,13 +136,32 @@ func ParseListing(data []byte) (*Listing, error) {
 		if !ok || e == nil {
 			continue
 		}
-		l.Entries = append(l.Entries, entryOf(e, l.WebpageURL))
+		l.Entries = append(l.Entries, entryOf(e))
 	}
 	return l, nil
 }
 
-func entryOf(e map[string]any, listingURL string) ListEntry {
-	u := entryURL(e, listingURL)
+// EntryURL returns the page URL of a playlist entry. A flat entry
+// (_type "url") names its page in "url". A complete entry, which some
+// extractors return for every video of a page, has the media file of its
+// chosen format in "url": its page is "webpage_url", which keeps the
+// site's extractor and archive key instead of the generic one. A complete
+// entry without its own page keeps "url": yt-dlp fills in the playlist's
+// page there, which would download the whole playlist.
+func EntryURL(e map[string]any) string {
+	if t := s(e, "_type"); t != "url" && t != "url_transparent" {
+		if w := s(e, "webpage_url"); isHTTP(w) && w != s(e, "playlist_webpage_url") {
+			return w
+		}
+	}
+	if u := s(e, "url"); isHTTP(u) {
+		return u
+	}
+	return s(e, "webpage_url", "original_url")
+}
+
+func entryOf(e map[string]any) ListEntry {
+	u := EntryURL(e)
 	id := s(e, "id")
 	if n, ok := e["id"].(json.Number); ok && id == "" {
 		id = n.String()

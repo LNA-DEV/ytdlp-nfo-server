@@ -101,6 +101,10 @@ type Scheduler struct {
 	pauseUntil  time.Time
 	stopping    bool
 	baseCtx     context.Context
+	// again holds jobs enqueued while their run was still returning (a
+	// retry right after the job was marked done); they are queued once
+	// the run has ended.
+	again map[int64]Job
 }
 
 type finishedMsg struct {
@@ -128,6 +132,7 @@ func New(run RunFunc, max int, siteLimit func(string) int, onChange func()) *Sch
 		max:         max,
 		bgSlots:     1,
 		runs:        map[int64]*running{},
+		again:       map[int64]Job{},
 		siteRunning: map[string]int{},
 		cooldown:    map[string]time.Time{},
 	}
@@ -302,7 +307,13 @@ func (s *Scheduler) handleFinished(m finishedMsg) {
 	cause := context.Cause(r.ctx)
 	r.cancel(nil)
 	close(r.done)
-	if !s.stopping && cause == nil {
+	again, enqueued := s.again[m.id]
+	delete(s.again, m.id)
+	switch {
+	case s.stopping:
+	case enqueued:
+		s.insert(again)
+	case cause == nil:
 		switch m.out.Kind {
 		case RetryAt:
 			j := r.job
@@ -340,10 +351,12 @@ func (s *Scheduler) sortQueue() {
 
 // --- public API ---
 
-// Enqueue adds (or updates) a job in the queue.
+// Enqueue adds (or updates) a job in the queue. A job that is still
+// running is queued once its run has ended.
 func (s *Scheduler) Enqueue(j Job) {
 	s.do(func() {
 		if _, running := s.runs[j.ID]; running {
+			s.again[j.ID] = j
 			return
 		}
 		s.insert(j)
@@ -357,6 +370,7 @@ func (s *Scheduler) Enqueue(j Job) {
 func (s *Scheduler) Cancel(id int64, cause error) <-chan struct{} {
 	done := make(chan struct{})
 	ok := s.do(func() {
+		delete(s.again, id)
 		for i, q := range s.queue {
 			if q.ID == id {
 				s.queue = append(s.queue[:i], s.queue[i+1:]...)
@@ -464,6 +478,16 @@ func (s *Scheduler) SetCooldown(site string, until time.Time) {
 			s.cooldown[site] = until
 		}
 		s.onChange()
+	})
+}
+
+// ClearCooldown ends the cooldown of a site.
+func (s *Scheduler) ClearCooldown(site string) {
+	s.do(func() {
+		if _, ok := s.cooldown[site]; ok {
+			delete(s.cooldown, site)
+			s.onChange()
+		}
 	})
 }
 

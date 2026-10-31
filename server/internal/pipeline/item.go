@@ -186,6 +186,9 @@ func (p *Pipeline) itemFailure(ctx context.Context, rc *runCtx, it *store.Item, 
 
 // attempt runs one attempt of an item up to and including finalize.
 func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refetch bool, unlock *func()) error {
+	if p.isRedditItem(it) {
+		return p.attemptReddit(ctx, rc, it, refetch, unlock)
+	}
 	job := rc.job
 	dir := ItemWorkDir(p.d.Env, job.ID, it.ID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -197,7 +200,7 @@ func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refe
 	it.Error, it.ErrorClass, it.Hint = "", "", ""
 	p.saveItem(it)
 	p.publishStage(rc, it, "fetching metadata")
-	raw, meta, err := p.fetchMeta(ctx, rc, it, dir, refetch)
+	raw, meta, err := p.fetchMeta(ctx, rc, it, dir, it.URL, refetch)
 	if err != nil {
 		return err
 	}
@@ -233,6 +236,50 @@ func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refe
 		}
 	}
 
+	mediaPath, vr, err := p.downloadMedia(ctx, rc, it, dir, meta)
+	if err != nil {
+		return err
+	}
+
+	// --- extras (best-effort) ---
+	it.State = store.ItemExtras
+	p.saveItem(it)
+	p.publishStage(rc, it, "thumbnail and subtitles")
+	subs := p.extras(ctx, rc, it, meta, dir, mediaPath, vr)
+	if ctx.Err() != nil {
+		return errStop
+	}
+
+	// --- NFO (required) ---
+	info, err := nfo.ParseInfo(raw)
+	if err != nil {
+		return failure(ytdlp.ClassUnknown, "cannot read info.json for the NFO: "+err.Error())
+	}
+	if err := p.writeNFO(rc, dir, info); err != nil {
+		return err
+	}
+	_ = failpoint.Check("pipeline:extras-done")
+
+	// --- finalize ---
+	return p.finalize(ctx, rc, it, meta, dir, mediaPath, subs)
+}
+
+// writeNFO writes movie.nfo to the work dir.
+func (p *Pipeline) writeNFO(rc *runCtx, dir string, info nfo.Info) error {
+	rules := make([]nfo.AgeRule, len(rc.settings.AgeRules))
+	for i, r := range rc.settings.AgeRules {
+		rules[i] = nfo.AgeRule{Match: r.Match, Rating: r.Rating}
+	}
+	nfoData := nfo.Movie(info, nfo.Options{AgeRules: rules, DateAdded: p.d.Now()})
+	if err := os.WriteFile(filepath.Join(dir, "movie.nfo"), nfoData, 0o644); err != nil {
+		return failure(ytdlp.ClassTransient, "writing movie.nfo failed: "+err.Error())
+	}
+	return nil
+}
+
+// downloadMedia selects the formats, downloads the media and verifies it.
+func (p *Pipeline) downloadMedia(ctx context.Context, rc *runCtx, it *store.Item, dir string, meta *ytdlp.Meta) (string, VerifyResult, error) {
+	job := rc.job
 	// --- select formats ---
 	sortStr := rc.settings.Presets[job.Options.Preset]
 	sel := formats.Select(meta.Formats, job.Options.AllAudio, sortStr)
@@ -251,7 +298,7 @@ func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refe
 		p.d.Pub.SystemWarning("disk", err.Error())
 		it.State = store.ItemPending
 		p.saveItem(it)
-		return errRequeue
+		return "", VerifyResult{}, errRequeue
 	}
 
 	// --- download (media only) ---
@@ -260,7 +307,7 @@ func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refe
 	p.saveItem(it)
 	mediaPath, formatID, err := p.download(ctx, rc, it, dir, sel, formats.AudioOnlySource(meta.Formats))
 	if err != nil {
-		return err
+		return "", VerifyResult{}, err
 	}
 	_ = failpoint.Check("pipeline:downloaded")
 
@@ -277,10 +324,10 @@ func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refe
 	vr, err := p.verify(ctx, mediaPath, expectVideo, expectAudio)
 	if err != nil {
 		if ctx.Err() != nil {
-			return errStop
+			return "", vr, errStop
 		}
 		os.Remove(mediaPath)
-		return failure(ytdlp.ClassTransient, "verification failed: "+err.Error())
+		return "", vr, failure(ytdlp.ClassTransient, "verification failed: "+err.Error())
 	}
 	rc.log.Printf("Verified %s: %.0fs, %d video and %d audio stream(s), %s",
 		filepath.Base(mediaPath), vr.Duration, vr.Video, vr.Audio, humanBytes(vr.Size))
@@ -289,33 +336,7 @@ func (p *Pipeline) attempt(ctx context.Context, rc *runCtx, it *store.Item, refe
 		it.Duration = vr.Duration
 	}
 	_ = failpoint.Check("pipeline:verified")
-
-	// --- extras (best-effort) ---
-	it.State = store.ItemExtras
-	p.saveItem(it)
-	p.publishStage(rc, it, "thumbnail and subtitles")
-	subs := p.extras(ctx, rc, it, meta, dir, mediaPath, vr)
-	if ctx.Err() != nil {
-		return errStop
-	}
-
-	// --- NFO (required) ---
-	info, err := nfo.ParseInfo(raw)
-	if err != nil {
-		return failure(ytdlp.ClassUnknown, "cannot read info.json for the NFO: "+err.Error())
-	}
-	rules := make([]nfo.AgeRule, len(rc.settings.AgeRules))
-	for i, r := range rc.settings.AgeRules {
-		rules[i] = nfo.AgeRule{Match: r.Match, Rating: r.Rating}
-	}
-	nfoData := nfo.Movie(info, nfo.Options{AgeRules: rules, DateAdded: p.d.Now()})
-	if err := os.WriteFile(filepath.Join(dir, "movie.nfo"), nfoData, 0o644); err != nil {
-		return failure(ytdlp.ClassTransient, "writing movie.nfo failed: "+err.Error())
-	}
-	_ = failpoint.Check("pipeline:extras-done")
-
-	// --- finalize ---
-	return p.finalize(ctx, rc, it, meta, dir, mediaPath, subs)
+	return mediaPath, vr, nil
 }
 
 func firstNonEmpty(v ...string) string {
@@ -327,9 +348,9 @@ func firstNonEmpty(v ...string) string {
 	return ""
 }
 
-// fetchMeta returns info.json, extracting it just in time unless a fresh
-// copy exists (the single-video probe result).
-func (p *Pipeline) fetchMeta(ctx context.Context, rc *runCtx, it *store.Item, dir string, refetch bool) ([]byte, *ytdlp.Meta, error) {
+// fetchMeta returns info.json of url, extracting it just in time unless a
+// fresh copy exists (the single-video probe result).
+func (p *Pipeline) fetchMeta(ctx context.Context, rc *runCtx, it *store.Item, dir, url string, refetch bool) ([]byte, *ytdlp.Meta, error) {
 	path := filepath.Join(dir, ytdlp.InfoFile)
 	if fi, err := os.Stat(path); err == nil && !refetch && p.d.Now().Sub(fi.ModTime()) < p.d.MetaMaxAge {
 		if raw, err := os.ReadFile(path); err == nil {
@@ -338,11 +359,11 @@ func (p *Pipeline) fetchMeta(ctx context.Context, rc *runCtx, it *store.Item, di
 			}
 		}
 	}
-	if config.ValidateURL(it.URL) != nil {
+	if config.ValidateURL(url) != nil {
 		return nil, nil, failure(ytdlp.ClassPermanent, "entry has no usable URL")
 	}
-	rc.log.Printf("Fetching metadata for %s", it.URL)
-	res := ytdlp.Run(ctx, ytdlp.Call{Bin: rc.bin.Path, Args: ytdlp.MetaArgs(it.URL, rc.callOpts(p)), CaptureStdout: true,
+	rc.log.Printf("Fetching metadata for %s", url)
+	res := ytdlp.Run(ctx, ytdlp.Call{Bin: rc.bin.Path, Args: ytdlp.MetaArgs(url, rc.callOpts(p)), CaptureStdout: true,
 		OnLine: func(l string) { rc.log.Line(l) }})
 	if ctx.Err() != nil {
 		return nil, nil, errStop
