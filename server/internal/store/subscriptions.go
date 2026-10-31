@@ -170,6 +170,9 @@ type Backfill struct {
 	Loaded  int       `json:"loaded,omitempty"`
 	Total   int       `json:"total,omitempty"` // about, from the count; 0 = unknown
 	Error   string    `json:"error,omitempty"` // the last run failed
+	// Failures counts the runs in a row that failed for a while; the next
+	// check comes sooner than the regular one (Reddit concept §7.7).
+	Failures int `json:"failures,omitempty"`
 }
 
 // EffectiveFolder returns the library folder of the subscription's items.

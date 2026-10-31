@@ -47,11 +47,11 @@ func (p *Provider) Name() string { return reddit.ProviderArcticShift }
 // Site implements reddit.Provider.
 func (p *Provider) Site() string { return "arctic-shift" }
 
-// pace waits until MinInterval has passed since the last request. Requests
-// of one provider run one at a time.
-func (p *Provider) pace(ctx context.Context) error {
+// pace waits until gap has passed since the last request. Requests of one
+// provider run one at a time.
+func (p *Provider) pace(ctx context.Context, gap time.Duration) error {
 	p.mu.Lock()
-	wait := time.Until(p.last.Add(p.MinInterval))
+	wait := time.Until(p.last.Add(gap))
 	if wait < 0 {
 		wait = 0
 	}
@@ -76,7 +76,7 @@ type response struct {
 }
 
 func (p *Provider) get(ctx context.Context, path string, q url.Values) ([]apiPost, error) {
-	raw, err := p.getRaw(ctx, path, q)
+	raw, err := p.getRaw(ctx, path, q, p.MinInterval)
 	if err != nil {
 		return nil, err
 	}
@@ -89,8 +89,8 @@ func (p *Provider) get(ctx context.Context, path string, q url.Values) ([]apiPos
 	return posts, nil
 }
 
-func (p *Provider) getRaw(ctx context.Context, path string, q url.Values) (json.RawMessage, error) {
-	if err := p.pace(ctx); err != nil {
+func (p *Provider) getRaw(ctx context.Context, path string, q url.Values, gap time.Duration) (json.RawMessage, error) {
+	if err := p.pace(ctx, gap); err != nil {
 		return nil, err
 	}
 	resp, err := p.Client.JSON(ctx, BaseURL+path+"?"+q.Encode(), maxResponse)
@@ -217,7 +217,9 @@ func (p *Provider) Count(ctx context.Context, q reddit.Query) ([]reddit.YearCoun
 		v.Set("before", strconv.FormatInt(before.Unix(), 10))
 	}
 	filters(v, q)
-	raw, err := p.getRaw(ctx, "/api/posts/search/aggregate", v)
+	// A count is a heavy query: a longer pause before it (several in a
+	// row made the API ask to slow down).
+	raw, err := p.getRaw(ctx, "/api/posts/search/aggregate", v, 5*p.MinInterval)
 	if err != nil {
 		return nil, err
 	}

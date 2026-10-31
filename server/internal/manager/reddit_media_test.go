@@ -699,13 +699,26 @@ func TestRedditBackfillTop(t *testing.T) {
 		t.Fatal("a backfill without download queued something")
 	}
 
-	// The top of a range larger than backfillMax is refused up front.
+	// The top of a range larger than backfillMax fails without a retry;
+	// after a preview of the range it is refused up front, without
+	// counting again.
+	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillRangeTop, N: 5, From: day(259), To: day(0)}); err != nil {
+		t.Fatal(err)
+	}
+	if b := w.waitBackfill(id).Backfill; b == nil || b.Pending || !strings.Contains(b.Error, "narrow it") {
+		t.Fatalf("too large: %+v", b)
+	}
+	if c, err := w.m.PreviewBackfill(ctx, id, day(259), day(0)); err != nil || !c.Known || c.Total <= 100 {
+		t.Fatalf("preview: %+v %v", c, err)
+	}
+	counted := site.ArcticAggregates()
 	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillRangeTop, N: 5, From: day(259), To: day(0)}); !errors.Is(err, ErrInvalid) ||
-		!strings.Contains(err.Error(), "narrow it") {
-		t.Fatalf("too large: %v", err)
+		!strings.Contains(err.Error(), "narrow it") || site.ArcticAggregates() != counted {
+		t.Fatalf("too large after a preview: %v, %d counts", err, site.ArcticAggregates()-counted)
 	}
 
-	// Without native, a top list fails; the request stays and is repeated.
+	// Without native, a top list fails; the request stays and is repeated
+	// once native's pause ends, not with the regular check.
 	site.SetNativeBlocked(true)
 	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillTop, Period: "year", N: 5}); err != nil {
 		t.Fatal(err)
@@ -713,9 +726,12 @@ func TestRedditBackfillTop(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		v, _ := w.m.GetSubscription(ctx, id)
-		if b := v.Backfill; b != nil && b.Error != "" {
+		if b := v.Backfill; b != nil && b.Error != "" && v.State != store.SubChecking {
 			if !b.Pending || !strings.Contains(b.Error, "blocked") {
 				t.Fatalf("failed top: %+v", b)
+			}
+			if v.NextCheckAt == nil || v.NextCheckAt.After(time.Now().Add(redditBlockedPause+time.Minute)) {
+				t.Fatalf("next check: %v", v.NextCheckAt)
 			}
 			break
 		}

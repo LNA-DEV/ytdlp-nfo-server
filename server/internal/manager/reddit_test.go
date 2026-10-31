@@ -447,9 +447,9 @@ func (w *world) waitBackfill(id int64) *SubscriptionView {
 }
 
 // Loading older posts of a time range from Arctic Shift (Reddit concept
-// §7.7): counted first, at most backfillMax per run, Continue resumes
-// before the oldest post loaded, and everything ends up in the backlog
-// once, without text posts when the media kinds say so.
+// §7.7): at most backfillMax per run, counted when a run stops there,
+// Continue resumes before the oldest post loaded, and everything ends up
+// in the backlog once, without text posts when the media kinds say so.
 func TestRedditBackfillRange(t *testing.T) {
 	w, site := redditWorld(t)
 	ctx := context.Background()
@@ -470,7 +470,18 @@ func TestRedditBackfillRange(t *testing.T) {
 		t.Fatalf("first listing: %d entries", n)
 	}
 
-	// The count uses the filters: images and galleries, half of the posts.
+	// The request doesn't count; the run counts as it stops at the cap,
+	// with the filters: images and galleries, half of the posts.
+	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillRange}); err != nil || site.ArcticAggregates() != 0 {
+		t.Fatalf("request: %v, %d counts", err, site.ArcticAggregates())
+	}
+	v = w.waitBackfill(id)
+	if b := v.Backfill; b == nil || !b.CanContinue || b.Loaded != 100 || b.Total != 130 {
+		t.Fatalf("first run: %+v", b)
+	}
+	if log, _ := w.m.subs.logs.Read(id); !strings.Contains(string(log), "About 130 posts in the range") {
+		t.Fatalf("no count in the log:\n%s", log)
+	}
 	c, err := w.m.PreviewBackfill(ctx, id, "", "")
 	sum := 0
 	for _, y := range c.Years {
@@ -481,14 +492,6 @@ func TestRedditBackfillRange(t *testing.T) {
 	}
 	if _, err := w.m.PreviewBackfill(ctx, id, "2026-05-01", "2026-04-01"); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("reversed range: %v", err)
-	}
-
-	if _, err := w.m.RequestBackfill(ctx, id, BackfillInput{Kind: store.BackfillRange}); err != nil {
-		t.Fatal(err)
-	}
-	v = w.waitBackfill(id)
-	if b := v.Backfill; b == nil || !b.CanContinue || b.Loaded != 100 || b.Total != 130 {
-		t.Fatalf("first run: %+v", b)
 	}
 	for _, q := range site.ArcticSearches() {
 		if q.Get("url") != "https://i.redd.it/" && q.Get("url") != "https://www.reddit.com/gallery/" {

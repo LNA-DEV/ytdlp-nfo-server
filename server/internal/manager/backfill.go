@@ -2,7 +2,10 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/LNA-DEV/ytdlp-nfo-server/internal/reddit"
@@ -121,7 +124,7 @@ func (m *Manager) RequestBackfill(ctx context.Context, id int64, in BackfillInpu
 			return nil, invalid("there is nothing to continue")
 		}
 		b = sub.Backfill
-		b.Pending, b.Error = true, ""
+		b.Pending, b.Error, b.Failures = true, "", 0
 	} else {
 		b = &store.Backfill{ID: now.UnixMilli(), Kind: in.Kind, Download: in.Download, Pending: true}
 		switch in.Kind {
@@ -147,9 +150,11 @@ func (m *Manager) RequestBackfill(ctx context.Context, id int64, in BackfillInpu
 			b.N = in.N
 		}
 		if in.Kind != store.BackfillTop {
-			// Count first; the top of a range sorts all of it, so it is
-			// only offered up to backfillMax posts.
-			if c := m.backfillCounts(ctx, sub, b.From, b.To); c.Known {
+			// The count of a preview just before; the request itself
+			// doesn't count (Arctic Shift's aggregation is heavy), the run
+			// does if it stops at the cap. The top of a range sorts all of
+			// it, so it is only offered up to backfillMax posts.
+			if c := m.cachedCounts(sub, b.From, b.To); c != nil {
 				b.Total = c.Total
 				if in.Kind == store.BackfillRangeTop && c.Total > c.BackfillMax {
 					return nil, invalid("about %d posts in this range, more than %d (backfillMax): narrow it", c.Total, c.BackfillMax)
@@ -216,5 +221,51 @@ func (m *Manager) backfillCounts(ctx context.Context, sub *store.Subscription, f
 	}
 	sort.Slice(out.Years, func(i, j int) bool { return out.Years[i].Year < out.Years[j].Year })
 	out.Known = true
+	r := &m.reddit
+	r.mu.Lock()
+	if r.counts == nil {
+		r.counts = map[string]cachedCounts{}
+	}
+	for k, c := range r.counts {
+		if time.Since(c.at) > countsTTL {
+			delete(r.counts, k)
+		}
+	}
+	r.counts[countsKey(sub, from, to)] = cachedCounts{c: out, at: time.Now()}
+	r.mu.Unlock()
 	return out
+}
+
+// countsTTL is how long a preview's counts are used for a request.
+const countsTTL = 30 * time.Minute
+
+type cachedCounts struct {
+	c  *BackfillCounts
+	at time.Time
+}
+
+// countsKey identifies the searches of a range: the subscription, its
+// providers and server-side filters, and the range.
+func countsKey(sub *store.Subscription, from, to time.Time) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d|%s|%d|%d", sub.ID, sub.Provider, from.Unix(), to.Unix())
+	for _, f := range subscriptions.ServerFilters(sub.Filters) {
+		o := "any"
+		if f.Over18 != nil {
+			o = strconv.FormatBool(*f.Over18)
+		}
+		fmt.Fprintf(&b, "|%s %s", f.Prefix, o)
+	}
+	return b.String()
+}
+
+// cachedCounts returns the counts of a recent preview of the range, or nil.
+func (m *Manager) cachedCounts(sub *store.Subscription, from, to time.Time) *BackfillCounts {
+	r := &m.reddit
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c, ok := r.counts[countsKey(sub, from, to)]; ok && time.Since(c.at) <= countsTTL {
+		return c.c
+	}
+	return nil
 }

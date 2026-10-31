@@ -188,8 +188,9 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 						e.Reason += " after: " + cause.Reason
 					}
 				}
+				e.RetryAfter = until.Sub(c.now())
 				c.logf("%s: skipped, %s", p.Name(), e.Reason)
-				if first == nil {
+				if first == nil || first.Unsupported {
 					first = e
 				}
 				if temp == nil && e.temporary() {
@@ -225,7 +226,7 @@ func (c *Chain) run(ctx context.Context, fn func(Provider) error) (string, *Erro
 			}
 		}
 		if e.Unsupported {
-			c.logf("%s: %s", p.Name(), e.Reason)
+			c.logf("%s: skipped, %s", p.Name(), e.Reason)
 			if first == nil {
 				first = e
 			}

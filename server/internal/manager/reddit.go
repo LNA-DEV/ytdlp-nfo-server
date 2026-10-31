@@ -37,6 +37,8 @@ type redditState struct {
 	testOpts *browser.Options
 	// pauseCause is the error that paused a provider (by cooldown key).
 	pauseCause map[string]*reddit.Error
+	// counts are the backfill counts of recent previews (backfill.go).
+	counts map[string]cachedCounts
 }
 
 // redditProviders returns the providers by name, building them if needed.

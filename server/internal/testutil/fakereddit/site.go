@@ -72,6 +72,7 @@ type Site struct {
 	// with 503.
 	arcticMaintenance int
 	aggregateFails    bool
+	aggregates        int
 	arcticQueries     []url.Values // the parameters of every Arctic Shift search
 }
 
@@ -162,6 +163,9 @@ func (s *Site) ArcticSearches() []url.Values {
 	defer s.mu.Unlock()
 	return append([]url.Values(nil), s.arcticQueries...)
 }
+
+// ArcticAggregates returns the number of Arctic Shift counts so far.
+func (s *Site) ArcticAggregates() int { s.mu.Lock(); defer s.mu.Unlock(); return s.aggregates }
 
 // SetAggregateFails makes the Arctic Shift aggregation time out.
 func (s *Site) SetAggregateFails(b bool) { s.mu.Lock(); s.aggregateFails = b; s.mu.Unlock() }
@@ -555,6 +559,7 @@ func (s *Site) arctic(w http.ResponseWriter, r *http.Request) {
 	case "/api/posts/search/aggregate":
 		s.mu.Lock()
 		fails := s.aggregateFails
+		s.aggregates++
 		s.mu.Unlock()
 		if fails {
 			w.WriteHeader(http.StatusInternalServerError)

@@ -89,6 +89,16 @@ func TestChain(t *testing.T) {
 	if _, _, err := newChain().List(ctx, Query{}); err == nil || err.Hint != HintNoProviders {
 		t.Fatalf("no providers: %+v", err)
 	}
+
+	// The only provider that could serve it is paused: that is the reason,
+	// with the time left, not the provider that can't.
+	cooldowns["photon-reddit.com"] = now.Add(20 * time.Minute)
+	native.err = &Error{Class: ytdlp.ClassPermanent, Reason: "native can't list a time range", Unsupported: true}
+	_, _, err = newChain(native, arctic).List(ctx, Query{})
+	if err == nil || err.Class != ytdlp.ClassRateLimited || err.Reason != "arcticshift is paused until 12:20" ||
+		err.RetryAfter != 20*time.Minute {
+		t.Fatalf("paused: %+v", err)
+	}
 }
 
 // A blocked provider is paused: the next requests skip it and go to the

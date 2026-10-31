@@ -634,7 +634,26 @@ func Apply(in Input) *Output {
 	if in.Result.Cooldown.After(sub.NextCheckAt) {
 		sub.NextCheckAt = in.Result.Cooldown
 	}
+	// A backfill that failed for a while doesn't wait for the regular
+	// check (Reddit concept §7.7).
+	if b := in.Result.Backfill; b != nil && b.Next != nil && b.Next.Pending && b.Next.Failures > 0 &&
+		sub.Backfill != nil && sub.Backfill.ID == b.ID {
+		if at := backfillRetry(now, b); at.Before(sub.NextCheckAt) {
+			sub.NextCheckAt = at
+		}
+	}
 	return out
+}
+
+// backfillRetry is when a backfill that failed for a while runs again: 5
+// minutes after the first failure, doubling up to 4 hours, and not before
+// the pause of the provider that failed ends.
+func backfillRetry(now time.Time, b *BackfillResult) time.Time {
+	d := 5 * time.Minute
+	for i := 1; i < b.Next.Failures && d < 4*time.Hour; i++ {
+		d *= 2
+	}
+	return now.Add(max(min(d, 4*time.Hour), b.RetryAfter))
 }
 
 func allFirstOK(sub *store.Subscription) bool {

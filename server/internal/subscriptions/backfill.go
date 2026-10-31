@@ -37,10 +37,13 @@ type BackfillResult struct {
 	Err      *ytdlp.Classification
 	// Next is the request after the run: nil when it is done, else its
 	// position for Continue or the error of a run to repeat.
-	Next     *store.Backfill
-	Download bool // queue the new entries in the backlog band
-	Output   []string
-	Provider string
+	Next *store.Backfill
+	// RetryAfter is the pause of the provider that failed a run that is
+	// repeated: the next check doesn't come before it ends.
+	RetryAfter time.Duration
+	Download   bool // queue the new entries in the backlog band
+	Output     []string
+	Provider   string
 }
 
 // Backfiller loads older posts.
@@ -95,17 +98,23 @@ func (r *RedditLister) Backfill(ctx context.Context, req BackfillRequest) *Backf
 	var log lines
 	b := req.Backfill
 	res := &BackfillResult{ID: b.ID, Download: b.Download}
-	// A failed run is repeated by the next check; one that can't succeed
-	// waits until the user changes or cancels it.
+	// A failed run is repeated soon (Apply); one that can't succeed waits
+	// until the user changes or cancels it.
 	fail := func(c ytdlp.Classification) *BackfillResult {
 		res.Err, res.Output = &c, log.get()
 		next := b
 		next.Error = c.Reason
 		if c.Class == ytdlp.ClassPermanent {
 			next.Pending = false
+		} else {
+			next.Failures++
 		}
 		res.Next = &next
 		return res
+	}
+	failErr := func(e *reddit.Error) *BackfillResult {
+		res.RetryAfter = e.RetryAfter
+		return fail(e.Classification())
 	}
 	t, ok := reddit.Parse(req.URL)
 	if !ok || !t.IsListing() {
@@ -118,7 +127,7 @@ func (r *RedditLister) Backfill(ctx context.Context, req BackfillRequest) *Backf
 	maxPosts := max(r.Settings().BackfillMax, 1)
 	var posts []reddit.Post
 	next := b
-	next.Error = ""
+	next.Error, next.Failures = "", 0
 	done := true
 	switch b.Kind {
 	case store.BackfillTop:
@@ -126,9 +135,8 @@ func (r *RedditLister) Backfill(ctx context.Context, req BackfillRequest) *Backf
 		top.Sort, top.Period = reddit.SortTop, b.Period
 		page, name, err := chain.List(ctx, reddit.Query{Target: top, Limit: min(max(b.N, 1), reddit.MaxListing)})
 		if err != nil {
-			c := err.Classification()
-			c.Hint = reddit.HintTopNative + " " + c.Hint
-			return fail(c)
+			err.Hint = reddit.HintTopNative + " " + err.Hint
+			return failErr(err)
 		}
 		posts, res.Provider = page.Posts, name
 	case store.BackfillRange, store.BackfillRangeTop:
@@ -142,7 +150,7 @@ func (r *RedditLister) Backfill(ctx context.Context, req BackfillRequest) *Backf
 			page, name, err := chain.List(ctx, reddit.Query{Target: t, After: b.From, Before: before, ByTime: true,
 				Limit: maxPosts + 1, URLPrefix: f.Prefix, Over18: f.Over18})
 			if err != nil {
-				return fail(err.Classification())
+				return failErr(err)
 			}
 			res.Provider = name
 			for _, p := range page.Posts {
@@ -165,6 +173,9 @@ func (r *RedditLister) Backfill(ctx context.Context, req BackfillRequest) *Backf
 			// loaded (the posts of its second come again and are known).
 			posts = posts[:maxPosts]
 			next.Before, next.Pending, done = posts[len(posts)-1].Created, false, false
+			if next.Total == 0 {
+				next.Total = countRange(ctx, chain, t, b, req.Filters, log.logf)
+			}
 		}
 	default:
 		return fail(ytdlp.Classification{Class: ytdlp.ClassPermanent, Reason: "unknown backfill " + b.Kind})
@@ -176,6 +187,26 @@ func (r *RedditLister) Backfill(ctx context.Context, req BackfillRequest) *Backf
 	res.Listing = toListing(ctx, t, &reddit.Page{Posts: posts}, r.links())
 	res.Output = log.get()
 	return res
+}
+
+// countRange counts the posts of a range that holds more than one run
+// loads, for "loaded of about N"; 0 if Arctic Shift can't count them.
+func countRange(ctx context.Context, chain *reddit.Chain, t reddit.Target, b store.Backfill, f store.Filters,
+	logf func(string, ...any)) int {
+	total := 0
+	for _, sf := range ServerFilters(f) {
+		ys, _, err := chain.Count(ctx, reddit.Query{Target: t, After: b.From, Before: b.To, ByTime: true, URLPrefix: sf.Prefix,
+			Over18: sf.Over18})
+		if err != nil {
+			logf("Counting the posts of the range failed (%s); the total stays unknown", err.Reason)
+			return 0
+		}
+		for _, y := range ys {
+			total += y.Count
+		}
+	}
+	logf("About %d posts in the range", total)
+	return total
 }
 
 // BackfillDesc describes a request for the log and the UI.
