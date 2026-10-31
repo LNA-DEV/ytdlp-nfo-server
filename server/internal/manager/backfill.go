@@ -71,6 +71,8 @@ type BackfillCounts struct {
 	// times out for very large subreddits); the backfill still works.
 	Known       bool `json:"known"`
 	BackfillMax int  `json:"backfillMax"`
+	// Error is why the count is unknown.
+	Error string `json:"error,omitempty"`
 }
 
 // redditTarget returns the subreddit or user a subscription follows: its
@@ -209,6 +211,7 @@ func (m *Manager) backfillCounts(ctx context.Context, sub *store.Subscription, f
 		ys, _, err := chain.Count(ctx, reddit.Query{Target: t, After: from, Before: to, ByTime: true, URLPrefix: f.Prefix,
 			Over18: f.Over18})
 		if err != nil {
+			out.Error = err.Reason
 			return out
 		}
 		for _, y := range ys {

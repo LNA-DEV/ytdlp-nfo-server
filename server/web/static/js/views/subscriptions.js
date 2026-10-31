@@ -181,7 +181,7 @@ async function backfillDialog(sub) {
         const c = await post(`/subscriptions/${sub.id}/backfill/preview`, { from: from.value, to: to.value });
         clear(counts).append(c.known
           ? `${c.years.map((y) => `${y.year}: ${y.count.toLocaleString()}`).join(' · ') || 'No posts'} — about ${c.total.toLocaleString()} posts with this subscription's media and NSFW filters (at most ${c.backfillMax.toLocaleString()} per run)`
-          : 'Arctic Shift could not count them (it times out for very large subreddits); loading still works.');
+          : `Arctic Shift could not count them (${c.error || 'it times out for very large subreddits'}); loading still works.`);
       } catch (ex) { clear(counts).append(ex.message); }
       countBtn.disabled = false;
     });

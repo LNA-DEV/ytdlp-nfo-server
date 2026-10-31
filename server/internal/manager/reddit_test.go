@@ -531,7 +531,7 @@ func TestRedditBackfillRange(t *testing.T) {
 	// A count that times out leaves the total unknown; the request stays
 	// until it runs, and can be cancelled.
 	site.SetAggregateFails(true)
-	if c, _ := w.m.PreviewBackfill(ctx, id, "", ""); c.Known {
+	if c, _ := w.m.PreviewBackfill(ctx, id, "", ""); c.Known || !strings.Contains(c.Error, "timed out") {
 		t.Fatalf("counts after a timeout: %+v", c)
 	}
 	off := false
