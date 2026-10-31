@@ -865,6 +865,45 @@ func TestSubscriptionNightlyOncePerBreakage(t *testing.T) {
 	}
 }
 
+// An extractor that lists complete metadata reports the media URL of each
+// entry in "url": items download the video page instead, so they get the
+// video's archive key and metadata (a pasted playlist and a subscription).
+func TestResolvedListingDownloadsPages(t *testing.T) {
+	sc := &scenario.Scenario{Videos: map[string]scenario.Video{}, Playlists: map[string]scenario.Playlist{
+		"res":  {ID: "res", Title: "Res", Entries: []string{"r1", "r2"}, Resolved: true},
+		"res2": {ID: "res2", Title: "Res 2", Entries: []string{"r3", "r4"}, Resolved: true},
+	}}
+	for _, id := range []string{"r1", "r2", "r3", "r4"} {
+		sc.Videos[id] = vid(id, "Video "+id)
+	}
+	w := newWorld(t, sc)
+	w.startSubs()
+	check := func(what string, j *store.Job) {
+		t.Helper()
+		its := w.items(j.ID)
+		if j.State != store.JobCompleted || len(its) != 2 {
+			t.Fatalf("%s: %s with %d items\n%s", what, j.State, len(its), w.log(j.ID))
+		}
+		for _, it := range its {
+			if it.URL != scenario.VideoPrefix+it.VideoID || it.ArchiveKey != "fake "+it.VideoID {
+				t.Fatalf("%s: item %+v", what, it)
+			}
+		}
+	}
+	j := w.submit(scenario.PlaylistPrefix+"res", config.OptionsRequest{})
+	check("playlist job", w.wait(j.ID, store.JobCompleted, store.JobPartial, store.JobFailed))
+
+	start := time.Now()
+	id := sid(w.subscribe(SubscriptionInput{Name: strp("Res"), Backlog: &store.BacklogChoice{Mode: store.BacklogAll},
+		Sources: []SourceInput{{URL: scenario.PlaylistPrefix + "res2"}}}))
+	w.waitChecked(id, start)
+	jobs := w.subJobs(id)
+	if len(jobs) != 1 {
+		t.Fatalf("backlog jobs: %d", len(jobs))
+	}
+	check("subscription job", w.wait(jobs[0].ID, store.JobCompleted, store.JobPartial, store.JobFailed))
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
