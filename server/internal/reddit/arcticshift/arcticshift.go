@@ -200,7 +200,11 @@ func (p *Provider) Count(ctx context.Context, q reddit.Query) ([]reddit.YearCoun
 	if !t.IsListing() {
 		return nil, &reddit.Error{Class: ytdlp.ClassPermanent, Reason: "not a listing", Unsupported: true}
 	}
-	v := url.Values{"aggregate": {"created_utc"}, "frequency": {"year"}}
+	// Per day: the API's buckets step from the first day by the
+	// frequency, but count a post only in the one that starts its day,
+	// month or year, so month and year count nothing in a range that
+	// doesn't start at the start of one.
+	v := url.Values{"aggregate": {"created_utc"}, "frequency": {"day"}}
 	if t.Kind == reddit.TargetSubreddit {
 		v.Set("subreddit", t.Subreddit)
 	} else {
@@ -232,9 +236,9 @@ func (p *Provider) Count(ctx context.Context, q reddit.Query) ([]reddit.YearCoun
 
 // parseCounts reads time buckets: a list of {created_utc|key|date, count|
 // doc_count}, or such a list under "created_utc". The count may be a
-// number or a numeric string. A bucket starts at the year's start in the
-// API's time zone (the real one at 23:00 UTC the day before), so it
-// belongs to the year of the day after its start.
+// number or a numeric string. A bucket starts at midnight in the API's
+// time zone (the real one is UTC+1 or +2: 23:00 or 22:00 UTC the day
+// before), so it belongs to the year of the day after its start.
 func parseCounts(raw json.RawMessage) ([]reddit.YearCount, error) {
 	errFormat := errors.New("unknown format of the post counts")
 	var buckets []map[string]any

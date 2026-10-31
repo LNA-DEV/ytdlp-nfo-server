@@ -195,8 +195,10 @@ func TestParseCounts(t *testing.T) {
 		`[{"created_utc":1672531200,"count":3},{"created_utc":1704067200000,"count":5},{"created_utc":1706745600,"count":1}]`: "[{2023 3} {2024 6}]",
 		`{"created_utc":[{"key":1672531200000,"doc_count":7}]}`:                                                               "[{2023 7}]",
 		`[{"date":"2022-01-01T00:00:00Z","count":2}]`:                                                                         "[{2022 2}]",
-		// The real answer: the counts are strings, a year starts at 23:00 UTC.
-		`[{"created_utc":"2023-12-31T23:00:00.000Z","count":"15258"},{"created_utc":"2024-12-31T23:00:00.000Z","count":"42"}]`: "[{2024 15258} {2025 42}]",
+		// The real answer: the counts are strings, a day starts at 23:00 or
+		// 22:00 UTC the day before.
+		`[{"created_utc":"2025-12-30T23:00:00.000Z","count":"29"},{"created_utc":"2025-12-31T23:00:00.000Z","count":"42"},` +
+			`{"created_utc":"2026-07-31T22:00:00.000Z","count":"3"}]`: "[{2025 29} {2026 45}]",
 		`[]`: "[]",
 	} {
 		got, err := parseCounts(json.RawMessage(raw))

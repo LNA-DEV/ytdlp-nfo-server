@@ -590,18 +590,52 @@ func (s *Site) arctic(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"data":null,"error":"At least one of 'before' or 'after' must be set"}`))
 			return
 		}
-		// Like the real API: years in UTC+1, ISO times, counts as strings.
+		// Like the real API (UTC+1, ISO times, counts as strings): the
+		// buckets start at midnight of the first day and step by the
+		// frequency, and a post counts only in a bucket that starts its
+		// day, month or year. So with month or year, a range that doesn't
+		// start at the start of one counts nothing.
 		zone := time.FixedZone("", 3600)
-		years := map[int]int{}
+		freq := q.Get("frequency")
+		trunc := func(t time.Time) time.Time {
+			t = t.In(zone)
+			switch freq {
+			case "year":
+				return time.Date(t.Year(), 1, 1, 0, 0, 0, 0, zone)
+			case "month":
+				return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, zone)
+			}
+			return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, zone)
+		}
+		step := map[string][3]int{"year": {1, 0, 0}, "month": {0, 1, 0}}[freq]
+		if step == [3]int{} {
+			step = [3]int{0, 0, 1}
+		}
+		midnight := func(t time.Time) time.Time {
+			t = t.In(zone)
+			return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, zone)
+		}
+		counts := map[time.Time]int{}
+		var start time.Time
 		for _, p := range s.posts(q.Get("subreddit")) {
 			if matches(p, q) {
-				years[p.Created.In(zone).Year()]++
+				counts[trunc(p.Created)]++
+				if start.IsZero() || p.Created.Before(start) {
+					start = p.Created
+				}
 			}
 		}
-		var buckets []map[string]any
-		for y, n := range years {
-			start := time.Date(y, 1, 1, 0, 0, 0, 0, zone).UTC().Format("2006-01-02T15:04:05.000Z")
-			buckets = append(buckets, map[string]any{"created_utc": start, "count": strconv.Itoa(n)})
+		if n, err := strconv.ParseInt(q.Get("after"), 10, 64); err == nil {
+			start = time.Unix(n, 0)
+		}
+		end := time.Now()
+		if n, err := strconv.ParseInt(q.Get("before"), 10, 64); err == nil {
+			end = time.Unix(n, 0)
+		}
+		buckets := []map[string]any{}
+		for k := midnight(start); !start.IsZero() && k.Before(end); k = k.AddDate(step[0], step[1], step[2]) {
+			buckets = append(buckets, map[string]any{"created_utc": k.UTC().Format("2006-01-02T15:04:05.000Z"),
+				"count": strconv.Itoa(counts[k])})
 		}
 		json.NewEncoder(w).Encode(map[string]any{"data": buckets})
 		return
