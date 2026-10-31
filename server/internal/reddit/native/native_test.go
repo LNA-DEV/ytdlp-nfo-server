@@ -112,6 +112,8 @@ func TestPostPages(t *testing.T) {
 		switch r.URL.Path {
 		case "/r/EarthPorn/comments/gal1/":
 			w.Write(fixture(t, "post_gallery.html"))
+		case "/r/example/comments/gal3/":
+			w.Write(fixture(t, "post_gallery_titled.html"))
 		case "/comments/vid2/":
 			http.Redirect(w, r, "/r/videos/comments/vid2/clip/", http.StatusMovedPermanently)
 		case "/r/videos/comments/vid2/clip/":
@@ -133,6 +135,21 @@ func TestPostPages(t *testing.T) {
 	if gal.Kind != reddit.KindGallery || strings.Join(ids, " ") != "aaa111=https://i.redd.it/aaa111.jpg bbb222=https://i.redd.it/bbb222.png ccc333=https://i.redd.it/ccc333.jpg" ||
 		gal.Media[0].Caption != "first" || !strings.HasPrefix(gal.MediaKey(), "redditgallery ") {
 		t.Fatalf("gallery: %+v", gal)
+	}
+	// Previews named after the title: the media ids without it, each
+	// image once, the originals' extensions (§5.2).
+	titled, err := p.Post(ctx, "gal3", "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids = nil
+	for _, m := range titled.Media {
+		ids = append(ids, m.MediaID+"="+m.URL)
+	}
+	want := []reddit.Media{{MediaID: "k3m9x2abc1yh1"}, {MediaID: "p7q2w8def1yh1"}}
+	if strings.Join(ids, " ") != "k3m9x2abc1yh1=https://i.redd.it/k3m9x2abc1yh1.jpeg p7q2w8def1yh1=https://i.redd.it/p7q2w8def1yh1.png" ||
+		titled.MediaKey() != "redditgallery "+reddit.GalleryHash(want) {
+		t.Fatalf("gallery with titled previews: %s %s", ids, titled.MediaKey())
 	}
 	vid, err := p.Post(ctx, "vid2", "")
 	if err != nil || vid.Kind != reddit.KindVideo || vid.VideoID != "xyz789" || vid.MediaKey() != "reddit xyz789" {

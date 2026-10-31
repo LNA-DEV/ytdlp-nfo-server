@@ -144,7 +144,7 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
 | `Created` | `created-timestamp` (ISO 8601) |
 | `Permalink` | `permalink` (relative) |
 | `Kind` | `post-type` (`image`, `gallery`, `video`, `link`, `text`, …), checked against `content-href` |
-| Media | `content-href` (`i.redd.it/…`, `v.redd.it/<id>`, `reddit.com/gallery/<id>` or an external URL). The post page adds gallery images (`gallery-carousel` images) and the player's `v.redd.it` URL. |
+| Media | `content-href` (`i.redd.it/…`, `v.redd.it/<id>`, `reddit.com/gallery/<id>` or an external URL). The post page adds gallery images (`gallery-carousel` images) and the player's `v.redd.it` URL. Each gallery image is in the carousel several times: as previews, whose names may start with the post's title (`preview.redd.it/<title>-v0-<media id>.jpeg`, on post and listing pages), and as the original `i.redd.it/<media id>.<ext>`. The media ID is the part after `-v0-`; the original's extension wins. |
 | `NSFW`, `Spoiler` | The corresponding boolean attributes |
 | Cursor | `more-posts-cursor` on the last post (observed: base64 of `t3_<id>`) |
 | Community | `<reddit-page-data data="{subreddit: {name, prefixedName, isNsfw, isQuarantined, communityIcon}}">` on listing pages: the own spelling, the icon (the header itself has only `icon-size`) and the quarantine flag |

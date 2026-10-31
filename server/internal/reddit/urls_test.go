@@ -102,6 +102,8 @@ func TestImageExtensionsAreKept(t *testing.T) {
 		"https://i.redd.it/abc.JPG":            "https://i.redd.it/abc.jpg",
 		"https://preview.redd.it/abc.jpeg?w=1": "https://i.redd.it/abc.jpeg",
 		"https://i.redd.it/abc.png":            "https://i.redd.it/abc.png",
+		// A preview named after the post's title.
+		"https://preview.redd.it/a-long-title-v0-k3m9x2abc1yh1.jpeg?width=640&s=1": "https://i.redd.it/k3m9x2abc1yh1.jpeg",
 	} {
 		id, ext := ImageFromURL(in)
 		if got := OriginalImageURL(id, ext); got != want {

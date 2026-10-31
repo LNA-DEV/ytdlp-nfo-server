@@ -142,6 +142,10 @@ var (
 	mediaNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{4,64}$`)
 	vreddRe     = regexp.MustCompile(`(?i)^https?://v\.redd\.it/([a-z0-9]+)`)
 	ireddRe     = regexp.MustCompile(`(?i)^https?://(?:i|preview)\.redd\.it/([a-z0-9_-]+)\.([a-z0-9]+)`)
+	// slugRe matches a preview named after the post's title:
+	// "<title slug>-v0-<media id>". i.redd.it has the file only as
+	// "<media id>.<ext>".
+	slugRe = regexp.MustCompile(`(?i)^.+-v[0-9]+-([a-z0-9]+)$`)
 )
 
 // VideoIDFromURL returns the v.redd.it id of a URL, or "".
@@ -153,10 +157,15 @@ func VideoIDFromURL(u string) string {
 }
 
 // ImageFromURL returns the media id and extension of an i.redd.it or
-// preview.redd.it URL ("" if it isn't one).
+// preview.redd.it URL ("" if it isn't one). A preview named after the
+// post's title gives the media id without the title.
 func ImageFromURL(u string) (id, ext string) {
 	if m := ireddRe.FindStringSubmatch(u); m != nil {
-		return m[1], strings.ToLower(m[2])
+		id = m[1]
+		if s := slugRe.FindStringSubmatch(id); s != nil {
+			id = s[1]
+		}
+		return id, strings.ToLower(m[2])
 	}
 	return "", ""
 }

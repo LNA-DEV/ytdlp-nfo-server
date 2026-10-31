@@ -50,7 +50,7 @@ type postState struct {
 	hint     string
 	content  string
 	gallery  []reddit.Media
-	seenImg  map[string]bool
+	seenImg  map[string]int // media id → index in gallery
 	videoURL string
 	inner    *reddit.Post // a nested post: the original of a crosspost
 }
@@ -196,7 +196,7 @@ func parse(body []byte, base *url.URL) page {
 			switch {
 			case name == Layout.PostTag:
 				ps := &postState{hint: m[Layout.Type], content: absolute(base, m[Layout.ContentHref]),
-					seenImg: map[string]bool{}}
+					seenImg: map[string]int{}}
 				id := strings.ToLower(first(m, Layout.ID))
 				ps.post.ID = strings.TrimPrefix(id, "t3_")
 				ps.post.Permalink = absolute(base, m[Layout.Permalink])
@@ -270,11 +270,22 @@ func parse(body []byte, base *url.URL) page {
 				for _, src := range imageCandidates(m) {
 					src = absolute(base, src)
 					if inGallery > 0 {
-						if id, ext := reddit.ImageFromURL(src); id != "" && !cur.seenImg[id] {
-							cur.seenImg[id] = true
-							cur.gallery = append(cur.gallery, reddit.Media{URL: reddit.OriginalImageURL(id, ext), MediaID: id,
-								Caption: m["alt"]})
+						// Each image is there several times: as previews
+						// (whose names may start with the title) and as the
+						// original on i.redd.it, whose extension wins.
+						id, ext := reddit.ImageFromURL(src)
+						if id == "" {
+							continue
 						}
+						if i, ok := cur.seenImg[id]; ok {
+							if strings.HasPrefix(src, "https://i.redd.it/") {
+								cur.gallery[i].URL = reddit.OriginalImageURL(id, ext)
+							}
+							continue
+						}
+						cur.seenImg[id] = len(cur.gallery)
+						cur.gallery = append(cur.gallery, reddit.Media{URL: reddit.OriginalImageURL(id, ext), MediaID: id,
+							Caption: m["alt"]})
 						continue
 					}
 					if cur.post.Thumbnail == "" && isThumbnailHost(src) {
