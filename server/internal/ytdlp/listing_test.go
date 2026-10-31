@@ -104,3 +104,35 @@ func TestCompleteEntriesUsePageURL(t *testing.T) {
 		t.Errorf("key %q", pr.Entries[1].Key())
 	}
 }
+
+// An extractor that lists complete metadata: yt-dlp puts the media URL of
+// the best format into "url", the page is webpage_url. An entry without its
+// own page gets the playlist's page filled in, so it keeps its url.
+func TestResolvedEntries(t *testing.T) {
+	data := `{"_type": "playlist", "id": "someone", "title": "someone", "extractor_key": "FakeUser",
+	"webpage_url": "https://example.com/users/someone",
+	"entries": [
+	 {"id": "c1", "extractor_key": "Fake", "title": "One", "timestamp": 1760000000, "duration": 16, "format_id": "hd",
+	  "url": "https://media.example.com/C1.mp4", "webpage_url": "https://example.com/watch/c1",
+	  "playlist_webpage_url": "https://example.com/users/someone"},
+	 {"id": "c2", "extractor_key": "FakeUser", "url": "https://media.example.com/C2.mp4",
+	  "webpage_url": "https://example.com/users/someone", "playlist_webpage_url": "https://example.com/users/someone"}
+	]}`
+	l, err := ParseListing([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := l.Entries[0]; e.URL != "https://example.com/watch/c1" || e.Key() != "fake c1" || e.Nested {
+		t.Fatalf("resolved entry: %+v", e)
+	}
+	if e := l.Entries[1]; e.URL != "https://media.example.com/C2.mp4" {
+		t.Fatalf("resolved entry without its own page: %+v", e)
+	}
+	pr, err := ParseProbe([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pr.Entries) != 2 || pr.Entries[0].URL != "https://example.com/watch/c1" || pr.Entries[1].URL != "https://media.example.com/C2.mp4" {
+		t.Fatalf("probe entries: %+v", pr.Entries)
+	}
+}

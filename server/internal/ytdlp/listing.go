@@ -145,10 +145,12 @@ func ParseListing(data []byte) (*Listing, error) {
 // (_type "url") names its page in "url". A complete entry, which some
 // extractors return for every video of a page, has the media file of its
 // chosen format in "url": its page is "webpage_url", which keeps the
-// site's extractor and archive key instead of the generic one.
+// site's extractor and archive key instead of the generic one. A complete
+// entry without its own page keeps "url": yt-dlp fills in the playlist's
+// page there, which would download the whole playlist.
 func EntryURL(e map[string]any) string {
 	if t := s(e, "_type"); t != "url" && t != "url_transparent" {
-		if w := s(e, "webpage_url"); isHTTP(w) {
+		if w := s(e, "webpage_url"); isHTTP(w) && w != s(e, "playlist_webpage_url") {
 			return w
 		}
 	}
