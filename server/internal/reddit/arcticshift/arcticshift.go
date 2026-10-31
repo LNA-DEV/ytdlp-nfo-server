@@ -508,12 +508,13 @@ func (a *apiPost) post() reddit.Post {
 }
 
 // removed reports whether a post's media was taken down. Posts filtered
-// by AutoModerator are often approved later and keep their media, as do
-// categories we don't know: the download decides for them.
+// by AutoModerator or Reddit's spam filters ("reddit") are often approved
+// later and keep their media, as do categories we don't know: the
+// download decides for them.
 func removed(a *apiPost) bool {
 	if a.RemovedByCategory != nil {
 		switch *a.RemovedByCategory {
-		case "deleted", "author", "moderator", "reddit", "anti_evil_ops", "community_ops", "copyright_takedown",
+		case "deleted", "author", "moderator", "anti_evil_ops", "community_ops", "copyright_takedown",
 			"content_takedown", "legal":
 			return true
 		}

@@ -118,6 +118,8 @@ func TestPostPages(t *testing.T) {
 			http.Redirect(w, r, "/r/videos/comments/vid2/clip/", http.StatusMovedPermanently)
 		case "/r/videos/comments/vid2/clip/":
 			w.Write(fixture(t, "post_video.html"))
+		case "/r/example/comments/rem1/", "/r/example/comments/rem2/":
+			w.Write(fixture(t, "post_removed.html"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -154,6 +156,16 @@ func TestPostPages(t *testing.T) {
 	vid, err := p.Post(ctx, "vid2", "")
 	if err != nil || vid.Kind != reddit.KindVideo || vid.VideoID != "xyz789" || vid.MediaKey() != "reddit xyz789" {
 		t.Fatalf("video: %v %+v", err, vid)
+	}
+	// A removed post: its title and banner say so, the media is gone; a
+	// deleted one has only the title.
+	for _, id := range []string{"rem1", "rem2"} {
+		if rem, err := p.Post(ctx, id, "example"); err != nil || !rem.Removed || rem.Kind != reddit.KindText {
+			t.Fatalf("removed %s: %v %+v", id, err, rem)
+		}
+	}
+	if vid.Removed || gal.Removed {
+		t.Fatal("a post counts as removed")
 	}
 	if _, err := p.Post(ctx, "gone1", "EarthPorn"); reddit.AsError(err).Class != ytdlp.ClassPermanent {
 		t.Fatalf("missing post: %v", err)

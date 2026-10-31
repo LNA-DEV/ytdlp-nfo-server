@@ -36,6 +36,10 @@ type Post struct {
 	Link                         string
 	Original                     *Post // a crosspost's original
 	Removed                      bool  // the media is gone from i.redd.it
+	// RemovedBy is Arctic Shift's removed_by_category. "moderator" also
+	// makes the native page show the post as removed, without its media,
+	// as Reddit does; "reddit" (its spam filter) leaves the page as it is.
+	RemovedBy string
 	// Ext is the extension the images were uploaded with (default png, gif
 	// for a GIF); i.redd.it serves them only under it.
 	Ext string
@@ -363,6 +367,14 @@ func permalink(p *Post) string {
 
 func postHTML(p *Post, full bool) string {
 	var b strings.Builder
+	if p.RemovedBy == "moderator" {
+		fmt.Fprintf(&b, `<shreddit-post id="t3_%s" permalink="%s" post-title="[ Removed by moderator ]" author="[deleted]" `+
+			`subreddit-prefixed-name="r/%s" created-timestamp="%s" content-href="https://www.reddit.com%s" domain="%s">`+
+			`<div slot="post-removed-banner"><span>Sorry, this post was removed by the moderators.</span></div></shreddit-post>`+"\n",
+			p.ID, permalink(p), p.Subreddit, p.Created.UTC().Format("2006-01-02T15:04:05.000000+0000"), permalink(p),
+			strings.TrimPrefix(strings.Split(contentHref(p), "/")[2], "www."))
+		return b.String()
+	}
 	kind := p.Kind
 	href := contentHref(p)
 	if p.Original != nil {
@@ -519,6 +531,9 @@ func apiPost(p *Post) map[string]any {
 		m["crosspost_parent"] = "t3_" + p.Original.ID
 		m["crosspost_parent_list"] = []any{apiPost(p.Original)}
 		m["url"] = permalink(p.Original)
+	}
+	if p.RemovedBy != "" {
+		m["removed_by_category"] = p.RemovedBy
 	}
 	return m
 }

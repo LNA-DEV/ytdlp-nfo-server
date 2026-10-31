@@ -95,18 +95,25 @@ func (p *Pipeline) attemptReddit(ctx context.Context, rc *runCtx, it *store.Item
 		// An Imgur still image goes through the image path (§7.6).
 		post.Kind, post.Media = reddit.KindImage, []reddit.Media{{URL: t.URL, MediaID: t.ID, Key: t.Key}}
 	}
+	removed := failure(ytdlp.ClassPermanent, "the post was removed from Reddit")
 	switch post.Kind {
 	case reddit.KindText:
+		if post.Removed {
+			return removed
+		}
 		return failure(ytdlp.ClassPermanent, "a text post without media")
 	case reddit.KindImage, reddit.KindGIF, reddit.KindGallery, reddit.KindVideo:
 	default:
+		if post.Removed {
+			return removed
+		}
 		return failure(ytdlp.ClassUnknown, "the post's media could not be read")
-	}
-	if post.Removed && post.Kind != reddit.KindGallery {
-		return failure(ytdlp.ClassPermanent, "the post's media was removed from Reddit")
 	}
 	ext, id := post.MediaKeyParts()
 	if id == "" {
+		if post.Removed {
+			return removed
+		}
 		return failure(ytdlp.ClassUnknown, "the post's media could not be read")
 	}
 	keyBefore := it.ArchiveKey
@@ -121,6 +128,11 @@ func (p *Pipeline) attemptReddit(ctx context.Context, rc *runCtx, it *store.Item
 		if p.skipIfArchived(rc, it) {
 			return errSkipped
 		}
+	}
+	// Media already in the library counts as done, removed or not; a
+	// removed gallery may keep some of its images.
+	if post.Removed && post.Kind != reddit.KindGallery {
+		return failure(ytdlp.ClassPermanent, "the post's media was removed from Reddit")
 	}
 	p.saveItem(it)
 	if post.Kind == reddit.KindVideo {

@@ -37,6 +37,11 @@ var Layout = struct {
 	// spelling, with an otherwise empty page holding only this redirect.
 	RedirectID   string
 	RedirectCall string
+	// RemovedSlot is the slot of the banner a removed post shows instead
+	// of its media; RemovedTitles are the titles Reddit gives removed and
+	// deleted posts (lower case, without spaces).
+	RemovedSlot   string
+	RemovedTitles []string
 }{
 	PostTag:     "shreddit-post",
 	FeedTag:     "shreddit-feed",
@@ -63,6 +68,9 @@ var Layout = struct {
 	PageData:     "reddit-page-data",
 	RedirectID:   "shreddit-redirect",
 	RedirectCall: "ac-call",
+
+	RemovedSlot:   "post-removed-banner",
+	RemovedTitles: []string{"[removedbymoderator]", "[removedbyreddit]", "[deletedbyuser]", "[removed]", "[deleted]"},
 }
 
 // Markers are texts that identify special pages when a page has no posts

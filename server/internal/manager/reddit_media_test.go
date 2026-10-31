@@ -325,6 +325,36 @@ func TestRedditBrokenMedia(t *testing.T) {
 	}
 }
 
+// Removed posts (Reddit concept §6, §7.2): native shows one removed by a
+// moderator without its media, which fails as removed; Arctic Shift still
+// has the media, and media already in the library is skipped. A post
+// Reddit's spam filter took out ("reddit") keeps its media and downloads.
+func TestRedditRemovedPosts(t *testing.T) {
+	w, site := redditMediaWorld(t)
+	now := time.Now()
+	kept := &fakereddit.Post{ID: "kk", Subreddit: "pics", Title: "Kept", Kind: "image", Media: []string{"k1"}, Created: now}
+	site.Add(kept,
+		&fakereddit.Post{ID: "mm", Subreddit: "pics", Title: "Moderated", Kind: "video", Media: []string{"m1"}, Created: now,
+			RemovedBy: "moderator"},
+		&fakereddit.Post{ID: "ss", Subreddit: "pics", Title: "Filtered", Kind: "image", Media: []string{"s1"}, Created: now,
+			RemovedBy: "reddit"})
+	j := w.download(postURL("pics", "mm"), config.OptionsRequest{})
+	if j.State != store.JobFailed || j.ErrorClass != "permanent" || j.Error != "the post was removed from Reddit" {
+		t.Fatalf("removed: %s %s %s\n%s", j.State, j.ErrorClass, j.Error, w.log(j.ID))
+	}
+	if j := w.download(postURL("pics", "kk"), config.OptionsRequest{}); j.State != store.JobCompleted {
+		t.Fatalf("kept: %s\n%s", j.State, w.log(j.ID))
+	}
+	kept.RemovedBy = "moderator"
+	site.SetNativeBlocked(true)
+	for id, state := range map[string]store.ItemState{"kk": store.ItemSkipped, "ss": store.ItemDone} {
+		j := w.download(postURL("pics", id), config.OptionsRequest{})
+		if it := w.items(j.ID); j.State != store.JobCompleted || len(it) != 1 || it[0].State != state {
+			t.Fatalf("%s: %s %s\n%s", id, j.State, j.Error, w.log(j.ID))
+		}
+	}
+}
+
 // A Reddit subscription downloads images, videos and galleries; the
 // entries of galleries listed without their media move to the gallery
 // key; a crosspost of a downloaded image is in the library at listing

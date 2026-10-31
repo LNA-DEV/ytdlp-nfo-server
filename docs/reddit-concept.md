@@ -84,7 +84,7 @@ Both providers fill the same struct (`internal/reddit/post.go`). Fields a provid
 | `MediaKey` | The archive key derived from the media (R2). Empty if the provider didn't report the media. |
 | `Thumbnail` | Preview image for the feed and `folder.jpg` |
 | `CrosspostParent` | For display. A crosspost reports the media of its original, so it gets the same media key. |
-| `Removed` | The provider reports the post as deleted or removed |
+| `Removed` | The provider reports the post as deleted or removed. A removed post whose media is already in the library is skipped as usual; otherwise it fails as `permanent` ("the post was removed from Reddit"), except a gallery, whose images decide. |
 
 **Media URLs.** Images and GIFs use the original `https://i.redd.it/<media id>.<ext>`. A gallery's media IDs come from Arctic Shift's `media_metadata`/`gallery_data`, or from the preview URLs in the native post page (`https://preview.redd.it/<media id>.<ext>?…`, original at `i.redd.it` with the same name). A video needs only its `v.redd.it` ID: the manifest is `https://v.redd.it/<id>/DASHPlaylist.mpd`, with `HLSPlaylist.m3u8` as the fallback. yt-dlp's Reddit extractor uses the same URLs.
 
@@ -146,6 +146,7 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
 | `Kind` | `post-type` (`image`, `gallery`, `video`, `link`, `text`, …), checked against `content-href` |
 | Media | `content-href` (`i.redd.it/…`, `v.redd.it/<id>`, `reddit.com/gallery/<id>` or an external URL). The post page adds gallery images (`gallery-carousel` images) and the player's `v.redd.it` URL. Each gallery image is in the carousel several times: as previews, whose names may start with the post's title (`preview.redd.it/<title>-v0-<media id>.jpeg`, on post and listing pages), and as the original `i.redd.it/<media id>.<ext>`. The media ID is the part after `-v0-`; the original's extension wins. |
 | `NSFW`, `Spoiler` | The corresponding boolean attributes |
+| `Removed` | A `slot="post-removed-banner"` element in the post, or the title Reddit gives removed and deleted posts (`[ Removed by moderator ]`, `[ Removed by Reddit ]`, `[deleted by user]`, `[removed]`, `[deleted]`). Such a post has no `post-type` and no media: its `content-href` is its own page, and `domain` still names the media host. |
 | Cursor | `more-posts-cursor` on the last post (observed: base64 of `t3_<id>`) |
 | Community | `<reddit-page-data data="{subreddit: {name, prefixedName, isNsfw, isQuarantined, communityIcon}}">` on listing pages: the own spelling, the icon (the header itself has only `icon-size`) and the quarantine flag |
 
@@ -192,7 +193,7 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
   - "Query timed out" is retried once with half the page size, then `transient`;
   - an unknown subreddit is an empty result. Combined with a native `permanent` error, it is `permanent`.
 - **Removed posts**: Arctic Shift keeps posts that were deleted on Reddit. If their media is gone from `i.redd.it`, the item fails as `permanent` ("removed from Reddit") and is not queued again (subscriptions S3).
-  - `removed_by_category` counts as removed only for `deleted`, `author`, `moderator`, `reddit`, `anti_evil_ops`, `community_ops`, `copyright_takedown`, `content_takedown` and `legal`. `automod_filtered` (held for review, often approved later) and unknown categories are not removed: the media decides.
+  - `removed_by_category` counts as removed only for `deleted`, `author`, `moderator`, `anti_evil_ops`, `community_ops`, `copyright_takedown`, `content_takedown` and `legal`. `automod_filtered` (held for review, often approved later), `reddit` (Reddit's spam filter; such a post was seen in a top list with its media) and unknown categories are not removed: the media decides.
 - **Video IDs**: the `v.redd.it` ID comes from `secure_media` or `media` (`fallback_url`, `dash_url`, `hls_url`), else from `url_overridden_by_dest` or `url`. Only a video post without any of these is listed as `redditpost <id>`.
 
 ## 7. Integration
@@ -684,7 +685,9 @@ With `--fixtures`, it stores the pages and JSON responses with usernames, titles
 | The same with `solveChallenge` on | The check is answered once in the sandbox, and the page is read |
 | A check script that loops, grows memory, fetches, or submits to another host | Refused within the limits, `blocked` |
 | An image uploaded as `.jpeg` | Fetched under `.jpeg`, never under `.jpg`; stored with the extension of its content |
-| `removed_by_category = automod_filtered` | Not removed; the media decides |
+| `removed_by_category = automod_filtered` or `reddit` | Not removed; the media decides |
+| A post removed by a moderator, on native | Read as removed (banner, title), fails as `permanent` "the post was removed from Reddit", not as a text post |
+| A removed post whose media is already in the library (Arctic Shift still has it) | Skipped, not failed |
 | A video post whose `v.redd.it` ID is only in `url_overridden_by_dest` or `dash_url` | Key `reddit <id>`, not `redditpost` |
 | `i.redd.it/<name>` without an extension | An image, downloaded |
 | A `v.redd.it` video that answers only an impersonating client | Downloaded on the first try with `--impersonate chrome` |
