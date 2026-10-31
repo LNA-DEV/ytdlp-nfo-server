@@ -195,6 +195,8 @@ func TestParseCounts(t *testing.T) {
 		`[{"created_utc":1672531200,"count":3},{"created_utc":1704067200000,"count":5},{"created_utc":1706745600,"count":1}]`: "[{2023 3} {2024 6}]",
 		`{"created_utc":[{"key":1672531200000,"doc_count":7}]}`:                                                               "[{2023 7}]",
 		`[{"date":"2022-01-01T00:00:00Z","count":2}]`:                                                                         "[{2022 2}]",
+		// The real answer: the counts are strings, a year starts at 23:00 UTC.
+		`[{"created_utc":"2023-12-31T23:00:00.000Z","count":"15258"},{"created_utc":"2024-12-31T23:00:00.000Z","count":"42"}]`: "[{2024 15258} {2025 42}]",
 		`[]`: "[]",
 	} {
 		got, err := parseCounts(json.RawMessage(raw))
@@ -202,7 +204,7 @@ func TestParseCounts(t *testing.T) {
 			t.Errorf("%s: %v %v", raw, got, err)
 		}
 	}
-	for _, raw := range []string{`{"total":5}`, `[{"bucket":"x","n":1}]`, `"text"`} {
+	for _, raw := range []string{`{"total":5}`, `[{"bucket":"x","n":1}]`, `"text"`, `[{"created_utc":1672531200,"count":"many"}]`} {
 		if _, err := parseCounts(json.RawMessage(raw)); err == nil {
 			t.Errorf("%s: no error", raw)
 		}

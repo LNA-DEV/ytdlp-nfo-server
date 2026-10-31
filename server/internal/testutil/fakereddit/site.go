@@ -561,15 +561,23 @@ func (s *Site) arctic(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"error":"Query timed out"}`))
 			return
 		}
+		if q.Get("after") == "" && q.Get("before") == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"data":null,"error":"At least one of 'before' or 'after' must be set"}`))
+			return
+		}
+		// Like the real API: years in UTC+1, ISO times, counts as strings.
+		zone := time.FixedZone("", 3600)
 		years := map[int]int{}
 		for _, p := range s.posts(q.Get("subreddit")) {
 			if matches(p, q) {
-				years[p.Created.UTC().Year()]++
+				years[p.Created.In(zone).Year()]++
 			}
 		}
 		var buckets []map[string]any
 		for y, n := range years {
-			buckets = append(buckets, map[string]any{"created_utc": time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli(), "count": n})
+			start := time.Date(y, 1, 1, 0, 0, 0, 0, zone).UTC().Format("2006-01-02T15:04:05.000Z")
+			buckets = append(buckets, map[string]any{"created_utc": start, "count": strconv.Itoa(n)})
 		}
 		json.NewEncoder(w).Encode(map[string]any{"data": buckets})
 		return

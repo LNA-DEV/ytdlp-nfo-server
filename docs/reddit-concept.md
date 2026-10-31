@@ -175,7 +175,7 @@ The parser uses the tokenizer from `golang.org/x/net/html` (new dependency, Go p
 | Subreddit, newest first | `/api/posts/search?subreddit=<sub>&sort=desc&limit=100[&before=<created_utc of the oldest post so far>]` |
 | User posts | the same with `author=<name>` |
 | A time range (gap fill, backfill) | `/api/posts/search?subreddit=<sub>&after=<time>&before=<time>&sort=desc&limit=100`, optionally with `url=<prefix>` and `over_18=<bool>` ([§7.7](#77-history-top-lists-and-gaps)) |
-| Posts per year or month (backfill preview) | `/api/posts/search/aggregate?aggregate=created_utc&frequency=year&subreddit=<sub>[&after=…&before=…]` |
+| Posts per year or month (backfill preview) | `/api/posts/search/aggregate?aggregate=created_utc&frequency=year&subreddit=<sub>&after=…&before=…` (at least one of the two) |
 | One post (item metadata) | `/api/posts/ids?ids=<id>`. Up to 500 IDs per request, so a check can refresh many entries at once if needed. |
 | Preview | `/api/subreddits/search?subreddit=<sub>` for the title, NSFW flag and subscriber count |
 | Share links (`/r/<sub>/s/<code>`) | `/api/short_links?paths=<path>` |
@@ -488,7 +488,7 @@ Reddit subscriptions get the action *Load older…*, which the add dialog offers
   - `POST /api/v1/subscriptions/{id}/backfill/preview` with `{from, to}` for the counts: `{years: [{year, count}], total, known, backfillMax}`.
   - The subscription shows the request as `backfill` (`pending`, `loaded`, `total`, `canContinue`, `error`).
 - **Failures:** a run that fails for a while (Arctic Shift down, native blocked) is repeated by the next check. One that can't succeed (the top of a range that grew past `backfillMax`) waits with its error until it is changed or dropped.
-- **The count's format** is not documented by Arctic Shift. The server reads a list of time buckets with a count (`created_utc`, `key` or `date`; `count` or `doc_count`); anything else counts as unknown, as a timeout does.
+- **The count's format** is not documented by Arctic Shift. The real answer is `{"data": [{"created_utc": "2024-12-31T23:00:00.000Z", "count": "15258"}]}`: ISO times, counts as strings, and years that start at 23:00 UTC (the API's time zone is UTC+1). The server reads a list of time buckets with a count (`created_utc`, `key` or `date`; `count` or `doc_count`, a number or a numeric string), puts a bucket into the year of the day after its start, and treats anything else as unknown, as a timeout. The endpoint refuses a query without `after` and `before` (HTTP 400), so an open range is counted with `before` one day from now.
 
 **What to expect from old posts.**
 - `i.redd.it` exists since 2016, `v.redd.it` since 2017, galleries since 2020. Before that, almost all media are links to Imgur, which need phase R-5 ([§7.6](#76-links-to-other-sites)).

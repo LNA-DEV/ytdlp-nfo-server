@@ -192,7 +192,9 @@ func filters(v url.Values, q reddit.Query) {
 
 // Count implements reddit.Counter: the posts of a time range per year,
 // from the aggregation endpoint (§7.7). Its answer is not documented, so
-// the common shapes are read; anything else counts as unknown.
+// the common shapes are read; anything else counts as unknown. The
+// endpoint needs one of the bounds: an open range ends a day from now,
+// clear of the exclusive bound and of clock skew.
 func (p *Provider) Count(ctx context.Context, q reddit.Query) ([]reddit.YearCount, error) {
 	t := q.Target
 	if !t.IsListing() {
@@ -207,8 +209,12 @@ func (p *Provider) Count(ctx context.Context, q reddit.Query) ([]reddit.YearCoun
 	if !q.After.IsZero() {
 		v.Set("after", strconv.FormatInt(q.After.Unix(), 10))
 	}
-	if !q.Before.IsZero() {
-		v.Set("before", strconv.FormatInt(q.Before.Unix(), 10))
+	before := q.Before
+	if before.IsZero() && q.After.IsZero() {
+		before = time.Now().Add(24 * time.Hour)
+	}
+	if !before.IsZero() {
+		v.Set("before", strconv.FormatInt(before.Unix(), 10))
 	}
 	filters(v, q)
 	raw, err := p.getRaw(ctx, "/api/posts/search/aggregate", v)
@@ -223,7 +229,10 @@ func (p *Provider) Count(ctx context.Context, q reddit.Query) ([]reddit.YearCoun
 }
 
 // parseCounts reads time buckets: a list of {created_utc|key|date, count|
-// doc_count}, or such a list under "created_utc".
+// doc_count}, or such a list under "created_utc". The count may be a
+// number or a numeric string. A bucket starts at the year's start in the
+// API's time zone (the real one at 23:00 UTC the day before), so it
+// belongs to the year of the day after its start.
 func parseCounts(raw json.RawMessage) ([]reddit.YearCount, error) {
 	errFormat := errors.New("unknown format of the post counts")
 	var buckets []map[string]any
@@ -237,11 +246,11 @@ func parseCounts(raw json.RawMessage) ([]reddit.YearCount, error) {
 	byYear := map[int]int{}
 	for _, b := range buckets {
 		at, okT := bucketTime(firstOf(b, "created_utc", "key", "date", "time"))
-		n, okN := firstOf(b, "count", "doc_count").(float64)
+		n, okN := bucketCount(firstOf(b, "count", "doc_count"))
 		if !okT || !okN {
 			return nil, errFormat
 		}
-		byYear[at.UTC().Year()] += int(n)
+		byYear[at.Add(14*time.Hour).UTC().Year()] += n
 	}
 	out := make([]reddit.YearCount, 0, len(byYear))
 	for y, n := range byYear {
@@ -258,6 +267,17 @@ func firstOf(m map[string]any, keys ...string) any {
 		}
 	}
 	return nil
+}
+
+func bucketCount(v any) (int, bool) {
+	switch x := v.(type) {
+	case float64:
+		return int(x), x >= 0
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(x))
+		return n, err == nil && n >= 0
+	}
+	return 0, false
 }
 
 // bucketTime reads a bucket's time: Unix seconds or milliseconds, or an
