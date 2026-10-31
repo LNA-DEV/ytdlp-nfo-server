@@ -270,7 +270,7 @@ flowchart TD
 4. **Galleries.** Download each image that isn't already in the library ([§7.5](#75-duplicates-and-crossposts)) in gallery order to `media-NN.part`, verify it, and rename it to `media-NN.<ext>`. `NN` is the image's position in the gallery. Already verified files are kept and reused after a retry or crash (invariant 5).
    - An image that returns 404 or 410 is a warning ("2 of 14 images were removed").
    - If all images are gone, the item fails as `permanent`.
-   - Other errors fail the attempt as `transient`.
+   - 403 is `blocked` and 429 `rate_limited`; other errors fail the attempt as `transient`. These errors come from the server's own client, so yt-dlp's escalations (impersonation, nightly) don't apply to them.
 5. **Videos.** yt-dlp gets `https://v.redd.it/<id>/DASHPlaylist.mpd`: fetch meta, then download with `--load-info-json`, exactly the existing calls. yt-dlp's generic extractor reads the manifest and merges video and audio. `ffprobe` verify and subtitles work as for any video. The thumbnail candidates for `folder.jpg` come from `post.json`, with the frame fallback as today.
 6. **NFO.** For videos, `movie.nfo` is written from a yt-dlp-shaped map built from `post.json`, so `nfo.Movie` stays unchanged:
 

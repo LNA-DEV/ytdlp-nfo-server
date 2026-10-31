@@ -64,6 +64,7 @@ type Site struct {
 	PageSize      int
 	images        map[string][]byte
 	gone          map[string]bool
+	forbidden     map[string]bool
 	challenge     bool
 	seeds         map[string]string // token → seed of a check page
 	// Solved counts the JavaScript checks answered correctly.
@@ -83,7 +84,7 @@ type Site struct {
 // NewSite starts a fake site.
 func NewSite(t testing.TB) *Site {
 	s := &Site{Server: New(t), subs: map[string][]*Post{}, byID: map[string]*Post{}, PageSize: 25, images: map[string][]byte{}, gone: map[string]bool{},
-		seeds: map[string]string{}, names: map[string]string{}, quarantined: map[string]bool{}}
+		forbidden: map[string]bool{}, seeds: map[string]string{}, names: map[string]string{}, quarantined: map[string]bool{}}
 	s.Handle("www.reddit.com", s.native)
 	s.Handle("reddit.com", s.native)
 	s.Handle("arctic-shift.photon-reddit.com", s.arctic)
@@ -235,6 +236,9 @@ func (s *Site) checkChallenge(w http.ResponseWriter, r *http.Request) bool {
 
 // SetGone makes i.redd.it answer 404 for a media id.
 func (s *Site) SetGone(id string) { s.mu.Lock(); s.gone[id] = true; s.mu.Unlock() }
+
+// SetForbidden makes i.redd.it answer a media id with 403.
+func (s *Site) SetForbidden(id string) { s.mu.Lock(); s.forbidden[id] = true; s.mu.Unlock() }
 
 // SetImage sets the bytes of an image id.
 func (s *Site) SetImage(id string, b []byte) { s.mu.Lock(); s.images[id] = b; s.mu.Unlock() }
@@ -645,7 +649,7 @@ func (s *Site) media(w http.ResponseWriter, r *http.Request) {
 	id, fileExt, _ := strings.Cut(name, ".")
 	s.mu.Lock()
 	b, ok := s.images[id]
-	removed, want := s.gone[id], ""
+	removed, want, forbidden := s.gone[id], "", s.forbidden[id]
 	for _, p := range s.byID {
 		for _, m := range p.Media {
 			if m == id {
@@ -654,6 +658,10 @@ func (s *Site) media(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.mu.Unlock()
+	if forbidden {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
 	// Like i.redd.it: a removed file, or one asked for under another
 	// extension, is a 404 with a placeholder image.
 	if removed || want != "" && fileExt != want {

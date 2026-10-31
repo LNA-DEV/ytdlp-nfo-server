@@ -62,6 +62,12 @@ func redditFailure(e *reddit.Error) error {
 		FromServer: true}}
 }
 
+// serverFailure is a failure of the server's own downloads: yt-dlp's
+// escalations (impersonation, nightly) don't apply to it.
+func serverFailure(class ytdlp.Class, reason string) error {
+	return &attemptFailure{cls: ytdlp.Classification{Class: class, Reason: reason, Norm: ytdlp.Normalize(reason), FromServer: true}}
+}
+
 // attemptReddit runs one attempt of a Reddit item: fetch the post, re-key
 // it to its media key, download and verify its images or video, and
 // finalize it with a marker (Reddit concept §7.2).
@@ -409,7 +415,7 @@ func (p *Pipeline) redditImage(ctx context.Context, rc *runCtx, dir, base, url s
 	}
 	fail := func(class ytdlp.Class, reason string) (redditFile, bool, error) {
 		os.Remove(part)
-		return redditFile{}, false, failure(class, reason)
+		return redditFile{}, false, serverFailure(class, reason)
 	}
 	switch {
 	case ctx.Err() != nil:

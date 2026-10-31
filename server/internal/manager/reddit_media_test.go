@@ -325,6 +325,20 @@ func TestRedditBrokenMedia(t *testing.T) {
 	}
 }
 
+// An image that i.redd.it refuses fails without yt-dlp's escalations: the
+// server's own client downloaded it, so impersonation can't help.
+func TestRedditImageForbidden(t *testing.T) {
+	w, site := redditMediaWorld(t)
+	site.SetForbidden("f1")
+	site.Add(&fakereddit.Post{ID: "ff", Subreddit: "pics", Title: "Refused", Kind: "image", Media: []string{"f1"}, Created: time.Now()})
+	j := w.download(postURL("pics", "ff"), config.OptionsRequest{})
+	l := w.log(j.ID)
+	if j.State != store.JobFailed || !strings.Contains(j.Error, "HTTP 403") || strings.Contains(l, "impersonation") ||
+		site.Count("i.redd.it", "/f1") != 1 {
+		t.Fatalf("%s %s, %d requests\n%s", j.State, j.Error, site.Count("i.redd.it", "/f1"), l)
+	}
+}
+
 // Removed posts (Reddit concept §6, §7.2): native shows one removed by a
 // moderator without its media, which fails as removed; Arctic Shift still
 // has the media, and media already in the library is skipped. A post
