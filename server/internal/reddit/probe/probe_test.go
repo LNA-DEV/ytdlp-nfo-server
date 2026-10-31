@@ -63,6 +63,34 @@ func TestAnonymizeSlugs(t *testing.T) {
 	}
 }
 
+// Names and titles go wherever they appear: links, labels, captions,
+// preview names, partial parameters, text and comments. IDs and the
+// titles of removed posts stay.
+func TestAnonymizeTexts(t *testing.T) {
+	in := `<title>My cat Whiskers : r/example</title><shreddit-title title="My cat Whiskers : r/example"></shreddit-title>` +
+		`<shreddit-post id="t3_abc12" subreddit-prefixed-name="r/example" author="catlover_99" post-title="My cat Whiskers" author-avatar-url="https://styles.redditmedia.com/t5_x/avatar.png">` +
+		`<h1 slot="title" aria-label="Post Title: My cat Whiskers">My cat Whiskers</h1>` +
+		`<a href="/user/catlover_99/"><span>u/catlover_99</span></a>` +
+		`<img alt="Whiskers asleep" src="https://preview.redd.it/my-cat-whiskers-v0-k3m9x2abc1yh1.jpeg?width=640&amp;s=1">` +
+		`<faceplate-partial src="/svc/shreddit/partial/x?params=postId%3Dabc12%26slug%3Dmy_cat_whiskers&amp;sig=1"></faceplate-partial>` +
+		`<shreddit-comment-tree post-id="t3_abc12"><shreddit-comment author="other_user">so cute!</shreddit-comment></shreddit-comment-tree>` +
+		`</shreddit-post>` +
+		`<shreddit-post id="t3_rem1" author="[deleted]" post-title="[ Removed by moderator ]"><h1 slot="title">[ Removed by moderator ]</h1></shreddit-post>` +
+		`{"author":"catlover_99","author_flair_text":"Cat person","title":"My cat Whiskers","url":"https:\/\/preview.redd.it\/my-cat-v0-p7q2w8def1yh1.png"}`
+	got := string(anonymize([]byte(in)))
+	for _, s := range []string{"catlover", "Whiskers", "whiskers", "my-cat", "other_user", "so cute", "Cat person", "avatar.png"} {
+		if strings.Contains(got, s) {
+			t.Errorf("%q left in\n%s", s, got)
+		}
+	}
+	for _, s := range []string{`id="t3_abc12"`, "x-v0-k3m9x2abc1yh1.jpeg", `x-v0-p7q2w8def1yh1.png`, "postId%3Dabc12%26slug%3Dx",
+		`post-title="[ Removed by moderator ]"`, `<h1 slot="title">[ Removed by moderator ]</h1>`, "r/example", "</shreddit-comment-tree>"} {
+		if !strings.Contains(got, s) {
+			t.Errorf("%q lost\n%s", s, got)
+		}
+	}
+}
+
 // The report counts post elements only, and NSFW by the posts' attributes.
 func TestReportCounts(t *testing.T) {
 	page := `<html><style>.nsfw-blurred{}</style><shreddit-post id="t3_a1" nsfw><shreddit-post-flair></shreddit-post-flair></shreddit-post>` +

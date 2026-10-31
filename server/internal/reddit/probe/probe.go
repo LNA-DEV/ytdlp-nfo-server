@@ -5,6 +5,7 @@
 package probe
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -285,17 +287,101 @@ var (
 	// nsfwPosts matches post elements with an NSFW attribute; the word
 	// alone is in the scripts and styles of every page.
 	nsfwPosts = regexp.MustCompile(`<` + native.Layout.PostTag + `\s[^>]*\s(?:` + strings.Join(native.Layout.NSFW, "|") + `)(?:[\s>]|="(?:|true)")`)
-	htmlAttrs = regexp.MustCompile(`((?:author|post-title)=")[^"]*"`)
-	jsonAttrs = regexp.MustCompile(`("(?:author|title|selftext|author_fullname)"\s*:\s*")(?:[^"\\]|\\.)*"`)
-	// The title is also in every permalink, as its last part.
-	slugs = regexp.MustCompile(`((?:/|\\/)comments(?:/|\\/)[A-Za-z0-9]+(?:/|\\/))[^/"'\\?#&<>\s]+`)
+	// Attributes with user names, titles, captions and labels (which
+	// repeat the title).
+	htmlAttrs = regexp.MustCompile(`(\s(?:author|author-name|author-avatar-url|post-title|alt|aria-label|arialabel)=")[^"]*"`)
+	jsonAttrs = regexp.MustCompile(`("(?:author|title|selftext|selftext_html|author_fullname|author_flair_text|body|body_html|caption)"\s*:\s*")(?:[^"\\]|\\.)*"`)
+	// The title is also in every permalink, as its last part, in the
+	// slug parameter of partials, and at the start of preview names.
+	slugs        = regexp.MustCompile(`((?:/|\\/)comments(?:/|\\/)[A-Za-z0-9]+(?:/|\\/))[^/"'\\?#&<>\s]+`)
+	slugParams   = regexp.MustCompile(`((?:[?&;]|%26|%3F)slug(?:=|%3D))[^&"'%\s]+`)
+	previewSlugs = regexp.MustCompile(`((?:preview|external-preview|i)\.redd\.it(?:/|\\/))[^/"'\\?#&<>\s]+?(-v\d+-)`)
+	userLinks    = regexp.MustCompile(`((?:/|\\/)(?:user|u)(?:/|\\/))[A-Za-z0-9_-]+`)
+	// The text of the page title, of a post's title element, and the
+	// comments.
+	texts        = regexp.MustCompile(`(<title>|<[a-z0-9-]+\s[^>]*slot="title"[^>]*>)[^<]*`)
+	titleAttrs   = regexp.MustCompile(`(<shreddit-title\s[^>]*title=")[^"]*"`)
+	commentTrees = regexp.MustCompile(`(?s)(<shreddit-comment-tree(?:\s[^>]*)?>).*?(</shreddit-comment-tree>)`)
+	// What is replaced wherever else it appears: user names and titles.
+	namesHTML = regexp.MustCompile(`\s(?:author|author-name|post-title)="([^"]+)"`)
+	namesJSON = regexp.MustCompile(`"(?:author|title)"\s*:\s*"((?:[^"\\]|\\.)+)"`)
 )
 
 // anonymize replaces user names, titles and texts; structure and IDs stay.
+// The titles Reddit gives removed posts stay too, as the parser needs them.
 func anonymize(b []byte) []byte {
-	b = htmlAttrs.ReplaceAll(b, []byte(`${1}x"`))
+	words := personal(b)
+	b = commentTrees.ReplaceAll(b, []byte(`${1}${2}`))
+	b = texts.ReplaceAllFunc(b, func(m []byte) []byte {
+		sm := texts.FindSubmatch(m)
+		if native.RemovedTitle(string(m[len(sm[1]):])) {
+			return m
+		}
+		return append(sm[1], 'x')
+	})
+	b = titleAttrs.ReplaceAll(b, []byte(`${1}x"`))
+	b = htmlAttrs.ReplaceAllFunc(b, keepRemoved(htmlAttrs))
 	b = slugs.ReplaceAll(b, []byte(`${1}x`))
-	return jsonAttrs.ReplaceAll(b, []byte(`${1}x"`))
+	b = slugParams.ReplaceAll(b, []byte(`${1}x`))
+	b = previewSlugs.ReplaceAll(b, []byte(`${1}x${2}`))
+	b = userLinks.ReplaceAll(b, []byte(`${1}x`))
+	b = jsonAttrs.ReplaceAllFunc(b, keepRemoved(jsonAttrs))
+	for _, w := range words {
+		b = replaceWord(b, w)
+	}
+	return b
+}
+
+// keepRemoved replaces an attribute's value with x unless it is the title
+// of a removed post.
+func keepRemoved(re *regexp.Regexp) func([]byte) []byte {
+	return func(m []byte) []byte {
+		prefix := re.FindSubmatch(m)[1]
+		if native.RemovedTitle(strings.TrimSuffix(string(m[len(prefix):]), `"`)) {
+			return m
+		}
+		return append(append([]byte(nil), prefix...), 'x', '"')
+	}
+}
+
+// personal returns the user names and titles of a page that are long
+// enough to be replaced as words, longest first.
+func personal(b []byte) [][]byte {
+	seen := map[string]bool{}
+	var out [][]byte
+	for _, re := range []*regexp.Regexp{namesHTML, namesJSON} {
+		for _, m := range re.FindAllSubmatch(b, -1) {
+			v := string(m[1])
+			if len(v) < 4 || seen[v] || native.RemovedTitle(v) || v == "AutoModerator" {
+				continue
+			}
+			seen[v] = true
+			out = append(out, m[1])
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+// replaceWord replaces w with x where it is not part of a longer name.
+func replaceWord(b, w []byte) []byte {
+	isName := func(c byte) bool {
+		return c == '_' || c == '-' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	var out []byte
+	for {
+		i := bytes.Index(b, w)
+		if i < 0 {
+			return append(out, b...)
+		}
+		end := i + len(w)
+		if (i > 0 && isName(b[i-1]) && isName(w[0])) || (end < len(b) && isName(b[end]) && isName(w[len(w)-1])) {
+			out = append(out, b[:end]...)
+		} else {
+			out = append(append(out, b[:i]...), 'x')
+		}
+		b = b[end:]
+	}
 }
 
 func save(dir, provider string, resps []response) error {

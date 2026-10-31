@@ -201,7 +201,7 @@ func parse(body []byte, base *url.URL) page {
 				ps.post.ID = strings.TrimPrefix(id, "t3_")
 				ps.post.Permalink = absolute(base, m[Layout.Permalink])
 				ps.post.Title = m[Layout.Title]
-				ps.post.Removed = removedTitle(ps.post.Title)
+				ps.post.Removed = RemovedTitle(ps.post.Title)
 				ps.post.Author = m[Layout.Author]
 				sub := first(m, Layout.Subreddit)
 				ps.post.Subreddit = strings.TrimPrefix(strings.TrimPrefix(sub, "r/"), "u/")
@@ -312,9 +312,9 @@ func parse(body []byte, base *url.URL) page {
 	}
 }
 
-// removedTitle reports whether a title is the one Reddit shows for a
+// RemovedTitle reports whether a title is the one Reddit shows for a
 // removed or deleted post.
-func removedTitle(title string) bool {
+func RemovedTitle(title string) bool {
 	t := strings.ToLower(strings.Join(strings.Fields(title), ""))
 	for _, r := range Layout.RemovedTitles {
 		if t == r {
